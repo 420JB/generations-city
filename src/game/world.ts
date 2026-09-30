@@ -105,22 +105,100 @@ export function cityRadius(openWards: Record<DistrictId, number>): number {
   return max
 }
 
+/** Monument pad geometry, shared with the renderer (MonumentSprite pad a=3.1, sprite ×1.15). */
+export const MONUMENT_PAD_A = 3.1
+export const MONUMENT_SPRITE_SCALE = 1.15
+/** World half-size of an axis-aligned monument pad at slot scale 1. */
+export const MONUMENT_PAD_HALF = MONUMENT_PAD_A * MONUMENT_SPRITE_SCALE
+
+/** Civic-plaza layout rules: pad gap, and clearances to the square's edges. */
+export const CIVIC_LAYOUT = {
+  padGap: 0.5,
+  innerMargin: 0.3,
+  outerMargin: 0.3,
+  /** The civic square is drawn inset this far from each radial boundary avenue. */
+  sideInset: 2.6,
+  sideMargin: 0.3,
+} as const
+
 /**
- * Monument placement inside a district's civic square. Held monuments share the square
- * and are laid out left-to-right by tier; the more monuments, the tighter the spacing.
+ * Civic-plaza compositions in local plaza units: u = radial offset from the square's centre
+ * line (+ = outward), v = tangential offset along the arc. Slot order follows monument tier
+ * (lowest first); the highest-tier monument takes the ceremonial axis (v = 0) when there is one.
+ *   1: ceremonial centre · 2: balanced pair · 3: triangle (2 outer, 1 on the axis)
+ *   4: staggered 2 + 2 · 5: 2 inner + 3 outer with the top landmark on the axis
  */
-export function civicSlots(count: number): { offsetDeg: number; scale: number }[] {
-  if (count <= 0) return []
-  const scale = count <= 2 ? 1 : count === 3 ? 0.86 : count === 4 ? 0.72 : 0.62
-  const spread = count === 1 ? 0 : count === 2 ? 16 : count === 3 ? 26 : 30
-  return Array.from({ length: count }, (_, i) => ({
-    offsetDeg: count === 1 ? 0 : -spread / 2 + (spread * i) / (count - 1),
-    scale,
-  }))
+export const CIVIC_TEMPLATES: Record<number, readonly (readonly [number, number])[]> = {
+  1: [[0, 0]],
+  2: [[2.5, -4.5], [2.5, 4.5]],
+  3: [[3, -5], [3, 5], [-3, 0]],
+  4: [[-3, -3.5], [-3, 3.5], [3.5, -4], [3.5, 4]],
+  5: [[-3.5, -3.5], [-3.5, 3.5], [3.5, -6], [3.5, 6], [3.5, 0]],
+}
+
+function civicTemplatePoint(districtId: DistrictId, u: number, v: number): WorldPoint {
+  const r = WORLD.civicSquare.center + u
+  return polar(r, districtAngle(districtId) + (v / r) * (180 / Math.PI))
+}
+
+/** Pads (axis-aligned world squares) of a composition, for placement checks and tests. */
+export function civicPads(districtId: DistrictId, count: number, scale: number): { center: WorldPoint; half: number }[] {
+  return (CIVIC_TEMPLATES[count] ?? []).map(([u, v]) => ({ center: civicTemplatePoint(districtId, u, v), half: MONUMENT_PAD_HALF * scale }))
+}
+
+/** Every pad inside the civic square (with margins) and no two pads closer than the gap. */
+export function civicPadsFit(districtId: DistrictId, pads: { center: WorldPoint; half: number }[]): boolean {
+  const { inner, outer } = WORLD.civicSquare
+  const a = (districtAngle(districtId) * Math.PI) / 180
+  const halfSpan = ((WORLD.districtSpanDeg / 2) * Math.PI) / 180
+  for (const { center: p, half: h } of pads) {
+    // Nearest point of the pad to the city centre must clear the square's inner edge.
+    const nx = Math.max(p.x - h, Math.min(0, p.x + h))
+    const ny = Math.max(p.y - h, Math.min(0, p.y + h))
+    if (Math.hypot(nx, ny) < inner + CIVIC_LAYOUT.innerMargin) return false
+    for (const [cx, cy] of [[p.x - h, p.y - h], [p.x + h, p.y - h], [p.x + h, p.y + h], [p.x - h, p.y + h]]) {
+      if (Math.hypot(cx, cy) > outer - CIVIC_LAYOUT.outerMargin) return false
+      for (const sg of [-1, 1]) {
+        const phi = a + sg * halfSpan
+        const inward = -sg * (-cx * Math.sin(phi) + cy * Math.cos(phi))
+        if (inward < CIVIC_LAYOUT.sideInset + CIVIC_LAYOUT.sideMargin) return false
+      }
+    }
+  }
+  for (let i = 0; i < pads.length; i++)
+    for (let j = i + 1; j < pads.length; j++) {
+      const sep = Math.max(Math.abs(pads[i].center.x - pads[j].center.x), Math.abs(pads[i].center.y - pads[j].center.y))
+      if (sep < pads[i].half + pads[j].half + CIVIC_LAYOUT.padGap) return false
+    }
+  return true
+}
+
+/**
+ * One uniform scale per monument count: the largest (≤ 1) at which the composition fits in
+ * EVERY district's civic square. Derived from the geometry once, so a transferring monument
+ * never changes size just because of its new district's angle.
+ */
+const civicScaleCache = new Map<number, number>()
+export function civicScale(count: number): number {
+  const cached = civicScaleCache.get(count)
+  if (cached !== undefined) return cached
+  const fitsAll = (s: number) => DISTRICTS.every((d) => civicPadsFit(d.id, civicPads(d.id, count, s)))
+  let scale = 1
+  if (!fitsAll(1)) {
+    let lo = 0
+    let hi = 1
+    for (let k = 0; k < 24; k++) {
+      const m = (lo + hi) / 2
+      if (fitsAll(m)) lo = m
+      else hi = m
+    }
+    scale = Math.floor(lo * 1000) / 1000
+  }
+  civicScaleCache.set(count, scale)
+  return scale
 }
 
 export function civicSlotWorld(districtId: DistrictId, index: number, count: number): WorldPoint & { scale: number } {
-  const slot = civicSlots(count)[index]
-  const p = polar(WORLD.civicSquare.center, districtAngle(districtId) + slot.offsetDeg)
-  return { ...p, scale: slot.scale }
+  const [u, v] = (CIVIC_TEMPLATES[count] ?? CIVIC_TEMPLATES[1])[index]
+  return { ...civicTemplatePoint(districtId, u, v), scale: civicScale(count) }
 }

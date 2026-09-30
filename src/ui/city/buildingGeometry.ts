@@ -30,8 +30,9 @@ export function sectionsFor(tier: number, H: number, a0: number): Section[] {
 }
 
 /** Landscaping slot positions (world offsets) along the two visible lot edges. */
-export function landscapeSlotPos(a0: number, i: number) {
-  const L = a0 + 0.5
+export function landscapeSlotPos(a0: number, i: number, lot: number = a0 + 0.7) {
+  // Stay on the paved lot (never in the road), but outside the podium.
+  const L = Math.max(a0 + 0.1, Math.min(a0 + 0.5, lot - 0.2))
   const spots = [
     { x: L, y: -0.45 * L },
     { x: -0.45 * L, y: L },

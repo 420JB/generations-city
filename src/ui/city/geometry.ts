@@ -63,13 +63,17 @@ export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits
 }
 
 /** Iso polyline along an arc (used for ward boundary streets). */
-export function arcPath(id: DistrictId, r: number, insetUnits = 1.4): string {
+export function arcPoints(id: DistrictId, r: number, insetUnits = 1.4): Pt[] {
   const a = districtAngle(id)
   const half = WORLD.districtSpanDeg / 2
   const insetDeg = (insetUnits / r) * (180 / Math.PI)
   const pts: Pt[] = []
   for (let i = 0; i <= 18; i++) pts.push(isoW(polar(r, a - half + insetDeg + ((2 * half - 2 * insetDeg) * i) / 18)))
-  return pointsStr(pts)
+  return pts
+}
+
+export function arcPath(id: DistrictId, r: number, insetUnits = 1.4): string {
+  return pointsStr(arcPoints(id, r, insetUnits))
 }
 
 /** Iso ellipse radii for a world-space circle of radius r. */

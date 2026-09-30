@@ -7,7 +7,8 @@ import { patronLevelIndex, rankedPatrons, stageFor, tierFor } from '../../game/e
 import type { Building, DemoUser, LandscapeKind } from '../../game/types'
 import { useTween } from '../motion'
 import { facadeBillboardWidth, landscapeSlotPos, sectionsFor } from './buildingGeometry'
-import { boxCorners, buildingHeightPx, FLOOR_PX, footprintHalf, hsl, iso, leftFace, LOT_MARGIN, rightFace, S, TAN30, WINDOW_TILES, type Detail } from './geometry'
+import { boxCorners, buildingHeightPx, FLOOR_PX, footprintHalf, hsl, iso, isoEllipse, leftFace, rightFace, S, TAN30, WINDOW_TILES, type Detail } from './geometry'
+import { propertyLotHalf } from './roads'
 import { IsoBox } from './parts'
 
 export type { Detail }
@@ -277,7 +278,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const shaft = sections.find((s) => s.kind === 'shaft') ?? sections[0]
   const podium = sections[0]
   const cPod = boxCorners(podium.a)
-  const lot = a0 + LOT_MARGIN
+  // Paved lot trimmed to the plot's road-safe envelope (never paints over asphalt).
+  const lot = propertyLotHalf(b.districtId, b.ward, b.plot, tier)
   const cl = boxCorners(lot)
   const patrons = rankedPatrons(b).slice(0, MAX_VISIBLE_PATRONS)
   // Dense city: at far/mid zoom only important buildings carry labels.
@@ -325,7 +327,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
         strokeDasharray={tier === 0 ? '4 3' : undefined}
       />
       {selected && (
-        <ellipse cx={0} cy={0} rx={cl.E.x * 1.15} ry={cl.Sx.y * 1.15} fill="none" stroke={district.glow} strokeWidth={2.5} className="select-ring" />
+        <ellipse cx={0} cy={0} rx={isoEllipse(lot * 1.1).rx} ry={isoEllipse(lot * 1.1).ry} fill="none" stroke={district.glow} strokeWidth={2.5} className="select-ring" />
       )}
       {(stage >= 9 || tier >= 4) && tier > 0 && <ellipse cx={0} cy={2} rx={cPod.E.x * 1.25} ry={cPod.Sx.y * 1.25} fill={`url(#glow-${b.districtId})`} opacity={0.35} />}
 
@@ -463,7 +465,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       {tier > 0 &&
         b.landscapeSlots.map((kind, i) => {
           if (!kind) return null
-          const p = landscapeSlotPos(a0, i)
+          const p = landscapeSlotPos(a0, i, lot)
           return (
             <g key={i} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) scale(0.72)`}>
               <LandscapeItem kind={kind} accent={accent} />
@@ -477,7 +479,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
           .filter((p) => patronLevelIndex(p.amount) === 2)
           .map((p, i) => {
             const u = users[p.userId]
-            const pos = iso(lot + 0.3, lot - 1.2 - i * 1.3)
+            // Along the lot's front-right edge, inside the paving.
+            const pos = iso(lot - 0.2, Math.max(-(lot - 0.2), lot - 0.6 - i * 1.1))
             return (
               <g key={p.userId} transform={`translate(${pos.x} ${pos.y})`} data-patron-marker={p.userId}>
                 <line x1={0} y1={0} x2={0} y2={-14} stroke="#8a93a8" strokeWidth={0.8} />

@@ -3,6 +3,7 @@ import { getDistrict, type DistrictId } from '../../config/districts'
 import { getMonument, type MonumentId } from '../../config/monuments'
 import { boxCorners, COS30, iso, S, type Detail } from './geometry'
 import { statueForm } from './familyStatue'
+import { MONUMENT_PAD_A, MONUMENT_SPRITE_SCALE } from '../../game/world'
 import { IsoBox } from './parts'
 
 export type MonumentPhase = 'standing' | 'rising' | 'falling'
@@ -16,7 +17,7 @@ function MonumentPad({ color, glow }: { color: string; glow: string }) {
   const lamps = [iso(-2.6, -2.6), iso(2.6, -2.6), iso(2.6, 2.6), iso(-2.6, 2.6)]
   return (
     <g className="monument-pad">
-      <IsoBox a={3.1} z0={0} z1={4} colors={STONE_DARK} />
+      <IsoBox a={MONUMENT_PAD_A} z0={0} z1={4} colors={STONE_DARK} />
       <IsoBox a={2.7} z0={4} z1={8} colors={{ left: '#555c72', right: '#6a7290', top: '#7d86a4' }} />
       <g transform="translate(0 -8)">
         <polygon
@@ -385,7 +386,7 @@ export const MonumentSprite = memo(function MonumentSprite({
 }) {
   const d = getDistrict(districtId)
   const m = getMonument(monumentId)
-  const c = boxCorners(3.1)
+  const c = boxCorners(MONUMENT_PAD_A)
   return (
     <g
       className={`monument monument-${phase}`}
@@ -395,7 +396,7 @@ export const MonumentSprite = memo(function MonumentSprite({
       data-family={d.familyKey}
       aria-label={`${m.name}${m.kind === 'statue' ? ` in ${d.name} form` : ''}, ${phase === 'falling' ? 'collapsing in' : 'held by'} the ${d.title}`}
       role="img"
-      transform={`scale(${scale * 1.15})`}
+      transform={`scale(${scale * MONUMENT_SPRITE_SCALE})`}
     >
       <ellipse cx={0} cy={2} rx={c.E.x * 1.5} ry={c.Sx.y * 1.5} fill={`url(#glow-${districtId})`} opacity={phase === 'falling' ? 0.1 : 0.55} />
       <g className="monument-padwrap">
@@ -425,7 +426,7 @@ export const MonumentSprite = memo(function MonumentSprite({
         </g>
       )}
       {detail !== 'far' && phase !== 'falling' && (
-        <g id={`ml-${districtId}-${monumentId}`} transform={`translate(0 ${c.Sx.y + 18}) scale(${labelScale / (scale * 1.15)})`}>
+        <g id={`ml-${districtId}-${monumentId}`} transform={`translate(0 ${c.Sx.y + 18}) scale(${labelScale / (scale * MONUMENT_SPRITE_SCALE)})`}>
           <rect x={-66} y={-10} width={132} height={18} rx={9} fill="#0b0f1cee" stroke={d.color} strokeWidth={1.2} />
           <text x={0} y={2.8} textAnchor="middle" fontSize={8.5} fontWeight={800} fill="#f3f5fb" letterSpacing={0.5}>
             {m.name.replace(/^The /, '').toUpperCase()} · T{m.tier}

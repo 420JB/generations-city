@@ -4,6 +4,7 @@ import { WORLD } from '../../config/world'
 import { isFoundingWard, wardName } from '../../game/allocation'
 import { districtAngle, plotWorld, polar, usableHalfSpanDeg, wardBand, wardCapacity, wardStreetRadius } from '../../game/world'
 import { PlazaGround } from './CapitalPlaza'
+import { propertyLotHalf } from './roads'
 import { arcPath, boxCorners, isoEllipse, isoW, sectorPolygon, type Detail } from './geometry'
 
 function StreetArc({ id, r, width = 11 }: { id: DistrictId; r: number; width?: number }) {
@@ -78,12 +79,12 @@ function GhostWard({ id, ward, detail }: { id: DistrictId; ward: number; detail:
   const band = wardBand(ward)
   const cap = wardCapacity(ward)
   const mid = isoW(polar((band.inner + band.outer) / 2, districtAngle(id)))
-  const c = boxCorners(1.6)
   return (
     <g className="ghost-ward" data-testid={`ghost-ward-${id}`} data-ward={ward}>
       <polygon points={sectorPolygon(id, band.inner + 0.6, band.outer)} fill="#8fb4ff" fillOpacity={0.035} stroke="#8fb4ff" strokeOpacity={0.3} strokeDasharray="10 10" strokeWidth={1.6} />
       {Array.from({ length: cap }, (_, i) => {
         const p = isoW(plotWorld(id, ward, i))
+        const c = boxCorners(propertyLotHalf(id, ward, i))
         return (
           <polygon
             key={i}
@@ -126,12 +127,12 @@ function CapitalGround({ id }: { id: DistrictId }) {
 
 /** Unclaimed plots in open wards: ready for the next Friend who joins this district. */
 function OpenPlots({ id, open, occupied }: { id: DistrictId; open: number; occupied: Set<string> }) {
-  const c = boxCorners(1.9)
   const out = []
   for (let w = 0; w < open; w++) {
     for (let i = 0; i < wardCapacity(w); i++) {
       if (occupied.has(`${w}:${i}`)) continue
       const p = isoW(plotWorld(id, w, i))
+      const c = boxCorners(propertyLotHalf(id, w, i))
       out.push(
         <g key={`${w}-${i}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`} data-testid={`open-plot-${id}-${w}-${i}`}>
           <polygon points={`${c.W.x},0 0,${c.N.y} ${c.E.x},0 0,${c.Sx.y}`} fill="#ffffff" fillOpacity={0.03} stroke="#9fb6d9" strokeOpacity={0.35} strokeDasharray="4 4" />
