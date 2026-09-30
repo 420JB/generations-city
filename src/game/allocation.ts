@@ -64,6 +64,44 @@ export function allocatePlot(
   }
 }
 
+/**
+ * EXPLICIT PLACEMENT (human onboarding). A Friend's family fixes the district; the player
+ * picks the exact plot. Location is preference only: no plot carries any gameplay value.
+ */
+export interface PlotCandidate extends PlotAddress {
+  /** True when this plot lies in the next ward, which opens only if a Friend joins here. */
+  newWard: boolean
+}
+
+/**
+ * Every plot a joining Friend may choose in a district: all free plots in the open wards,
+ * or, when every open ward is full, every plot of the NEXT ward (previewed, not opened).
+ * Pure: computing candidates never changes state.
+ */
+export function availablePlots(state: Pick<GameState, 'buildings' | 'wards'>, districtId: DistrictId): PlotCandidate[] {
+  const used = occupiedPlots(state, districtId)
+  const open = state.wards[districtId] ?? 1
+  const out: PlotCandidate[] = []
+  for (let ward = 0; ward < open; ward++)
+    for (let plot = 0; plot < wardCapacity(ward); plot++) if (!used.has(`${ward}:${plot}`)) out.push({ districtId, ward, plot, newWard: false })
+  if (out.length > 0) return out
+  return Array.from({ length: wardCapacity(open) }, (_, plot) => ({ districtId, ward: open, plot, newWard: true }))
+}
+
+/** Allocation for an exact, player-chosen plot, or null if it is not a valid candidate. */
+export function allocateSpecificPlot(state: Pick<GameState, 'buildings' | 'wards'>, address: PlotAddress): Allocation | null {
+  const { districtId, ward, plot } = address
+  if (!DISTRICT_IDS.includes(districtId) || !Number.isInteger(ward) || !Number.isInteger(plot)) return null
+  const pick = availablePlots(state, districtId).find((c) => c.ward === ward && c.plot === plot)
+  if (!pick) return null
+  const open = state.wards[districtId] ?? 1
+  return {
+    address: { districtId, ward, plot },
+    openedWard: pick.newWard,
+    wards: pick.newWard ? { ...state.wards, [districtId]: open + 1 } : state.wards,
+  }
+}
+
 export interface DistrictGrowth {
   districtId: DistrictId
   openWards: number

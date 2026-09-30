@@ -261,7 +261,7 @@ function describe(state: GameState, playerId: string, home: DistrictId | null, c
     kind = 'crown'
     objective = 'crown'
     headline = 'TAKE THE CROWN'
-    reason = `${name} is ${c.amount.toLocaleString('en-US')} RF from becoming the tallest building in Generations City.`
+    reason = `${name} is ${c.amount.toLocaleString('en-US')} RF from becoming the tallest building in Rare City.`
   } else if (badges.length) {
     kind = 'badge'
     headline = `EARN ${badges[0].toUpperCase()}`

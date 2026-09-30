@@ -6,6 +6,7 @@ import { DEMO_PLAYER_ID } from '../config/identity'
 import {
   claimFaucet,
   contribute,
+  joinAtPlot,
   joinCity,
   placeLandscape,
   purchaseFixture,
@@ -33,6 +34,7 @@ export type GameAction =
   | { type: 'faucet' }
   | { type: 'rival' }
   | { type: 'join'; districtId: DistrictId }
+  | { type: 'join-at'; districtId: DistrictId; ward: number; plot: number }
   | { type: 'grow'; districtId: DistrictId }
   | { type: 'reset' }
 
@@ -71,6 +73,8 @@ function run(game: GameState, action: GameAction): ActionResult {
       return rivalTurn(game, P)
     case 'join':
       return joinCity(game, action.districtId)
+    case 'join-at':
+      return joinAtPlot(game, { districtId: action.districtId, ward: action.ward, plot: action.plot })
     case 'grow':
       return simulateDistrictGrowth(game, action.districtId)
     case 'reset':

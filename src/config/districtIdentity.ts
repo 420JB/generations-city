@@ -130,7 +130,7 @@ const ACCENTS: Record<DistrictId, string> = {
   d9: '#d6e4f0',
 }
 
-const CREDIT = 'Rare Friends family silhouettes supplied by the product owner for the Generations City hackathon build.'
+const CREDIT = 'Rare Friends family silhouettes supplied by the product owner for the Rare City hackathon build.'
 
 function identityFor(districtId: DistrictId): DistrictIdentity {
   const fam = FAMILIES[DISTRICT_FAMILY[districtId]]

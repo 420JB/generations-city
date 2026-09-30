@@ -3,7 +3,7 @@ import { CRITICAL_THRESHOLD_FRACTION, DEMO_FAUCET_AMOUNT, LANDSCAPE_MAX_SLOTS } 
 import { getFixture, LANDSCAPE_KINDS, type FixtureId, type LandscapeKind } from '../config/fixtures'
 import { MONUMENTS, type MonumentId } from '../config/monuments'
 import type { DistrictId } from '../config/districts'
-import { allocatePlot, newBuilding } from './allocation'
+import { allocatePlot, allocateSpecificPlot, newBuilding, type Allocation, type PlotAddress } from './allocation'
 import { recordSeasonActivity } from './season'
 import { evaluateAllBadges, EMPTY_COUNTERS } from './badges'
 import { capitalHolder, computeMonumentHolders, tallestBuilding } from './competition'
@@ -320,13 +320,29 @@ export function rivalTurn(state: GameState, playerId: string): ActionResult {
 }
 
 /**
- * A Friend becomes active in Generations City: it receives the next free plot in its
+ * A Friend becomes active in Rare City: it receives the next free plot in its
  * district, opening a new outer ward when every open plot is taken. In production the
  * Friend ID and district would come from the identity adapter; the demo simulates them.
  */
+/** A Friend becomes active: first free plot (deterministic auto-allocator). */
 export function joinCity(state: GameState, districtId: DistrictId): ActionResult {
   const alloc = allocatePlot(state, districtId)
   if (!alloc) return fail(state, 'This district has reached the demo expansion limit')
+  return joinWithAllocation(state, districtId, alloc)
+}
+
+/**
+ * A Friend becomes active on the exact plot the player chose. Opening the next ward (when
+ * every open ward is full) happens here, atomically with the join, never on preview.
+ */
+export function joinAtPlot(state: GameState, address: PlotAddress): ActionResult {
+  const alloc = allocateSpecificPlot(state, address)
+  if (!alloc) return fail(state, 'That plot is not available for this Friend')
+  return joinWithAllocation(state, address.districtId, alloc)
+}
+
+/** Shared join path: one resident + one newBuilding() at the allocated address. */
+function joinWithAllocation(state: GameState, districtId: DistrictId, alloc: Allocation): ActionResult {
   const seq = state.residentSeq + 1
   const friendId = 20_000 + seq
   const userId = `resident-${seq}`

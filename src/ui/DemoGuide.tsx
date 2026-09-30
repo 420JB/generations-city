@@ -12,6 +12,8 @@ interface Props {
   onWarpCapital: () => void
   onWarpMine: () => void
   onHide: () => void
+  /** Optional exploration: open City Growth to add a Friend on a chosen plot. */
+  onCityGrowth: () => void
 }
 
 function Step({ done, children }: { done: boolean; children: ReactNode }) {
@@ -27,7 +29,7 @@ function Step({ done, children }: { done: boolean; children: ReactNode }) {
 }
 
 /** The guided 30-second path. Always recoverable from the HUD "?" button. */
-export function DemoGuide({ progress: p, boardOpened, warpedKing, onOpenBoard, onWarpKing, onWarpCapital, onWarpMine, onHide }: Props) {
+export function DemoGuide({ progress: p, boardOpened, warpedKing, onOpenBoard, onWarpKing, onWarpCapital, onWarpMine, onHide, onCityGrowth }: Props) {
   const s1 = boardOpened || p.tierUp
   const home = districtTitle(p.kingmakerDistrict)
   const s2 = warpedKing || p.tierUp
@@ -75,6 +77,13 @@ export function DemoGuide({ progress: p, boardOpened, warpedKing, onOpenBoard, o
         )}
         <button type="button" className="btn ghost sm" onClick={onHide}>
           Explore freely
+        </button>
+      </div>
+      <div className="guide-grow" data-testid="guide-grow">
+        <div className="kicker">OPTIONAL · WATCH THE CITY GROW</div>
+        <p className="small">Add a simulated Friend to any family district, choose their exact property, and watch Rare City expand when a Ward fills.</p>
+        <button type="button" className="btn sm" onClick={onCityGrowth} data-testid="guide-grow-open">
+          ⌂ CHOOSE A PLOT
         </button>
       </div>
       <div className="muted small guide-foot">Reopen any time with the ? button.</div>

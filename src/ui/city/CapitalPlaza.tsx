@@ -122,7 +122,7 @@ export const CapitalSign = memo(function CapitalSign({
         <rect x={-204} y={-34} width={408} height={66} rx={12} fill="#0b0f1cdd" stroke="#ffd45a" strokeWidth={2} />
         <rect x={-201} y={-31} width={402} height={60} rx={10} fill={color} opacity={0.1} stroke={color} strokeOpacity={0.6} />
         <text x={0} y={-13} textAnchor="middle" fontSize={10.5} letterSpacing={3.5} fill="#ffe7a6" fontWeight={700}>
-          THE CAPITAL OF GENERATIONS CITY
+          THE CAPITAL OF RARE CITY
         </text>
         {d && [-1, 1].map((s) => <CrestDisc key={s} href={d.art.primaryTransparent} color={color} cx={s * 176} cy={-1} r={21} />)}
         <text x={0} y={14} textAnchor="middle" fontSize={d && d.title.length > 16 ? 21 : 24} fontWeight={900} fill="#fff" letterSpacing={2} data-testid="capital-sign-name" data-family={d?.familyKey ?? ''}>

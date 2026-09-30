@@ -127,7 +127,7 @@ export function radioFromEvents(state: GameState, events: GameEvent[]): RadioEnt
           kind: 'crown',
           headline: `CITY CROWN → ${buildingLabel(state, e.to)}`,
           detail: b
-            ? `Now the tallest building in Generations City at ${heightMeters(totalBuilt(b))} m · owner ${handleOf(state, b.ownerId)}`
+            ? `Now the tallest building in Rare City at ${heightMeters(totalBuilt(b))} m · owner ${handleOf(state, b.ownerId)}`
             : 'The Crown is vacant.',
           districtId: b?.districtId ?? null,
           buildingId: e.to,

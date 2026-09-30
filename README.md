@@ -1,8 +1,13 @@
-# Generations City
+# Rare City
 
 **Build your Friend. Build your district. Build the city.**
 
-Generations City is a shared social strategy city for Rare Friends. Players own buildings inside nine family districts around a central Capital Plaza. Every RF spent on a property physically develops that building, so spending RF is how the city gets built.
+- **Live demo:** https://generations-city-production.up.railway.app/
+- **Source:** https://github.com/420JB/generations-city
+
+*(The project was renamed from Generations City to Rare City; the deployment URL and repository keep the original `generations-city` slug.)*
+
+Rare City is the social strategy city for Rare Friends. Players own buildings inside nine family districts around a central Capital Plaza. Every RF spent on a property physically develops that building, so spending RF is how the city gets built.
 
 > **Everything in this build is simulated.** All RF shown is **SIMULATED RF**. No real tokens move, no wallet is connected, nothing is written to a chain, and every Friend ID is a clearly labelled **Demo Friend**.
 
@@ -41,7 +46,7 @@ Vibeathon category: **Token Activity** (primary), **Economy Potential** (seconda
 
 ### Why this MVP does not use FriendSDK
 
-Generations City needs a persistent shared-world data model (buildings, patrons, monument and Capital history), rich property customization, user-uploaded billboard media, and a full-viewport game UI. None of these fit the current FriendSDK sandbox model. For the hackathon, the game runs on deterministic local state behind small adapter boundaries:
+Rare City needs a persistent shared-world data model (buildings, patrons, monument and Capital history), rich property customization, user-uploaded billboard media, and a full-viewport game UI. None of these fit the current FriendSDK sandbox model. For the hackathon, the game runs on deterministic local state behind small adapter boundaries:
 
 - `src/config/identity.ts` is the **identity adapter**. It holds demo users, demo Friend labels and a `DEMO_PLAYER_ID`. A real integration would replace this data source with wallet connection and Rare Friend ownership lookup.
 - `src/config/districts.ts` defines the **district config** (stable internal ids `d1`…`d9`, geometry colours), and `src/config/districtIdentity.ts` is the **official family identity boundary**: the district → family mapping, official names, art paths, accent colours, credits and supply metadata. See [Rare Friends families](#rare-friends-families-and-district-identity).
@@ -88,13 +93,14 @@ These values are stored as informational metadata only (`FAMILIES[…].supplyCla
 
 ## City scale: a dense city that grows with its community
 
-Rare Friends has roughly 330,000 Friends and more than 273,000 holders. Generations City is designed so that **the physical size of the city reflects the growth of its community**.
+Rare Friends has roughly 330,000 Friends and more than 273,000 holders. Rare City is designed so that **the physical size of the city reflects the growth of its community**.
 
 - **A Friend only gets a property once it becomes active in the city.** An NFT existing does not create a building, and nothing is pre-rendered for inactive Friends.
 - The **nine districts** are permanent, family-level geography: nine 40° wedges around City Hall. A Friend's building always stays in its family district.
 - **Dense, small-footprint city.** Building footprints are narrow: about 55% less width and depth than the first pass (half-size 0.7 world units at Tier 0 up to 1.12 at Tier 6). Heights are unchanged, so T5 and T6 towers dominate the skyline and monuments read as genuinely large. Lots sit about 5.2 units apart in back-to-back rows separated by streets.
 - **Procedural, effectively unbounded wards.** Each district grows outward in wards (neighbourhoods). Ward N's geometry (band radius, four plot rows, a mid-ward street, and plot positions) is derived from its index on demand, with no pre-generated list and no ward limit. Because outer arcs are longer, capacity grows outward: **Ward I: 21, Ward II: 33, Ward III: 44, Ward IV: 55, Ward V: 65 … Ward XX: 229 plots** per district. The civic square (monument park) is protected from plot placement.
-- **Deterministic allocation and ids.** A new Friend takes the first free plot in the lowest open ward of its district (plot id `d4-w0-p6`). When every open plot is taken, the next ward opens automatically, its ground, streets and trees appear, and District Radio announces *"FAMILY DISTRICT OPENS WARD II"*.
+- **Player-chosen plots.** A Friend's family determines its district; the player chooses the exact available plot (plot id such as `d4-w0-p6`). Plot choice is personal preference only: no scoring, RF or earning advantage. When every plot in the open wards is taken, the picker previews the next ward, and confirming a plot there opens that ward atomically with the join. Its ground, streets and trees appear, and District Radio announces *"FAMILY DISTRICT OPENS WARD II"*.
+- **Deterministic auto-allocation remains**: first free plot in the lowest open ward. Chosen placement (`joinAtPlot`) and automatic one-Friend placement (`joinCity`) share one join path (`joinWithAllocation`). Demo Tools bulk growth (`simulateDistrictGrowth`) runs its own intentionally separate loop on the same allocator and building primitives (`allocatePlot` + `newBuilding()`), creating zero-RF simulated residents with no badges and no seasonal allegiance.
 - **Founding Ward prestige only.** Ward I is labelled the *Founding Ward*: addresses show it and owners get a *Founding Resident* badge. It gives no scoring multiplier, cheaper building, better rewards or permanent competitive bonus. Later wards are not weaker, and may later get their own visual character, parks and landmarks.
 
 ```
@@ -108,10 +114,16 @@ City
 **What exists now**
 - `src/config/world.ts` defines the world layout in renderer-independent world units: plaza, ring road, civic square, ward depth, row offsets and plot spacing.
 - `src/game/world.ts` holds the pure geometry: `wardBand(n)`, `wardRows(n)`, `wardCapacity(n)`, `plotWorld()`, `plotId()` and the civic-square monument slots.
-- `src/game/allocation.ts` holds `findAvailablePlot`, `allocatePlot` (opens the next ward at capacity, with an optional caller cap but none by default), `districtGrowth`, `wardName` (roman numerals for any ward) and `isFoundingWard`.
+- `src/game/allocation.ts` holds `findAvailablePlot`, `allocatePlot` (opens the next ward at capacity, with an optional caller cap but none by default), `availablePlots` (every choosable plot, or the next ward's plots when all open wards are full; read-only) and `allocateSpecificPlot` (validates an exact player-chosen plot), plus `districtGrowth`, `wardName` (roman numerals for any ward) and `isFoundingWard`. `joinCity` (auto) and `joinAtPlot` (explicit) in `actions.ts` share one join path.
 - **Tests** cover Ward V and Ward XX geometry (inside their bands, no overlaps, correct capacity, invalid plots rejected), deterministic ids and positions, and filling 19 wards so allocation automatically opens Ward XX.
 - The seed has **180 buildings**: 54 hand-tuned founders plus 126 residents, 14 per district with an **identical tier mix in every district**. Density adds the same constant to every district's scores, so every seeded scenario keeps its exact gaps.
-- **Districts → City Growth → "+ Friend joins"** simulates a new Friend. Sparkling and Family are full (21/21) at seed, so a join there opens Ward II immediately.
+- **Districts → Simulate Real City Growth → "+ Add Friend · choose plot"** (also reachable from the Demo Guide's optional *Watch the city grow · Choose a plot*) adds a simulated Demo Friend:
+  1. The camera frames that family district and every available plot highlights on the real map.
+  2. Choose any highlighted plot (click, tap, or focus + Enter). The bar shows the ward, plot address and the next Demo Friend number.
+  3. **Place Friend here** creates the property on exactly that plot, then the camera WARPs to it and its panel opens.
+  4. Cancel or Escape leaves the city untouched: previewing never consumes a Friend id, plot, clock tick or event.
+
+  Sparkling and Family are full (21/21) at seed, so choosing a plot there previews Ward II, and placing the Friend opens it.
 - **Districts expand independently.** In District Radio → **Demo Tools**, *Simulate Family growth · Open Ward N* is a demo-only control. It activates deterministic **simulated residents** (zero RF, no badges, no seasonal allegiance) through the real plot allocator (`allocatePlot` + `newBuilding`), stopping the moment the next Family ward opens. It adds one summary City Feed entry per click, and no other district changes. At seed the first click opens Ward II (1 resident, because Ward I is already full) and the second fills Ward II and opens Ward III (33 residents). In production, properties would be allocated as actual Friends become active. Reset Demo removes all simulated growth.
 - Unclaimed **open plots** are outlined, and a dashed **ghost ward** beyond each district shows where the city expands next.
 
@@ -287,6 +299,7 @@ e2e/             # Playwright specs
 ## Known limitations
 
 - **All economy activity is simulated and local.** Each browser has its own city, and "multiplayer" rivals are seeded NPCs plus a deterministic rival-move button.
+- **Plot choice is local, not server-reserved.** Exact plot selection is implemented against deterministic local game state using the real ward/plot allocator. There is no server, so there is no multi-user concurrency: two real players could not contend for the same plot here. Production needs authoritative, atomic server-side plot reservation.
 - **Billboard images are browser-local.** They're stored as compressed data URLs in this browser's `localStorage` only. A production version would need server-side storage, moderation, user reporting, and content and abuse controls before any user-generated media is shown to other players.
 - Identities are demo-only. Nothing implies that a Demo Friend ID is a real NFT.
 - Ambient animation (window flicker, beacons, fountain ripples) uses stepped CSS animation on a separate objects layer. It is light on GPU-accelerated browsers but still noticeable on software-rendered or low-power devices. `prefers-reduced-motion` turns it off.
@@ -303,6 +316,7 @@ e2e/             # Playwright specs
 
 - Wallet connection and verified Rare Friend ownership behind `identity.ts`
 - A shared authoritative backend or indexer running the same `src/game` functions, with real-time fan-out of radio events
+- Atomic server-side plot reservation for the plot picker (validate the chosen plot and open the next ward in one transaction, with conflict handling when two Friends pick the same plot)
 - Real RF settlement, such as burn/transfer contracts or a custodial ledger, including idempotent transaction handling, confirmations and reorg handling. Every UI surface that currently says *SIMULATED RF* would need a matching real-transaction confirmation step.
 - Media storage and CDN, moderation queue, reporting and takedown tooling for billboards
 - Confirm the family ↔ district mapping and artwork licensing in `src/config/districtIdentity.ts`, and replace approximate population metadata with an authoritative, live participation source

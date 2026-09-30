@@ -10,10 +10,10 @@ import {
   warpToOwnBuilding,
 } from './helpers.ts'
 
-test.describe('Generations City', () => {
+test.describe('Rare City', () => {
   test('loads the city with nine districts, Capital and Crown', async ({ page }) => {
     await openCity(page)
-    await expect(page).toHaveTitle('Generations City')
+    await expect(page).toHaveTitle('Rare City')
     for (let i = 1; i <= 9; i++) await expect(page.getByTestId(`district-d${i}`)).toBeAttached()
     expect(await page.locator('[data-testid^="building-"][role="button"]').count()).toBeGreaterThanOrEqual(45)
     await expect(page.getByTestId('hud-capital')).toHaveAttribute('data-capital', 'd3')
@@ -319,6 +319,10 @@ test.describe('Generations City', () => {
     await page.getByTestId('nav-standings').click()
     await expect(page.getByTestId('growth-d4')).toHaveAttribute('data-wards', '1')
     await page.getByTestId('join-d4').click()
+    // Family is full: the picker previews Ward II; nothing opens until a plot is confirmed.
+    await page.getByTestId('candidate-plot-d4-1-0').click()
+    await expect(page.getByTestId('ward-d4-1')).toHaveCount(0)
+    await page.getByTestId('placement-confirm').click()
     await expect(page.getByTestId('building-panel')).toHaveAttribute('data-building', '20001')
     await expect(page.getByTestId('ward-d4-1')).toBeAttached()
     await expect(page.getByTestId('ghost-ward-d4')).toHaveAttribute('data-ward', '2')
@@ -328,6 +332,9 @@ test.describe('Generations City', () => {
     // Joining a district with a free plot does not open a ward
     await page.getByTestId('nav-standings').click()
     await page.getByTestId('join-d1').click()
+    await page.locator('[data-testid^="candidate-plot-d1-0-"]').first().click()
+    await page.getByTestId('placement-confirm').click()
+    await expect(page.getByTestId('building-panel')).toHaveAttribute('data-building', '20002')
     await expect(page.getByTestId('ward-d1-1')).toHaveCount(0)
     await page.reload()
     await expect(page.getByTestId('ward-d4-1')).toBeAttached()

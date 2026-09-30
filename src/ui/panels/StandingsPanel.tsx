@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
+import { prefersReducedMotion } from '../motion'
 import { CAPITAL_WEIGHTS, MAX_TIER } from '../../config/economy'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
 import { districtGrowth, wardName } from '../../game/allocation'
@@ -15,7 +16,24 @@ import { FAIRNESS_PRINCIPLE, FAMILIES, FAMILY_KEYS } from '../../config/district
 const RARER_NAMES = FAMILY_KEYS.filter((k) => FAMILIES[k].supplyClass === 'rarer').map((k) => FAMILIES[k].name)
 const RARER_LIST = `${RARER_NAMES.slice(0, -1).join(', ')} and ${RARER_NAMES[RARER_NAMES.length - 1]}`
 
-export function StandingsPanel({ game, onClose, onWarp, onJoin }: { game: GameState; onClose: () => void; onWarp: (id: string) => void; onJoin: (d: DistrictId) => void }) {
+export function StandingsPanel({
+  game,
+  onClose,
+  onWarp,
+  onJoin,
+  growthFocusSeq = 0,
+}: {
+  game: GameState
+  onClose: () => void
+  onWarp: (id: string) => void
+  onJoin: (d: DistrictId) => void
+  /** Bumped by the Demo Guide's "Choose a plot" to scroll City Growth into view. */
+  growthFocusSeq?: number
+}) {
+  const growthRef = useRef<HTMLHeadingElement>(null)
+  useEffect(() => {
+    if (growthFocusSeq > 0) growthRef.current?.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+  }, [growthFocusSeq])
   const rows = useMemo(() => districtStandings(Object.values(game.buildings), game.capital.holder), [game.buildings, game.capital.holder])
   const tallest = useMemo(
     () => Object.values(game.buildings).sort((a, b) => totalBuilt(b) - totalBuilt(a)).slice(0, 4),
@@ -106,9 +124,11 @@ export function StandingsPanel({ game, onClose, onWarp, onJoin }: { game: GameSt
           ))}
         </tbody>
       </table>
-      <h3 className="section-title">City Growth · Wards</h3>
+      <h3 className="section-title" id="city-growth" ref={growthRef} data-testid="city-growth">
+        Simulate Real City Growth · Wards
+      </h3>
       <p className="muted small">
-        Properties exist only for Friends active in the city. When every plot in a district is taken, the next ward opens farther out, with no ward limit. Ward I is the Founding Ward, which is a prestige title only. Simulate a Friend joining (demo identity) to watch the city grow.
+        Choose any family below and add a Demo Friend. Their family determines the district; <b>you choose the exact available plot</b>. When all plots in the current Wards are occupied, the next Ward opens automatically, with no ward limit. Plot location is preference only: no gameplay advantage. Ward I is the Founding Ward, a prestige title only.
       </p>
       <ul className="growth-list">
         {DISTRICTS.map((d) => {
@@ -123,7 +143,7 @@ export function StandingsPanel({ game, onClose, onWarp, onJoin }: { game: GameSt
                 </span>
               </span>
               <button type="button" className="btn sm" onClick={() => onJoin(d.id)} data-testid={`join-${d.id}`}>
-                + Friend joins
+                + Add Friend · choose plot
               </button>
             </li>
           )

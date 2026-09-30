@@ -50,7 +50,7 @@ export const BADGES: readonly BadgeDef[] = [
   { id: 'capital-maker', name: 'Capital Maker', category: 'prestige', metric: 'capitalCaptures', thresholds: [1, 2, 5, 10], description: 'Your action crowned a new Capital district.', glyph: '⚑' },
   { id: 'capital-citizen', name: 'Capital Citizen', category: 'prestige', metric: 'capitalReigns', thresholds: [1, 3, 5, 10], description: 'Owned property in a district when it became the Capital.', glyph: '⌂' },
   { id: 'founding-resident', name: 'Founding Resident', category: 'prestige', metric: 'foundingProperty', thresholds: [1], description: 'Owns a property in a Founding Ward (Ward I). Prestige only: no gameplay advantage.', glyph: '⌘' },
-  { id: 'crowned', name: 'Crowned', category: 'prestige', metric: 'crownedCount', thresholds: [1], description: 'Owned the tallest building in Generations City.', glyph: '♔' },
+  { id: 'crowned', name: 'Crowned', category: 'prestige', metric: 'crownedCount', thresholds: [1], description: 'Owned the tallest building in Rare City.', glyph: '♔' },
 ]
 
 const byId = new Map(BADGES.map((b) => [b.id, b]))

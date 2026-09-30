@@ -5,6 +5,9 @@ import { buildingIdFor, SCENARIO } from '../game/seed'
 import { announcementsFor } from './announce'
 import { Announcements } from './Announcements'
 import { BillboardViewer } from './BillboardViewer'
+import { PlacementBar } from './PlacementBar'
+import { availablePlots, wardName, type PlotCandidate } from '../game/allocation'
+import { plotWorld, type WorldPoint } from '../game/world'
 import { DemoGuide } from './DemoGuide'
 import { demoProgress } from '../game/demo'
 import { findBuildingByFriend } from '../game/actions'
@@ -18,7 +21,6 @@ import { ProfilePanel } from './panels/ProfilePanel'
 import { RadioItem, RadioPanel, RallyCard } from './panels/RadioPanel'
 import { radioDispatches } from '../game/dispatch'
 import { homeDistrict as seasonHome } from '../game/season'
-import { wardName } from '../game/allocation'
 import { StandingsPanel } from './panels/StandingsPanel'
 import { useGameStore } from './store'
 import { useMediaQuery } from './motion'
@@ -30,6 +32,7 @@ export const BUILD_REVEAL_MS = 2000
 
 export type PanelKind = 'board' | 'standings' | 'profile' | 'radio' | 'building' | 'architect'
 
+// Legacy prefix kept after the Rare City rename so returning players keep their guide state.
 const INTRO_KEY = 'generations-city:intro-dismissed'
 
 function readIntro(): boolean {
@@ -59,6 +62,11 @@ export default function App() {
   const [transferSeqDone, setTransferSeqDone] = useState(-1)
   const [confirmReset, setConfirmReset] = useState(false)
   const [mediaView, setMediaView] = useState<string | null>(null)
+  // PLACEMENT MODE (UI-only): which district a joining Friend belongs to and the plot picked.
+  // Entering, previewing and cancelling never touch game state; only "Place Friend here" does.
+  const [placement, setPlacement] = useState<{ districtId: DistrictId; backTo: PanelKind | null; selected: PlotCandidate | null } | null>(null)
+  const [frame, setFrame] = useState<{ seq: number; points: WorldPoint[] } | null>(null)
+  const [growthFocusSeq, setGrowthFocusSeq] = useState(0)
   const [guideOpen, setGuideOpen] = useState(readIntro)
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
   const showNotice = (text: string) => setNotice({ id: Date.now(), text })
@@ -125,6 +133,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (mediaView) setMediaView(null)
+      else if (placement) cancelPlacement()
       else if (confirmReset) setConfirmReset(false)
       else if (panel) {
         setPanel(null)
@@ -134,9 +143,11 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [confirmReset, panel, mediaView])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmReset, panel, mediaView, placement])
 
   const openPanel = useCallback((p: PanelKind) => {
+    setPlacement(null)
     if (p === 'board') setBoardOpened(true)
     setPanel((cur) => (cur === p ? null : p))
     setBackTo(null)
@@ -145,6 +156,7 @@ export default function App() {
   const warp = useCallback(
     (buildingId: string) => {
       if (buildingId === buildingIdFor(SCENARIO.kingmakerFriend)) setWarpedKing(true)
+      setPlacement(null)
       setSelectedId(buildingId)
       setBackTo(panel && panel !== 'building' && panel !== 'architect' ? panel : backTo)
       setPanel('building')
@@ -169,14 +181,40 @@ export default function App() {
   const search = (friendId: number) => {
     const b = findBuildingByFriend(game, friendId)
     if (b) warp(b.id)
-    else showNotice(`Demo Friend #${friendId} hasn't joined Generations City yet.`)
+    else showNotice(`Demo Friend #${friendId} hasn't joined Rare City yet.`)
   }
 
-  const joinDistrict = (districtId: DistrictId) => {
+  const candidates = useMemo(() => (placement ? availablePlots(game, placement.districtId) : []), [game, placement])
+
+  /** "+ Add Friend": enter placement mode for a family district and frame its sites. */
+  const startPlacement = (districtId: DistrictId) => {
+    const sites = availablePlots(game, districtId)
+    setPlacement({ districtId, backTo: panel, selected: null })
+    setPanel(null)
+    setSelectedId(null)
+    setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: sites.map((c) => plotWorld(c.districtId, c.ward, c.plot)) }))
+  }
+
+  function cancelPlacement() {
+    const back = placement?.backTo ?? null
+    setPlacement(null)
+    if (back) setPanel(back)
+  }
+
+  const confirmPlacement = () => {
+    const pick = placement?.selected
+    if (!pick) return
     // The next resident's building id is deterministic, so we can warp to it in the same update.
     const nextId = `b-${20_000 + game.residentSeq + 1}`
-    act({ type: 'join', districtId })
+    act({ type: 'join-at', districtId: pick.districtId, ward: pick.ward, plot: pick.plot })
     warp(nextId)
+  }
+
+  const showCityGrowth = () => {
+    setPlacement(null)
+    setPanel('standings')
+    setBackTo(null)
+    setGrowthFocusSeq((n) => n + 1)
   }
 
   const closePanel = () => {
@@ -187,6 +225,8 @@ export default function App() {
   const doReset = () => {
     act({ type: 'reset' })
     setConfirmReset(false)
+    // Leave placement mode too: its selected plot belongs to the city that was just discarded.
+    setPlacement(null)
     setPanel(null)
     setSelectedId(null)
     setBackTo(null)
@@ -223,7 +263,7 @@ export default function App() {
     panel === 'board' ? (
       <BuildBoardPanel game={game} districtId={boardDistrict} onDistrict={setBoardDistrict} onWarp={warp} onClose={closePanel} />
     ) : panel === 'standings' ? (
-      <StandingsPanel game={game} onClose={closePanel} onWarp={warp} onJoin={joinDistrict} />
+      <StandingsPanel game={game} onClose={closePanel} onWarp={warp} onJoin={startPlacement} growthFocusSeq={growthFocusSeq} />
     ) : panel === 'profile' ? (
       <ProfilePanel game={game} onClose={closePanel} onWarp={warp} />
     ) : panel === 'radio' ? (
@@ -261,7 +301,7 @@ export default function App() {
     !!last?.events.some((e) => e.type === 'build' && e.buildingId === selectedId)
 
   return (
-    <div className={`app${drawer ? ' has-drawer' : ''}${guideOpen ? ' has-intro' : !progress.primaryComplete ? ' has-reminder' : ''}`}>
+    <div className={`app${placement ? ' has-placement' : ''}${drawer ? ' has-drawer' : ''}${guideOpen ? ' has-intro' : !progress.primaryComplete ? ' has-reminder' : ''}`}>
       <div className="sky" aria-hidden="true">
         <div className="stars" />
         <div className="stars stars-2" />
@@ -284,7 +324,21 @@ export default function App() {
         billboardDraft={billboardDraft}
         objectiveId={objectiveId}
         onViewMedia={setMediaView}
+        placement={placement ? { candidates, selected: placement.selected } : null}
+        onPickPlot={(c) => setPlacement((p) => (p ? { ...p, selected: c } : p))}
+        frame={frame}
       />
+      {placement && (
+        <PlacementBar
+          districtId={placement.districtId}
+          candidates={candidates}
+          selected={placement.selected}
+          nextFriendId={20_000 + game.residentSeq + 1}
+          onConfirm={confirmPlacement}
+          onClearSelection={() => setPlacement((p) => (p ? { ...p, selected: null } : p))}
+          onCancel={cancelPlacement}
+        />
+      )}
       <Hud game={game} panel={panel} onPanel={openPanel} onHelp={() => setGuideOpen((v) => !v)} guideOpen={guideOpen} onSearch={search} onFaucet={() => act({ type: 'faucet' })} onReset={() => setConfirmReset(true)} onWarp={warp} />
 
       <div className="radio-ticker" aria-label="Latest District Radio">
@@ -309,6 +363,7 @@ export default function App() {
           onWarpCapital={() => warp(buildingIdFor(SCENARIO.capitalFriend))}
           onWarpMine={() => playerBuilding && warp(playerBuilding.id)}
           onHide={hideGuide}
+          onCityGrowth={showCityGrowth}
         />
       ) : (
         !progress.primaryComplete && (

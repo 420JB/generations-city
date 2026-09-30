@@ -1,6 +1,6 @@
 /**
  * Property media owner messages: short, plain text, and link-free. Viewers stay inside
- * Generations City, so a message may name a project or an @handle but never a URL.
+ * Rare City, so a message may name a project or an @handle but never a URL.
  * Rendered as inert React text only (never HTML, never linkified).
  */
 export const BILLBOARD_MESSAGE_MAX = 180

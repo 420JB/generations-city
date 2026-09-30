@@ -1,5 +1,5 @@
 /**
- * Physical layout of Generations City in WORLD UNITS (renderer-independent).
+ * Physical layout of Rare City in WORLD UNITS (renderer-independent).
  *
  * City -> District (9, permanent family geography)
  *      -> Ward (neighbourhood band; ward 0 is the district core, more open outward)

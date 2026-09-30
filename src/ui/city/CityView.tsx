@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
 import { DEMO_PLAYER_ID } from '../../config/identity'
 import { MONUMENTS } from '../../config/monuments'
@@ -14,6 +14,11 @@ import { CityGround } from './CityGround'
 import { CityDefs } from './Defs'
 import { buildingFocus, buildingHeightPx, detailFor, districtLabelPos, iso, isoW, place, placeBuilding, pylonWorld, gateWorld, type Detail } from './geometry'
 import { DistrictGate } from './DistrictGate'
+import { PlacementLayer } from './PlacementLayer'
+import type { PlotCandidate } from '../../game/allocation'
+import type { WorldPoint } from '../../game/world'
+
+const noop = () => {}
 import { layoutMonuments, type MonumentTransfer } from './monumentLayout'
 import { EmptyCivicSite, MonumentSprite } from './MonumentSprite'
 
@@ -158,6 +163,11 @@ interface Props {
   selectedId: string | null
   onSelect: (id: string | null) => void
   onSelectDistrict: (d: DistrictId) => void
+  /** Placement mode: selectable property sites for a joining Friend (null = off). */
+  placement: { candidates: PlotCandidate[]; selected: { ward: number; plot: number } | null } | null
+  onPickPlot: (c: PlotCandidate) => void
+  /** Fit the camera to these world points (placement framing). */
+  frame: { seq: number; points: WorldPoint[] } | null
   focus: { buildingId: string; seq: number } | null
   fx: Record<string, BuildFx>
   transfers: MonumentTransfer[]
@@ -177,7 +187,8 @@ interface CityObject {
   render: () => ReactNode
 }
 
-export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia }: Props) {
+export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia, placement, onPickPlot, frame }: Props) {
+  const placing = !!placement
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 1280, h: 800 })
   const radius = useMemo(() => cityRadius(game.wards), [game.wards])
@@ -328,10 +339,42 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
         suppressClick.current = false
         return
       }
+      // While choosing a plot, existing properties are visible but not selectable.
+      if (placing) return
       onSelect(id)
     },
-    [onSelect],
+    [onSelect, placing],
   )
+
+  const handlePick = useCallback(
+    (c: PlotCandidate, e: ReactMouseEvent | ReactKeyboardEvent) => {
+      e.stopPropagation()
+      if (suppressClick.current) {
+        suppressClick.current = false
+        return
+      }
+      onPickPlot(c)
+    },
+    [onPickPlot],
+  )
+
+  // Placement framing: fit the candidate sites (existing camera animation, fit-to-bounds zoom).
+  useEffect(() => {
+    if (!frame || frame.points.length === 0) return
+    const pts = frame.points.map((w) => isoW(w))
+    const x0 = Math.min(...pts.map((p) => p.x)) - 70
+    const x1 = Math.max(...pts.map((p) => p.x)) + 70
+    const y0 = Math.min(...pts.map((p) => p.y)) - 150
+    const y1 = Math.max(...pts.map((p) => p.y)) + 60
+    const mobile = size.w < 820
+    // Frame the sites into the map area actually visible between the HUD and the placement bar.
+    const top = mobile ? 250 : 150
+    const bottom = mobile ? 200 : 150
+    const zoom = Math.min(1.25, Math.max(minZoom, Math.min((size.w * 0.96) / (x1 - x0), (size.h - top - bottom) / (y1 - y0))))
+    const screenMidY = (top + size.h - bottom) / 2
+    animateTo({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 - (screenMidY - size.h / 2) / zoom, zoom }, 900)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frame?.seq])
 
   const handleViewMedia = useCallback(
     (id: string) => {
@@ -539,10 +582,10 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
             suppressClick.current = false
             return
           }
-          onSelect(null)
+          if (!placing) onSelect(null)
         }}
         role="application"
-        aria-label="Generations City map. Drag to pan, scroll to zoom, Tab to buildings."
+        aria-label="Rare City map. Drag to pan, scroll to zoom, Tab to buildings."
       >
         <CityDefs />
         <g className="ground-layer" aria-hidden="true">
@@ -555,14 +598,17 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
             </g>
           ))}
         </g>
-        <g className="objects">{visible.map((o) => o.render())}</g>
+        {/* While choosing a plot, city objects are inert so they never swallow a site click. */}
+        <g className="objects" pointerEvents={placing ? 'none' : undefined}>
+          {visible.map((o) => o.render())}
+        </g>
         <g className="monument-labels" pointerEvents="none" aria-hidden="true">
           {monumentLabels.map(({ key, p, s }) => (
             <use key={key} href={`#ml-${key}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) scale(${s})`} />
           ))}
         </g>
         {/* District identity reads above ordinary towers; priority building labels above that. */}
-        <DistrictLabels capital={game.capital.holder} monumentsHeld={monumentsHeld} onSelect={onSelectDistrict} scale={Math.max(0.8, labelScale * 0.95)} radii={labelRadii} />
+        <DistrictLabels capital={game.capital.holder} monumentsHeld={monumentsHeld} onSelect={placing ? noop : onSelectDistrict} scale={Math.max(0.8, labelScale * 0.95)} radii={labelRadii} />
         <g className="priority-labels" pointerEvents="none" aria-hidden="true">
           {priorityLabels.map(({ id, p }) => (
             <use key={id} href={`#bl-${id}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`} />
@@ -571,6 +617,8 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
         <CapitalSign capital={game.capital.holder} featuredFriend={featuredFriend} detail={detail} />
         {game.capital.holder && <CapitalCrest id={game.capital.holder} scale={Math.min(1.15, labelScale)} compact={detail !== 'near'} />}
         <TransferArcs transfers={transfers} placed={placedMonuments} />
+        {/* Placement mode only: candidate sites on top of everything so towers and labels never hide them. */}
+        {placement && <PlacementLayer candidates={placement.candidates} selected={placement.selected} onPick={handlePick} labelScale={labelScale} />}
       </svg>
       <div className="zoom-controls" role="group" aria-label="Camera">
         <button type="button" onClick={() => zoomBy(1.4)} aria-label="Zoom in">

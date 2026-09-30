@@ -1,5 +1,5 @@
 /**
- * Central demo balancing values for Generations City.
+ * Central demo balancing values for Rare City.
  * All RF in this build is SIMULATED — these numbers never touch a chain.
  */
 

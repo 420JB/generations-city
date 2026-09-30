@@ -1,7 +1,7 @@
 /**
  * Level-of-detail planning (renderer-independent).
  *
- * Production Generations City may hold tens or hundreds of thousands of active properties.
+ * Production Rare City may hold tens or hundreds of thousands of active properties.
  * No renderer should draw them all at once. Renderers ask this module what to draw for
  * the current zoom and for each ward, and only mount what is visible.
  *

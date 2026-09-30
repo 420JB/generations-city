@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Generations City — presentation layer
+   Rare City — presentation layer
    ========================================================================== */
 :root {
   --bg: #050814;
@@ -2664,4 +2664,123 @@ button {
 .signals td:first-child {
   text-align: left;
   font-family: var(--font-body);
+}
+
+/* ---------- Placement mode (choose a plot for a joining Friend) ---------- */
+.candidate-plot,
+.candidate-hit {
+  cursor: pointer;
+  outline: none;
+}
+.candidate-fill {
+  fill: rgba(95, 243, 214, 0.2);
+  stroke: #5ff3d6;
+  stroke-width: 1.6;
+  stroke-dasharray: 5 3;
+}
+.candidate-plot.new-ward .candidate-fill {
+  fill: rgba(255, 212, 90, 0.16);
+  stroke: #ffd45a;
+}
+.candidate-plot:hover .candidate-fill,
+.candidate-plot:focus-visible .candidate-fill {
+  fill: rgba(95, 243, 214, 0.38);
+  stroke-width: 2.4;
+  stroke-dasharray: none;
+}
+.candidate-plot.on .candidate-fill {
+  fill: rgba(255, 212, 90, 0.45);
+  stroke: #fff3c4;
+  stroke-width: 2.6;
+  stroke-dasharray: none;
+}
+.placement-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 14;
+  width: min(560px, calc(100vw - 32px));
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--glass);
+  border: 1px solid color-mix(in srgb, var(--dc) 55%, transparent);
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.8), 0 0 24px -12px var(--dc);
+  animation: placementIn 0.25s ease-out;
+}
+@keyframes placementIn {
+  from {
+    opacity: 0;
+  }
+}
+.placement-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.placement-help {
+  margin: 0;
+}
+.placement-selected {
+  font-size: 13px;
+}
+.placement-selected code {
+  font-family: var(--font-num);
+  font-size: 11.5px;
+  color: #ffe7a6;
+}
+.placement-selected .crown-tag {
+  margin: 0 4px;
+}
+.has-placement .radio-ticker,
+.has-placement .intro-card,
+.has-placement .guide-reminder {
+  display: none;
+}
+.guide-grow {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(95, 243, 214, 0.35);
+  background: rgba(95, 243, 214, 0.05);
+}
+.guide-grow p {
+  margin: 0;
+}
+.guide-grow .btn {
+  justify-self: start;
+}
+.placement-new-ward-short {
+  display: none;
+}
+.placement-bar .row-between {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+@media (max-width: 820px) {
+  /* Keep the guide compact on phones: heading + button only for the optional growth tour. */
+  .guide-grow p {
+    display: none;
+  }
+  .placement-new-ward-full {
+    display: none;
+  }
+  .placement-new-ward-short {
+    display: inline;
+  }
+  /* Pinch-zoom still works; the +/- controls would sit under the bar. */
+  .has-placement .zoom-controls {
+    display: none;
+  }
+  .placement-bar {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    transform: none;
+  }
 }

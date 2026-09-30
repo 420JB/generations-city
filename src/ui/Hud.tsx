@@ -41,7 +41,7 @@ export function Hud({ game, panel, onPanel, onFaucet, onReset, onWarp, onHelp, g
           <span />
         </div>
         <div>
-          <h1>GENERATIONS CITY</h1>
+          <h1>RARE CITY</h1>
           <p>Build your Friend. Build your district. Build the city.</p>
         </div>
       </div>

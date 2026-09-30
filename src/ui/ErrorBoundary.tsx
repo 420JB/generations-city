@@ -13,7 +13,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
     return (
       <div className="fatal" role="alert">
         <h1>The city lost power.</h1>
-        <p>Something went wrong while rendering Generations City. Your demo state may be from an older build.</p>
+        <p>Something went wrong while rendering Rare City. Your demo state may be from an older build.</p>
         <pre>{this.state.error.message}</pre>
         <button
           type="button"

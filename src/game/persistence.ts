@@ -1,6 +1,7 @@
 import { createSeedState, STATE_VERSION } from './seed'
 import type { GameState } from './types'
 
+// Legacy key prefix kept on purpose after the Rare City rename: changing it would drop every saved city.
 export const STORAGE_KEY = `generations-city:state:v${STATE_VERSION}`
 
 /** Structural sanity check for persisted state; anything stale or malformed falls back to seed. */
