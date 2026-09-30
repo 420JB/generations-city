@@ -17,6 +17,8 @@ import { BuildingPanel } from './panels/BuildingPanel'
 import { ProfilePanel } from './panels/ProfilePanel'
 import { RadioItem, RadioPanel, RallyCard } from './panels/RadioPanel'
 import { radioDispatches } from '../game/dispatch'
+import { homeDistrict as seasonHome } from '../game/season'
+import { wardName } from '../game/allocation'
 import { StandingsPanel } from './panels/StandingsPanel'
 import { useGameStore } from './store'
 import { useMediaQuery } from './motion'
@@ -210,6 +212,8 @@ export default function App() {
   }
 
   const progress = useMemo(() => demoProgress(game), [game])
+  // Demo growth targets the player's Home District (Family in the seeded demo).
+  const growDistrict: DistrictId = seasonHome(game, DEMO_PLAYER_ID) ?? homeDistrict
   // Rally Calls are derived from current state (never persisted) and refresh after every action.
   const rallyCalls = useMemo(() => radioDispatches(game, DEMO_PLAYER_ID), [game])
   // The next guided objective stays labelled on the map even at overview zoom.
@@ -223,7 +227,19 @@ export default function App() {
     ) : panel === 'profile' ? (
       <ProfilePanel game={game} onClose={closePanel} onWarp={warp} />
     ) : panel === 'radio' ? (
-      <RadioPanel game={game} calls={rallyCalls} onClose={closePanel} onWarp={warp} onRival={() => act({ type: 'rival' })} />
+      <RadioPanel
+        game={game}
+        calls={rallyCalls}
+        growth={{ districtId: growDistrict, nextWard: wardName(game.wards[growDistrict] ?? 1) }}
+        onClose={closePanel}
+        onWarp={warp}
+        onRival={() => act({ type: 'rival' })}
+        onGrow={() => {
+          act({ type: 'grow', districtId: growDistrict })
+          // Existing overview framing (radius-aware) so the newly opened ward is in view.
+          setHomeSeq((n) => n + 1)
+        }}
+      />
     ) : panel === 'building' && selectedId && game.buildings[selectedId] ? (
       <BuildingPanel
         key={selectedId}

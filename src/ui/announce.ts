@@ -42,6 +42,9 @@ export function announcementsFor(game: GameState, events: GameEvent[], seq: numb
     } else if (e.type === 'tier-up' && e.byUserId === DEMO_PLAYER_ID) {
       const b = game.buildings[e.buildingId]
       banners.push({ key, kind: 'tier', title: `TIER ${e.toTier} REACHED`, body: `${friendLabel(b.friendId)} · ${districtName(b.districtId)}`, color: getDistrict(b.districtId).color })
+    } else if (e.type === 'ward-opened' && e.simulatedResidents) {
+      const n = e.simulatedResidents
+      banners.push({ key, kind: 'growth', title: `${districtTitle(e.districtId).toUpperCase()} EXPANDS`, body: `${wardName(e.ward)} opened · ${n} simulated Friend${n === 1 ? '' : 's'} activated (demo)`, color: getDistrict(e.districtId).color })
     } else if (e.type === 'ward-opened') {
       banners.push({ key, kind: 'growth', title: 'THE CITY GROWS', body: `The ${districtTitle(e.districtId)} opens ${wardName(e.ward)}`, color: getDistrict(e.districtId).color })
     } else if (e.type === 'badge' && e.userId === DEMO_PLAYER_ID) {

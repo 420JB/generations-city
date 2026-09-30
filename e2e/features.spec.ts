@@ -163,3 +163,71 @@ test('desktop builds keep the drawer in place', async ({ page }) => {
   await page.waitForTimeout(500)
   await expect(drawer).toHaveAttribute('data-revealing', 'false')
 })
+
+test.describe('Demo-only Family growth + ward labels', () => {
+  async function zoomToMid(page: Page) {
+    const city = page.getByTestId('city')
+    await expect
+      .poll(
+        async () => {
+          if ((await city.getAttribute('data-detail')) === 'far') await page.getByRole('button', { name: 'Zoom in' }).click()
+          return city.getAttribute('data-detail')
+        },
+        { intervals: [500], timeout: 20_000 },
+      )
+      .not.toBe('far')
+  }
+
+  test('each click opens the next Family ward through the allocator; other districts stay put', async ({ page }) => {
+    await openCity(page)
+    await page.getByTestId('guide-hide').click()
+    // Ward I markers: stable ids, Founding Ward wording (prestige only).
+    await zoomToMid(page)
+    for (const d of ['d1', 'd4', 'd7']) {
+      await expect(page.getByTestId(`ward-marker-${d}-0`)).toContainText('WARD I')
+      await expect(page.getByTestId(`ward-marker-${d}-0`)).toContainText('FOUNDING WARD')
+    }
+    await page.getByRole('button', { name: 'City overview' }).click()
+
+    await page.getByTestId('nav-radio').click()
+    const grow = page.getByTestId('simulate-growth')
+    await expect(page.getByTestId('demo-tools')).toContainText('DEMO TOOLS')
+    await expect(grow).toHaveAttribute('data-next-ward', 'Ward II')
+    await expect(grow).toContainText('Simulate Family growth · Open Ward II')
+    await expect(page.getByTestId('ward-d4-1')).toHaveCount(0)
+    await expect(page.getByTestId('ghost-ward-d4')).toHaveAttribute('data-ward', '1')
+
+    await grow.click()
+    await expect(page.getByTestId('ward-d4-1')).toBeAttached()
+    await expect(page.getByTestId('ghost-ward-d4')).toHaveAttribute('data-ward', '2')
+    await expect(grow).toHaveAttribute('data-next-ward', 'Ward III')
+    await expect(page.getByTestId('radio-list')).toContainText('FAMILY DISTRICT · WARD II OPENED')
+    await expect(page.getByTestId('radio-list')).toContainText('simulated Friend')
+    await zoomToMid(page)
+    await expect(page.getByTestId('ward-marker-d4-1')).toContainText('WARD II')
+    await expect(page.getByTestId('ward-marker-d4-1')).toHaveAttribute('data-founding', 'false')
+    await expect(page.getByTestId('ward-marker-d4-1')).not.toContainText('FOUNDING')
+
+    await grow.click()
+    await expect(page.getByTestId('ward-d4-2')).toBeAttached()
+    await expect(page.getByTestId('ghost-ward-d4')).toHaveAttribute('data-ward', '3')
+    await expect(grow).toHaveAttribute('data-next-ward', 'Ward IV')
+    await zoomToMid(page)
+    await expect(page.getByTestId('ward-marker-d4-2')).toContainText('WARD III')
+    await expect(page.getByTestId('ward-marker-d4-2')).not.toContainText('FOUNDING')
+
+    // No other district expanded.
+    for (const d of ['d1', 'd2', 'd3', 'd5', 'd6', 'd7', 'd8', 'd9']) {
+      await expect(page.getByTestId(`ghost-ward-${d}`)).toHaveAttribute('data-ward', '1')
+      await expect(page.getByTestId(`ward-${d}-1`)).toHaveCount(0)
+    }
+
+    // Persists through reload; Reset Demo restores the seeded geometry.
+    await page.reload()
+    await expect(page.getByTestId('ward-d4-2')).toBeAttached()
+    await page.getByTestId('reset-demo').click()
+    await page.getByTestId('confirm-reset').click()
+    await expect(page.getByTestId('ward-d4-1')).toHaveCount(0)
+    await expect(page.getByTestId('ghost-ward-d4')).toHaveAttribute('data-ward', '1')
+  })
+})

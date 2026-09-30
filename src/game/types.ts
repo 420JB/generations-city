@@ -149,7 +149,8 @@ export type GameEvent =
   | { type: 'patron-level'; buildingId: string; userId: string; level: string }
   | { type: 'fixture'; buildingId: string; fixtureId: FixtureId }
   | { type: 'resident-joined'; buildingId: string; districtId: DistrictId; ward: number; plot: number }
-  | { type: 'ward-opened'; districtId: DistrictId; ward: number }
+  /** `simulatedResidents` is set only by the demo-only growth simulator. */
+  | { type: 'ward-opened'; districtId: DistrictId; ward: number; simulatedResidents?: number }
 
 export interface ActionResult {
   state: GameState

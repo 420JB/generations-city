@@ -1624,16 +1624,6 @@ button {
 }
 
 /* Radio */
-.rival-box {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(255, 107, 122, 0.07);
-  border: 1px solid rgba(255, 107, 122, 0.3);
-  margin-bottom: 12px;
-}
 .radio-list,
 .radio-ticker ul {
   list-style: none;
@@ -1690,6 +1680,23 @@ button {
 /* Rally Calls: current opportunities (City Feed items are plain history). */
 .radio-sub {
   margin: -4px 0 8px;
+}
+.demo-tools {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.02);
+}
+.demo-tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.demo-tools-row .btn {
+  flex: 1 1 auto;
 }
 .rally-list {
   margin-bottom: 16px;

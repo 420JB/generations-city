@@ -16,6 +16,7 @@ import {
   setBillboardMessage,
   swapLandscape,
 } from '../game/actions'
+import { simulateDistrictGrowth } from '../game/growth'
 import { clearState, loadState, saveState } from '../game/persistence'
 import { createSeedState } from '../game/seed'
 import type { ActionResult, GameEvent, GameState } from '../game/types'
@@ -32,6 +33,7 @@ export type GameAction =
   | { type: 'faucet' }
   | { type: 'rival' }
   | { type: 'join'; districtId: DistrictId }
+  | { type: 'grow'; districtId: DistrictId }
   | { type: 'reset' }
 
 export interface StoreState {
@@ -69,6 +71,8 @@ function run(game: GameState, action: GameAction): ActionResult {
       return rivalTurn(game, P)
     case 'join':
       return joinCity(game, action.districtId)
+    case 'grow':
+      return simulateDistrictGrowth(game, action.districtId)
     case 'reset':
       return { state: createSeedState(), events: [] }
   }

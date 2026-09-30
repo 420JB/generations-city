@@ -1,6 +1,6 @@
 import type { GameState, RadioEntry } from '../../game/types'
 import type { RallyCall } from '../../game/dispatch'
-import { getDistrict } from '../../config/districts'
+import { getDistrict, type DistrictId } from '../../config/districts'
 import { PanelHeader } from '../common'
 
 const RADIO_ICON: Record<RadioEntry['kind'], string> = {
@@ -69,7 +69,30 @@ export function RallyCard({ call, onWarp, testId }: { call: RallyCall; onWarp: (
   )
 }
 
-export function RadioPanel({ game, calls, onClose, onWarp, onRival }: { game: GameState; calls: RallyCall[]; onClose: () => void; onWarp: (id: string) => void; onRival: () => void }) {
+export interface GrowthTool {
+  districtId: DistrictId
+  /** Name of the ward the next simulation will open, e.g. "Ward II". */
+  nextWard: string
+}
+
+export function RadioPanel({
+  game,
+  calls,
+  growth,
+  onClose,
+  onWarp,
+  onRival,
+  onGrow,
+}: {
+  game: GameState
+  calls: RallyCall[]
+  growth: GrowthTool
+  onClose: () => void
+  onWarp: (id: string) => void
+  onRival: () => void
+  onGrow: () => void
+}) {
+  const growName = getDistrict(growth.districtId).name
   return (
     <section className="panel radio-panel" aria-label="District Radio" data-testid="radio">
       <PanelHeader kicker="GAME-GENERATED BROADCASTS · NO FREE-TEXT CHAT" title="District Radio" onClose={onClose} />
@@ -86,13 +109,27 @@ export function RadioPanel({ game, calls, onClose, onWarp, onRival }: { game: Ga
           No urgent moves right now. The Build Board lists every opportunity.
         </p>
       )}
-      <h3 className="section-title">City Feed</h3>
-      <div className="rival-box">
-        <div className="small muted">Rival districts are simulated. Advance the city to watch them counter-attack using the same economy rules.</div>
-        <button type="button" className="btn sm" onClick={onRival} data-testid="rival-turn">
-          ⏭ Simulate rival move
-        </button>
+      <div className="demo-tools" data-testid="demo-tools">
+        <div className="kicker">DEMO TOOLS · SIMULATIONS</div>
+        <div className="demo-tools-row">
+          <button type="button" className="btn sm" onClick={onRival} data-testid="rival-turn" title="A simulated rival district funds its best move through the same economy rules">
+            ⏭ Simulate rival move
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={onGrow}
+            data-testid="simulate-growth"
+            data-district={growth.districtId}
+            data-next-ward={growth.nextWard}
+            title="Activates simulated demo residents through the real plot allocator until the next ward opens"
+          >
+            ⌂ Simulate {growName} growth · Open {growth.nextWard}
+          </button>
+        </div>
+        <div className="small muted">Simulated rivals and demo residents only; no real Friends or RF.</div>
       </div>
+      <h3 className="section-title">City Feed</h3>
       <ul className="radio-list" data-testid="radio-list">
         {game.radio.map((e) => (
           <RadioItem key={e.id} e={e} />

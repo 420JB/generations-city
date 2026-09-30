@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
 import { WORLD } from '../../config/world'
 import { isFoundingWard, wardName } from '../../game/allocation'
-import { districtAngle, plotWorld, polar, wardBand, wardCapacity, wardStreetRadius } from '../../game/world'
+import { districtAngle, plotWorld, polar, usableHalfSpanDeg, wardBand, wardCapacity, wardStreetRadius } from '../../game/world'
 import { PlazaGround } from './CapitalPlaza'
 import { arcPath, boxCorners, isoEllipse, isoW, sectorPolygon, type Detail } from './geometry'
 
@@ -34,14 +34,42 @@ function StreetTrees({ id, r, count = 9, span = 34 }: { id: DistrictId; r: numbe
   )
 }
 
-/** Small ground marker naming a ward; Ward I carries its Founding Ward prestige title. */
-function WardMarker({ id, ward }: { id: DistrictId; ward: number }) {
-  const p = isoW(polar(wardBand(ward).outer - 1.2, districtAngle(id) + 17.5))
+/**
+ * Where a ward's name sits: in the lot-free strip at the ward's outer boundary, well inside
+ * the wedge (60% of the usable half-span off-centre), clear of the radial boundary avenues and
+ * of the district label at the wedge centre, for every district. An inner ward's label sits
+ * on the boundary itself (midway between its last lots and the next ward's first lots); the
+ * outermost ward's label nudges out into the empty margin before the ghost ward.
+ */
+function wardMarkerPlacement(id: DistrictId, ward: number, outermost: boolean) {
+  const r = wardBand(ward).outer + (outermost ? 1 : 0)
+  const deg = districtAngle(id) + usableHalfSpanDeg() * 0.6
+  const p = isoW(polar(r, deg))
+  // Run the text along the ward boundary as it appears on screen (never upside down).
+  const q = isoW(polar(r, deg + 1))
+  let rot = (Math.atan2(q.y - p.y, q.x - p.x) * 180) / Math.PI
+  if (rot > 90) rot -= 180
+  if (rot < -90) rot += 180
+  return { p, rot }
+}
+
+/** Civic ground signage naming a ward; Ward I adds its Founding Ward title (prestige only). */
+function WardMarker({ id, ward, outermost }: { id: DistrictId; ward: number; outermost: boolean }) {
+  const { p, rot } = wardMarkerPlacement(id, ward, outermost)
+  const founding = isFoundingWard(ward)
+  // Thin dark halo in the ground colour (not a card) so roads/ground never swallow the text.
+  const halo = { stroke: '#0b0f1a', strokeOpacity: 0.85, strokeWidth: 3, strokeLinejoin: 'round' as const, paintOrder: 'stroke' as const }
   return (
-    <text x={p.x} y={p.y} textAnchor="middle" fontSize={8} fontWeight={800} fill="#c9d3ea" fillOpacity={0.55} letterSpacing={1.5}>
-      {wardName(ward).toUpperCase()}
-      {isFoundingWard(ward) ? ' · FOUNDING WARD' : ''}
-    </text>
+    <g className="ward-marker" data-testid={`ward-marker-${id}-${ward}`} data-ward={ward} data-founding={founding ? 'true' : 'false'} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) rotate(${rot.toFixed(1)})`}>
+      <text x={0} y={founding ? -1 : 3} textAnchor="middle" fontSize={9} fontWeight={800} fill="#d3dbee" fillOpacity={0.72} letterSpacing={2.2} {...halo}>
+        {wardName(ward).toUpperCase()}
+      </text>
+      {founding && (
+        <text x={0} y={8} textAnchor="middle" fontSize={5.6} fontWeight={700} fill="#e8d7a6" fillOpacity={0.55} letterSpacing={2.6} {...halo}>
+          FOUNDING WARD
+        </text>
+      )}
+    </g>
   )
 }
 
@@ -173,7 +201,6 @@ export const CityGround = memo(function CityGround({
                 {w > 0 && <StreetArc id={d.id} r={wardBand(w).inner} width={12} />}
                 <StreetArc id={d.id} r={wardStreetRadius(w)} width={10} />
                 <StreetTrees id={d.id} r={wardStreetRadius(w) + 1.6} count={9 + w * 3} />
-                {detail !== 'far' && <WardMarker id={d.id} ward={w} />}
               </g>
             ))}
             <GhostWard id={d.id} ward={open} detail={detail} />
@@ -193,6 +220,15 @@ export const CityGround = memo(function CityGround({
           </g>
         )
       })}
+      {/* Ward names last in the ground layer: no road paints over them; buildings still sit above. */}
+      {detail !== 'far' && (
+        <g className="ward-markers">
+          {DISTRICTS.flatMap((d) => {
+            const open = wards[d.id] ?? 1
+            return Array.from({ length: open }, (_, w) => <WardMarker key={`${d.id}-${w}`} id={d.id} ward={w} outermost={w === open - 1} />)
+          })}
+        </g>
+      )}
       <PlazaGround capital={capital} />
     </g>
   )
