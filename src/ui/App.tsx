@@ -4,6 +4,7 @@ import { DEMO_PLAYER_ID } from '../config/identity'
 import { buildingIdFor, SCENARIO } from '../game/seed'
 import { announcementsFor } from './announce'
 import { Announcements } from './Announcements'
+import { BillboardViewer } from './BillboardViewer'
 import { DemoGuide } from './DemoGuide'
 import { demoProgress } from '../game/demo'
 import { findBuildingByFriend } from '../game/actions'
@@ -14,9 +15,16 @@ import { ArchitectPanel } from './panels/ArchitectPanel'
 import { BuildBoardPanel } from './panels/BuildBoardPanel'
 import { BuildingPanel } from './panels/BuildingPanel'
 import { ProfilePanel } from './panels/ProfilePanel'
-import { RadioItem, RadioPanel } from './panels/RadioPanel'
+import { RadioItem, RadioPanel, RallyCard } from './panels/RadioPanel'
+import { radioDispatches } from '../game/dispatch'
 import { StandingsPanel } from './panels/StandingsPanel'
 import { useGameStore } from './store'
+import { useMediaQuery } from './motion'
+
+/** Phone layout breakpoint (matches the bottom-sheet drawer in index.css). */
+const MOBILE_QUERY = '(max-width: 820px)'
+/** Mobile build reveal: roughly the construction FX payoff (+RF float 2.2s, tween 1.1s). */
+export const BUILD_REVEAL_MS = 2000
 
 export type PanelKind = 'board' | 'standings' | 'profile' | 'radio' | 'building' | 'architect'
 
@@ -48,6 +56,7 @@ export default function App() {
   const [dismissedSeq, setDismissedSeq] = useState(-1)
   const [transferSeqDone, setTransferSeqDone] = useState(-1)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [mediaView, setMediaView] = useState<string | null>(null)
   const [guideOpen, setGuideOpen] = useState(readIntro)
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
   const showNotice = (text: string) => setNotice({ id: Date.now(), text })
@@ -66,6 +75,19 @@ export default function App() {
 
   const last = store.last
   const lastSeq = last?.seq ?? 0
+
+  // MOBILE BUILD REVEAL: after a successful spend that visibly builds the selected property,
+  // the bottom-sheet drawer slides away so the growth / tier-up FX is unobstructed, then
+  // returns on its own (still mounted, so the same building, tab and state come back).
+  const isMobile = useMediaQuery(MOBILE_QUERY)
+  const buildSeq = last && last.events.some((e) => e.type === 'build') ? last.seq : -1
+  const [revealDoneSeq, setRevealDoneSeq] = useState(-1)
+  useEffect(() => {
+    if (buildSeq < 0) return
+    // A newer build replaces this timer, so back-to-back builds extend the reveal cleanly.
+    const t = window.setTimeout(() => setRevealDoneSeq(buildSeq), BUILD_REVEAL_MS)
+    return () => window.clearTimeout(t)
+  }, [buildSeq])
 
   // Derived, time-boxed presentation of the latest action.
   const { banners, badges } = useMemo(
@@ -100,7 +122,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (confirmReset) setConfirmReset(false)
+      if (mediaView) setMediaView(null)
+      else if (confirmReset) setConfirmReset(false)
       else if (panel) {
         setPanel(null)
         setBackTo(null)
@@ -109,7 +132,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [confirmReset, panel])
+  }, [confirmReset, panel, mediaView])
 
   const openPanel = useCallback((p: PanelKind) => {
     if (p === 'board') setBoardOpened(true)
@@ -187,6 +210,8 @@ export default function App() {
   }
 
   const progress = useMemo(() => demoProgress(game), [game])
+  // Rally Calls are derived from current state (never persisted) and refresh after every action.
+  const rallyCalls = useMemo(() => radioDispatches(game, DEMO_PLAYER_ID), [game])
   // The next guided objective stays labelled on the map even at overview zoom.
   const objectiveId = !progress.primaryComplete ? progress.kingmakerId : !progress.capital ? buildingIdFor(SCENARIO.capitalFriend) : null
 
@@ -198,7 +223,7 @@ export default function App() {
     ) : panel === 'profile' ? (
       <ProfilePanel game={game} onClose={closePanel} onWarp={warp} />
     ) : panel === 'radio' ? (
-      <RadioPanel game={game} onClose={closePanel} onWarp={warp} onRival={() => act({ type: 'rival' })} />
+      <RadioPanel game={game} calls={rallyCalls} onClose={closePanel} onWarp={warp} onRival={() => act({ type: 'rival' })} />
     ) : panel === 'building' && selectedId && game.buildings[selectedId] ? (
       <BuildingPanel
         key={selectedId}
@@ -213,8 +238,14 @@ export default function App() {
       <ArchitectPanel game={game} buildingId={selectedId} act={act} onClose={() => select(null)} onBack={() => setPanel('building')} onBillboardDraft={onBillboardDraft} />
     ) : null
 
+  const revealing =
+    isMobile &&
+    buildSeq > revealDoneSeq &&
+    (panel === 'building' || panel === 'architect') &&
+    !!last?.events.some((e) => e.type === 'build' && e.buildingId === selectedId)
+
   return (
-    <div className={`app${drawer ? ' has-drawer' : ''}${guideOpen ? ' has-intro' : ''}`}>
+    <div className={`app${drawer ? ' has-drawer' : ''}${guideOpen ? ' has-intro' : !progress.primaryComplete ? ' has-reminder' : ''}`}>
       <div className="sky" aria-hidden="true">
         <div className="stars" />
         <div className="stars stars-2" />
@@ -236,6 +267,7 @@ export default function App() {
         homeSeq={homeSeq}
         billboardDraft={billboardDraft}
         objectiveId={objectiveId}
+        onViewMedia={setMediaView}
       />
       <Hud game={game} panel={panel} onPanel={openPanel} onHelp={() => setGuideOpen((v) => !v)} guideOpen={guideOpen} onSearch={search} onFaucet={() => act({ type: 'faucet' })} onReset={() => setConfirmReset(true)} onWarp={warp} />
 
@@ -244,8 +276,9 @@ export default function App() {
           <span className="live-dot" /> DISTRICT RADIO
         </button>
         <ul>
-          {game.radio.slice(0, 2).map((e) => (
-            <RadioItem key={e.id} e={e} onWarp={warp} />
+          {rallyCalls[0] && <RallyCard key={rallyCalls[0].id} call={rallyCalls[0]} onWarp={warp} testId="ticker-rally" />}
+          {game.radio.slice(0, 1).map((e) => (
+            <RadioItem key={e.id} e={e} />
           ))}
         </ul>
       </div>
@@ -269,7 +302,11 @@ export default function App() {
         )
       )}
 
-      {drawer && <aside className="drawer">{drawer}</aside>}
+      {drawer && (
+        <aside className={`drawer${revealing ? ' revealing' : ''}`} data-testid="drawer" data-revealing={revealing ? 'true' : 'false'} inert={revealing || undefined}>
+          {drawer}
+        </aside>
+      )}
 
       <Announcements banners={banners} badges={badges} onDismiss={() => setDismissedSeq(lastSeq)} />
 
@@ -284,6 +321,8 @@ export default function App() {
         </div>
       )}
       {store.restored && lastSeq === 0 && <div className="restore-note">Restored your local demo city</div>}
+
+      {mediaView && <BillboardViewer game={game} buildingId={mediaView} onClose={() => setMediaView(null)} />}
 
       {confirmReset && (
         <div className="modal-backdrop" role="presentation" onClick={() => setConfirmReset(false)}>

@@ -19,6 +19,7 @@ import {
 } from './economy'
 import { alertEntry, appendRadio, describeImpact, radioFromEvents, rallyEntry } from './narration'
 import { impactScore, projectImpact } from './projection'
+import { validateBillboardMessage } from './media'
 import type { ActionResult, Building, GameEvent, GameState, UserCounters } from './types'
 
 const MAX_SINGLE_SPEND = 1_000_000
@@ -262,7 +263,17 @@ export function setBillboardImage(state: GameState, buildingId: string, userId: 
   return ownerEdit(state, buildingId, userId, (b) => {
     if (!b.fixtures.includes('billboard')) return 'Billboard fixture not installed'
     if (image !== null && !/^data:image\/(jpeg|png|webp);base64,/.test(image)) return 'Unsupported image'
-    b.billboard = { image, updatedClock: state.clock + 1 }
+    b.billboard = { ...b.billboard, image, updatedClock: state.clock + 1 }
+  })
+}
+
+/** Owner message on the billboard: trimmed, ≤180 chars, plain text, no links. */
+export function setBillboardMessage(state: GameState, buildingId: string, userId: string, message: string): ActionResult {
+  return ownerEdit(state, buildingId, userId, (b) => {
+    if (!b.fixtures.includes('billboard')) return 'Billboard fixture not installed'
+    const v = validateBillboardMessage(message)
+    if (!v.ok) return v.error
+    b.billboard = { ...b.billboard, message: v.value, updatedClock: state.clock + 1 }
   })
 }
 

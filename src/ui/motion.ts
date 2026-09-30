@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 export function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -32,4 +32,17 @@ export function useTween(target: number, duration = 1100): number {
     return () => cancelAnimationFrame(raf)
   }, [target, duration])
   return value
+}
+
+/** Live media-query match (e.g. the phone layout breakpoint). */
+export function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    (notify) => {
+      const mql = window.matchMedia?.(query)
+      mql?.addEventListener('change', notify)
+      return () => mql?.removeEventListener('change', notify)
+    },
+    () => !!window.matchMedia?.(query).matches,
+    () => false,
+  )
 }

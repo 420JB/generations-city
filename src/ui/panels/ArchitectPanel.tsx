@@ -11,6 +11,7 @@ import { loadBillboardFile, sourceFromUrl, type BillboardSource } from '../image
 import { BillboardEditor } from './BillboardEditor'
 import { MEDIA_TIERS, mediaTierFor } from '../../config/media'
 import type { GameAction } from '../store'
+import { BILLBOARD_MESSAGE_MAX, validateBillboardMessage } from '../../game/media'
 
 type Tab = 'design' | 'fixtures' | 'landscape' | 'billboard'
 
@@ -33,6 +34,19 @@ export function ArchitectPanel({ game, buildingId, act, onClose, onBack, onBillb
   const [pickSlot, setPickSlot] = useState<number | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const savedMessage = b.billboard.message ?? ''
+  const [msgDraft, setMsgDraft] = useState(savedMessage)
+  const [msgError, setMsgError] = useState<string | null>(null)
+  const saveMessage = (raw: string) => {
+    const v = validateBillboardMessage(raw)
+    if (!v.ok) {
+      setMsgError(v.error)
+      return
+    }
+    setMsgError(null)
+    setMsgDraft(v.value ?? '')
+    act({ type: 'billboard-message', buildingId, message: v.value ?? '' })
+  }
   const [editing, setEditing] = useState<BillboardSource | null>(null)
   // Never leave an unsaved preview on the building after the panel closes.
   useEffect(() => () => onBillboardDraft(null), [onBillboardDraft])
@@ -304,6 +318,46 @@ export function ArchitectPanel({ game, buildingId, act, onClose, onBack, onBillb
                 </>
               )}
               {uploadError && <p className="error small" role="alert">{uploadError}</p>}
+              <div className="bb-message-editor">
+                <label htmlFor="bb-message" className="kicker">
+                  OWNER MESSAGE · OPTIONAL · PLAIN TEXT, NO LINKS
+                </label>
+                <textarea
+                  id="bb-message"
+                  rows={3}
+                  maxLength={BILLBOARD_MESSAGE_MAX}
+                  value={msgDraft}
+                  placeholder="e.g. Rare Friends meetup tonight · Follow @example"
+                  onChange={(e) => {
+                    setMsgDraft(e.target.value)
+                    setMsgError(null)
+                  }}
+                  aria-invalid={msgError ? true : undefined}
+                  aria-describedby="bb-message-help"
+                  data-testid="billboard-message-input"
+                />
+                <div className="row-between small" id="bb-message-help">
+                  <span className="muted">Shown when someone opens your billboard. Name a project or @handle; URLs are blocked.</span>
+                  <span className="muted" data-testid="billboard-message-count">
+                    {msgDraft.trim().length}/{BILLBOARD_MESSAGE_MAX}
+                  </span>
+                </div>
+                {msgError && (
+                  <p className="error small" role="alert" data-testid="billboard-message-error">
+                    {msgError}
+                  </p>
+                )}
+                <div className="row gap">
+                  <button type="button" className="btn sm primary" disabled={msgDraft.trim() === savedMessage} onClick={() => saveMessage(msgDraft)} data-testid="billboard-message-save">
+                    Save message
+                  </button>
+                  {savedMessage && (
+                    <button type="button" className="btn ghost sm" onClick={() => saveMessage('')} data-testid="billboard-message-clear">
+                      Remove message
+                    </button>
+                  )}
+                </div>
+              </div>
               <p className="muted small">
                 JPEG, PNG or WebP up to 5 MB. Images are cropped to the billboard surface, compressed in your browser and stored only in this browser&apos;s local demo state. A production version would require server storage plus moderation, reporting and content controls.
               </p>

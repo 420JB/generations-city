@@ -13,6 +13,7 @@ import {
   rivalTurn,
   setArchitecture,
   setBillboardImage,
+  setBillboardMessage,
   swapLandscape,
 } from '../game/actions'
 import { clearState, loadState, saveState } from '../game/persistence'
@@ -26,6 +27,7 @@ export type GameAction =
   | { type: 'landscape-place'; buildingId: string; slot: number; kind: LandscapeKind | null }
   | { type: 'landscape-swap'; buildingId: string; a: number; b: number }
   | { type: 'billboard'; buildingId: string; image: string | null }
+  | { type: 'billboard-message'; buildingId: string; message: string }
   | { type: 'rally'; buildingId: string }
   | { type: 'faucet' }
   | { type: 'rival' }
@@ -57,6 +59,8 @@ function run(game: GameState, action: GameAction): ActionResult {
       return swapLandscape(game, action.buildingId, P, action.a, action.b)
     case 'billboard':
       return setBillboardImage(game, action.buildingId, P, action.image)
+    case 'billboard-message':
+      return setBillboardMessage(game, action.buildingId, P, action.message)
     case 'rally':
       return rally(game, action.buildingId, P)
     case 'faucet':

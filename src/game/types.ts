@@ -16,6 +16,8 @@ export interface BillboardState {
   /** Browser-local compressed data URL, or null when no image is set. */
   image: string | null
   updatedClock: number | null
+  /** Optional plain-text, link-free owner message (absent in older saves). */
+  message?: string | null
 }
 
 export interface Building {

@@ -152,15 +152,23 @@ button {
   cursor: pointer;
   outline: none;
 }
-.bldg:hover > polygon:first-child,
-.bldg:focus-visible > polygon:first-child {
+.billboard-hit {
+  cursor: zoom-in;
+  outline: none;
+}
+.billboard-hit:focus-visible > g > rect:first-of-type,
+.billboard-hit:focus-visible rect {
+  stroke: var(--teal);
+}
+.bldg:hover > polygon:first-of-type,
+.bldg:focus-visible > polygon:first-of-type {
   stroke: #fff;
   stroke-width: 2;
 }
 .bldg:hover .bldg-label rect {
   stroke: #fff;
 }
-.bldg:focus-visible > polygon:first-child {
+.bldg:focus-visible > polygon:first-of-type {
   stroke: var(--teal);
   stroke-width: 3;
 }
@@ -1273,6 +1281,26 @@ button {
 .inventory .inv {
   margin-right: 10px;
 }
+.bb-message-editor {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0 6px;
+}
+.bb-message-editor textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+.bb-message-editor textarea[aria-invalid='true'] {
+  border-color: var(--danger);
+}
 .bb-preview {
   display: grid;
   place-items: center;
@@ -1612,6 +1640,8 @@ button {
   padding: 0;
   margin: 0;
   display: grid;
+  /* minmax(0, …): a card's long content must wrap, never widen the column past the panel. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 .radio-item {
@@ -1656,6 +1686,96 @@ button {
 }
 .radio-item.kind-crown .radio-head {
   color: var(--gold);
+}
+/* Rally Calls: current opportunities (City Feed items are plain history). */
+.radio-sub {
+  margin: -4px 0 8px;
+}
+.rally-list {
+  margin-bottom: 16px;
+  gap: 10px;
+  /* Cards respond to the panel's own width (drawer, phone sheet), not the viewport. */
+  container: rally / inline-size;
+}
+.rally-card {
+  min-width: 0;
+  align-items: center;
+  background: color-mix(in srgb, var(--dc) 9%, rgba(255, 255, 255, 0.03));
+  border: 1px solid color-mix(in srgb, var(--dc) 35%, transparent);
+  border-left: 3px solid var(--dc);
+}
+.rally-card .radio-detail {
+  overflow-wrap: anywhere;
+}
+.rally-tag {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  color: color-mix(in srgb, var(--dc) 70%, white);
+}
+.rally-card.rally-monument .rally-tag,
+.rally-card.rally-capital .rally-tag,
+.rally-card.rally-crown .rally-tag {
+  color: var(--gold);
+}
+.rally-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #ffe7a6;
+}
+.rally-earns {
+  color: var(--muted);
+  font-weight: 600;
+}
+.rally-chip {
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 99px;
+  background: rgba(255, 212, 90, 0.1);
+  border: 1px solid rgba(255, 212, 90, 0.35);
+}
+.rally-card .warp-btn {
+  flex: none;
+  white-space: nowrap;
+}
+/* Narrow panels (desktop drawer, phone sheet): stack the card, CTA on its own full-width row. */
+@container rally (max-width: 520px) {
+  .rally-list .rally-card {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 10px;
+    align-items: start;
+    padding: 12px 12px 12px 10px;
+  }
+  .rally-list .rally-card .radio-icon {
+    margin-top: 2px;
+  }
+  .rally-list .rally-card .radio-head {
+    margin-top: 2px;
+  }
+  .rally-list .rally-card .radio-detail {
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+  .rally-list .rally-card .rally-badges {
+    margin-top: 8px;
+  }
+  .rally-list .rally-card .warp-btn {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    align-self: auto;
+    min-height: 40px;
+    font-size: 11px;
+  }
+}
+.radio-ticker .rally-card .rally-badges {
+  display: none;
 }
 .radio-ticker {
   position: absolute;
@@ -1892,6 +2012,41 @@ button {
   background: #0e1428;
   border: 1px solid var(--line);
 }
+.media-viewer {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.media-viewer-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  object-fit: cover;
+  margin: 10px 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0a0d16;
+}
+.media-viewer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.media-viewer-message {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid var(--gold);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .modal h2 {
   margin: 0 0 8px;
   font-family: var(--font-display);
@@ -1966,6 +2121,15 @@ button {
     width: auto;
     height: 55vh;
     animation-name: sheetIn;
+    transition:
+      transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+      opacity 0.32s ease;
+  }
+  /* Mobile build reveal: the sheet slides away while the construction FX plays. */
+  .drawer.revealing {
+    transform: translateY(calc(100% + 16px));
+    opacity: 0;
+    pointer-events: none;
   }
   @keyframes sheetIn {
     from {
@@ -1993,7 +2157,9 @@ button {
   }
   .radio-ticker li + li,
   .radio-ticker .radio-detail,
-  .has-intro .radio-ticker {
+  .has-intro .radio-ticker,
+  /* Phones: the collapsed guide pill sits where the ticker's Rally card (and its WARP) is. */
+  .has-reminder .radio-ticker {
     display: none;
   }
   .intro-card {

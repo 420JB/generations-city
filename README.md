@@ -159,7 +159,9 @@ Taller buildings are more valuable visual real estate. This is a deliberate feat
 | **T6** | Landmark crown screen: gold-framed rooftop screen visible city-wide | Yes (rendered on the roof) |
 
 - `src/config/media.ts` defines the ladder. Architect Mode → Billboard shows the ladder with your current tier highlighted, and building panels show *"Property media: … · Tier N unlocks …"*.
-- There is no ad marketplace, rentals, payments or backend. Production user-generated media would need server storage plus moderation, reporting and content controls.
+- **Billboards are interactive media surfaces.** Click (or focus and press Enter on) any billboard with an image, at any zoom, and an in-app viewer shows the full image, the Demo Friend, owner, family district and the owner's message. Nothing navigates away and the image is not a link.
+- **Link-free owner message.** In Architect → Billboard, owners can attach an optional plain-text message of up to 180 characters. Anything URL- or domain-like is rejected with an inline error, including `https://`, `www.`, bare domains such as `example.xyz`, markdown/HTML links and schemes like `mailto:` or `ipfs://`. It is never silently stripped. Project names and `@handles` are fine. The viewer renders the message as inert text (`src/game/media.ts`).
+- In this MVP, images and messages are local browser state, like the rest of the demo. Media rental, advertising and other property-media economics are intentionally possible later but **not implemented**: there is no ad marketplace, rentals, payments or backend. Production user-generated media would need server storage plus moderation, reporting and content controls.
 
 ### Search and WARP
 
@@ -204,7 +206,10 @@ Shared city / game state (src/game, src/config: pure TypeScript, no DOM)
 - Landscaping in 8 bounded lot slots (unlocked by Architect Level) with place, swap and remove
 - Permanent badges with levels; profile with stats, live (temporary) titles and permanent history
 - Patron zone on each building, capped at three external identities, with more detail at close zoom
-- **District Radio**: game-generated broadcasts, critical-threshold alerts and **Rally pings**. There is no free-text chat.
+- **District Radio**, with no free-text chat, in two parts:
+  - **Rally Calls** are a live dispatcher: up to four current, personalised opportunities derived from state (`src/game/dispatch.ts`) and never stored. They cover monument capture and defense, Capital attack and defense, the Crown, badges and near-tier buildings, ranked in that order. Each shortlisted spend is simulated through the real `contribute()` path, so cards only claim the monument, Capital or badge outcomes that spend actually produces, for example *"38 RF captures the Grand Fountain · earns Kingmaker"*. Map-changing calls only ever help your Home District, and completed calls disappear after the move.
+  - **City Feed** is the history of game-generated broadcasts, critical-threshold alerts and Rally pings. It has no WARP buttons.
+- **Mobile build reveal** (UX polish): on phones, a successful build or contribution briefly slides the building sheet away so the growth or tier-up FX is visible, then brings it back on the same building.
 - `localStorage` persistence under a versioned key, with a structural validity check and fallback to the seed
 
 **P2**

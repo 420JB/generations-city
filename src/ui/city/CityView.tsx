@@ -164,6 +164,8 @@ interface Props {
   drawerOpen: boolean
   homeSeq: number
   billboardDraft: { buildingId: string; image: string | null } | null
+  /** Open the property-media viewer for a building's billboard. */
+  onViewMedia: (buildingId: string) => void
   /** Current guided objective building (always labelled, always full detail). */
   objectiveId: string | null
 }
@@ -175,7 +177,7 @@ interface CityObject {
   render: () => ReactNode
 }
 
-export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId }: Props) {
+export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 1280, h: 800 })
   const radius = useMemo(() => cityRadius(game.wards), [game.wards])
@@ -331,6 +333,18 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     [onSelect],
   )
 
+  const handleViewMedia = useCallback(
+    (id: string) => {
+      // A drag that ended on a billboard is a pan, not a click.
+      if (suppressClick.current) {
+        suppressClick.current = false
+        return
+      }
+      onViewMedia(id)
+    },
+    [onViewMedia],
+  )
+
   const monumentsHeld = useMemo(() => {
     const out: Record<string, number> = {}
     for (const m of MONUMENTS) {
@@ -406,9 +420,10 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
                 onSelect={handleSelect}
                 labelScale={labelScale}
                 isObjective={objectiveId === b.id}
+                onViewMedia={handleViewMedia}
               />
             ) : (
-              <MassingSprite building={b} total={total} onSelect={handleSelect} />
+              <MassingSprite building={b} total={total} onSelect={handleSelect} onViewMedia={handleViewMedia} />
             )}
           </g>
         ),
@@ -477,7 +492,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     const f = iso(9.5, 9.5)
     out.push({ depth: 19, key: 'fountain', bbox: { x0: f.x - 50, x1: f.x + 50, y0: f.y - 40, y1: f.y + 30 }, render: () => <g key="fountain" transform={`translate(${f.x} ${f.y})`}><Fountain /></g> })
     return out.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key))
-  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId])
+  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId])
 
   // Viewport culling: only mount what intersects the camera view.
   const visible = objects.filter((o) => intersects(o.bbox, view))
