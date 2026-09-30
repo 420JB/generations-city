@@ -10,6 +10,8 @@
 Rare City is the social strategy city for Rare Friends. Players own buildings inside nine family districts around a central Capital Plaza. Every RF spent on a property physically develops that building, so spending RF is how the city gets built.
 
 > **Everything in this build is simulated.** All RF shown is **SIMULATED RF**. No real tokens move, no wallet is connected, nothing is written to a chain, and every Friend ID is a clearly labelled **Demo Friend**.
+>
+> This is deliberate. The Vibeathon MVP rules ask entries to keep purchases and rewards simulated and clearly labelled, and live contracts and real-money transactions are not required to submit. Rare City uses that MVP model to demonstrate the full downstream effect of RF activity safely, end to end.
 
 ---
 
@@ -38,7 +40,10 @@ The judge-facing path takes about 30 seconds. The **Demo Guide** card walks thro
 
 Vibeathon category: **Token Activity** (primary), **Economy Potential** (secondary).
 
-- RF spending is not a tax or fee bolted onto the game. It *is* the game action, and it physically builds the world.
+**RF is not merely an entry fee or reward currency. RF spending is the action that physically changes the world.**
+
+RF contributions advance property progression; contributions to other Friends can also build patron recognition. Property progression feeds district competition: it can transfer monuments, shift the prestige-only Capital and decide the City Crown race for the tallest building. District Radio and Rally Calls react to the resulting world state.
+
 - Players keep choosing where their RF matters most: their own tower, their own architecture, a rival's near-tier building, a monument capture, Capital offense or defense, their personal badges, or the tallest-building race.
 - **Customization is construction.** Fixture and landscaping purchases count toward both Owner Build and Total Build, so buying something beautiful never costs you progression.
 - Owner Build is its own progression track. Only personal owner spending raises your **Architect Level**, which unlocks facades, roofs, windows, lighting and landscaping slots. Other players can help your building tier up, but they can't earn your Architect progress for you. This keeps "only snipe near-tier buildings" from being the optimal strategy.
@@ -314,10 +319,13 @@ e2e/             # Playwright specs
 
 ## Production integration needs
 
+Production replaces the simulated settlement, identity and local-state adapters with verified wallet ownership, RF transaction settlement and authoritative shared state, without redesigning the deterministic game/economy rules demonstrated here. None of that infrastructure exists in this build, and each piece still needs its own design and security work:
+
 - Wallet connection and verified Rare Friend ownership behind `identity.ts`
 - A shared authoritative backend or indexer running the same `src/game` functions, with real-time fan-out of radio events
 - Atomic server-side plot reservation for the plot picker (validate the chosen plot and open the next ward in one transaction, with conflict handling when two Friends pick the same plot)
 - Real RF settlement, such as burn/transfer contracts or a custodial ledger, including idempotent transaction handling, confirmations and reorg handling. Every UI surface that currently says *SIMULATED RF* would need a matching real-transaction confirmation step.
+- A defined destination for verified RF spends. In the Vibeathon build no RF is actually transferred, burned or distributed. Production will pair verified RF settlement with an explicit token sink/reward policy (for example a burn or a bounded burn/reward split); the exact allocation is a separate tokenomics decision, not yet made, and does not change the gameplay model demonstrated here.
 - Media storage and CDN, moderation queue, reporting and takedown tooling for billboards
 - Confirm the family ↔ district mapping and artwork licensing in `src/config/districtIdentity.ts`, and replace approximate population metadata with an authoritative, live participation source
 - A spatial index or tile service for wards and plots so clients stream only what is near the camera, plus an index for Friend ID → property search
