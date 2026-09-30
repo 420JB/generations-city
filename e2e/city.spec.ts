@@ -252,6 +252,39 @@ test.describe('Generations City', () => {
     await expect(page.getByTestId('billboard-4471').locator('[data-billboard-image]')).toHaveCount(0)
   })
 
+  test('billboard media stays visible at far, mid and near zoom', async ({ page }) => {
+    await openCity(page)
+    await page.getByTestId('guide-hide').click()
+    await warpToOwnBuilding(page)
+    await page.getByTestId('open-architect').click()
+    await page.getByTestId('tab-billboard').click()
+    await page.getByTestId('buy-billboard').click()
+    await page.getByTestId('confirm-fixture-billboard').click()
+    await page.getByTestId('billboard-input').setInputFiles({ name: 'ad.png', mimeType: 'image/png', buffer: makePng(200, 100) })
+    await page.getByTestId('billboard-save').click()
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'City overview' }).click()
+    const city = page.getByTestId('city')
+    const billboard = page.getByTestId('billboard-4471')
+    for (const detail of ['far', 'mid', 'near'] as const) {
+      // Zoom about the tower (wheel zooms around the cursor) until this detail level is reached.
+      await expect
+        .poll(async () => {
+          const current = await city.getAttribute('data-detail')
+          if (current !== detail) {
+            const box = (await page.getByTestId('building-4471').boundingBox())!
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.3)
+            await page.mouse.wheel(0, -150)
+          }
+          return city.getAttribute('data-detail')
+        }, { intervals: [300], timeout: 20_000 })
+        .toBe(detail)
+      await expect(billboard).toHaveAttribute('data-detail', detail)
+      await expect(billboard.locator('[data-billboard-image]')).toHaveAttribute('href', /^data:image\/jpeg;base64,/)
+      await expect(billboard).toBeVisible()
+    }
+  })
+
   test('demo guide can be dismissed, reopened, survives reload and RESET restores it', async ({ page }) => {
     await openCity(page)
     const guide = page.getByTestId('demo-guide')

@@ -411,8 +411,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
 
       {/* Property media ladder: T4 facade billboard; T5+ rooftop (see config/media.ts) */}
       {b.fixtures.includes('billboard') && shaft.kind !== 'podium' && tier < 5 && (
-        <g transform={rightFace(shaft.a, shaft.z1)} data-testid={`billboard-${b.friendId}`} data-media="facade">
-          <Billboard w={boxCorners(shaft.a).faceW} id={b.id} image={detail === 'far' ? null : b.billboard.image} accent={accent} />
+        <g transform={rightFace(shaft.a, shaft.z1)} data-testid={`billboard-${b.friendId}`} data-media="facade" data-detail={detail}>
+          <Billboard w={boxCorners(shaft.a).faceW} id={b.id} image={b.billboard.image} accent={accent} detail={detail} />
         </g>
       )}
 
@@ -423,8 +423,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       </g>
 
       {b.fixtures.includes('billboard') && tier >= 5 && (
-        <g transform={`translate(0 ${-topSec.z1})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'}>
-          <RooftopBillboard id={b.id} image={detail === 'far' ? null : b.billboard.image} accent={accent} landmark={tier >= 6} />
+        <g transform={`translate(0 ${-topSec.z1})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail={detail}>
+          <RooftopBillboard id={b.id} image={b.billboard.image} accent={accent} landmark={tier >= 6} detail={detail} />
         </g>
       )}
 
@@ -542,6 +542,9 @@ function BuildingLabel({ text, isPlayer, stroke, objective, far }: { text: strin
 export const MassingSprite = memo(function MassingSprite({ building: b, total, onSelect }: { building: Building; total: number; onSelect: (id: string) => void }) {
   const tier = tierFor(total)
   const d = getDistrict(b.districtId)
+  const hasMedia = b.fixtures.includes('billboard') && tier >= 4
+  const H = buildingHeightPx(total)
+  const accent = LIGHTING_COLORS[b.architecture.lighting]?.accent ?? LIGHTING_COLORS.warm.accent
   return (
     <g
       className="bldg massing"
@@ -559,6 +562,17 @@ export const MassingSprite = memo(function MassingSprite({ building: b, total, o
         left={<rect x={2} y={3} width={boxCorners(footprintHalf(tier)).faceW - 4} height={Math.max(0, buildingHeightPx(total) - 6)} fill="url(#win-grid-warm)" opacity={0.55} />}
         right={<rect x={2} y={3} width={boxCorners(footprintHalf(tier)).faceW - 4} height={Math.max(0, buildingHeightPx(total) - 6)} fill="url(#win-grid-warm)" opacity={0.4} />}
       />
+      {/* Property media stays visible on massing stand-ins too (lightweight far treatment). */}
+      {hasMedia &&
+        (tier < 5 ? (
+          <g transform={rightFace(footprintHalf(tier), H * 0.7)} data-testid={`billboard-${b.friendId}`} data-media="facade" data-detail="far">
+            <Billboard w={boxCorners(footprintHalf(tier)).faceW} id={`${b.id}-m`} image={b.billboard.image} accent={accent} detail="far" />
+          </g>
+        ) : (
+          <g transform={`translate(0 ${-H})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail="far">
+            <RooftopBillboard id={`${b.id}-m`} image={b.billboard.image} accent={accent} landmark={tier >= 6} detail="far" />
+          </g>
+        ))}
     </g>
   )
 })
@@ -601,24 +615,26 @@ function Entrance({ kind, w, h, accent, trim }: { kind: string; w: number; h: nu
  * catwalk ledge, two brackets into the facade and gooseneck lamps above. The 2:1 image
  * crop is unchanged, so framing/edit behaviour is identical.
  */
-function Billboard({ w, id, image, accent }: { w: number; id: string; image: string | null; accent: string }) {
+function Billboard({ w, id, image, accent, detail }: { w: number; id: string; image: string | null; accent: string; detail: Detail }) {
   const bw = facadeBillboardWidth(w)
   const bh = bw * 0.5
   const x = (w - bw) / 2
   const y = 9
   const clip = `bb-clip-${id}`
   const brackets = [Math.max(1.5, w * 0.22), Math.min(w - 1.5, w * 0.78)]
+  // far: framed panel only · mid: + catwalk ledge · near: + brackets, lamp arms, caption
+  const near = detail === 'near'
   return (
     <g>
-      {/* Brackets from the facade to the ledge, plus lamp arms */}
-      {brackets.map((bx) => (
-        <g key={bx} stroke="#7d8598" strokeWidth={0.9}>
-          <line x1={bx} y1={y + bh + 2} x2={bx} y2={y + bh + 6} />
-          <line x1={bx} y1={y - 2} x2={bx} y2={y - 5.5} />
-          <line x1={bx} y1={y - 5.5} x2={bx + 1.5} y2={y - 5.5} />
-        </g>
-      ))}
-      <rect x={x - 2} y={y - 2} width={bw + 4} height={bh + 4} fill="#0a0d16" stroke={accent} strokeWidth={0.9} />
+      {near &&
+        brackets.map((bx) => (
+          <g key={bx} stroke="#7d8598" strokeWidth={0.9}>
+            <line x1={bx} y1={y + bh + 2} x2={bx} y2={y + bh + 6} />
+            <line x1={bx} y1={y - 2} x2={bx} y2={y - 5.5} />
+            <line x1={bx} y1={y - 5.5} x2={bx + 1.5} y2={y - 5.5} />
+          </g>
+        ))}
+      <rect x={x - 2} y={y - 2} width={bw + 4} height={bh + 4} fill="#0a0d16" stroke={accent} strokeWidth={detail === 'far' ? 1.4 : 0.9} />
       <clipPath id={clip}>
         <rect x={x} y={y} width={bw} height={bh} />
       </clipPath>
@@ -626,24 +642,27 @@ function Billboard({ w, id, image, accent }: { w: number; id: string; image: str
         <image href={image} x={x} y={y} width={bw} height={bh} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clip})`} data-billboard-image="true" />
       ) : (
         <g>
-          <rect x={x} y={y} width={bw} height={bh} fill={accent} opacity={0.18} />
-          <text x={x + bw / 2} y={y + bh / 2 + 2.2} textAnchor="middle" fontSize={bw < 34 ? 5 : 6} fontWeight={800} fill={accent} letterSpacing={0.8}>
-            BILLBOARD
-          </text>
+          {/* No image yet: a lit accent panel (never a black hole at overview zoom). */}
+          <rect x={x} y={y} width={bw} height={bh} fill={accent} opacity={detail === 'far' ? 0.55 : 0.18} />
+          {detail !== 'far' && (
+            <text x={x + bw / 2} y={y + bh / 2 + 2.2} textAnchor="middle" fontSize={bw < 34 ? 5 : 6} fontWeight={800} fill={accent} letterSpacing={0.8}>
+              BILLBOARD
+            </text>
+          )}
         </g>
       )}
-      <rect x={x} y={y} width={bw} height={bh} fill="url(#face-shade)" opacity={0.4} />
-      {/* Catwalk ledge under the panel and lamp heads above it */}
-      <rect x={x - 2.5} y={y + bh + 2} width={bw + 5} height={1.4} fill="#5d6477" />
-      {brackets.map((bx) => (
-        <circle key={bx} cx={bx + 1.5} cy={y - 5} r={0.9} fill="#fff4cf" />
-      ))}
+      {near && <rect x={x} y={y} width={bw} height={bh} fill="url(#face-shade)" opacity={0.4} />}
+      {detail !== 'far' && <rect x={x - 2.5} y={y + bh + 2} width={bw + 5} height={1.4} fill="#5d6477" />}
+      {near &&
+        brackets.map((bx) => (
+          <circle key={bx} cx={bx + 1.5} cy={y - 5} r={0.9} fill="#fff4cf" />
+        ))}
     </g>
   )
 }
 
 /** T5 skyline rooftop billboard / T6 landmark crown screen standing on the roof. */
-function RooftopBillboard({ id, image, accent, landmark }: { id: string; image: string | null; accent: string; landmark: boolean }) {
+function RooftopBillboard({ id, image, accent, landmark, detail }: { id: string; image: string | null; accent: string; landmark: boolean; detail: Detail }) {
   const W = landmark ? 92 : 68
   const H = W / 2
   const legs = landmark ? 14 : 10
@@ -663,15 +682,18 @@ function RooftopBillboard({ id, image, accent, landmark }: { id: string; image: 
           <image href={image} x={0} y={0} width={W} height={H} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clip})`} data-billboard-image="true" />
         ) : (
           <g>
-            <rect x={0} y={0} width={W} height={H} fill={frame} opacity={0.18} />
-            <text x={W / 2} y={H / 2 + 3} textAnchor="middle" fontSize={8} fontWeight={800} fill={frame} letterSpacing={1}>
-              {landmark ? 'LANDMARK SCREEN' : 'SKYLINE BILLBOARD'}
-            </text>
+            <rect x={0} y={0} width={W} height={H} fill={frame} opacity={detail === 'far' ? 0.5 : 0.18} />
+            {detail !== 'far' && (
+              <text x={W / 2} y={H / 2 + 3} textAnchor="middle" fontSize={8} fontWeight={800} fill={frame} letterSpacing={1}>
+                {landmark ? 'LANDMARK SCREEN' : 'SKYLINE BILLBOARD'}
+              </text>
+            )}
           </g>
         )}
-        {[0.2, 0.5, 0.8].map((f) => (
-          <circle key={f} cx={W * f} cy={-3} r={1.4} fill="#fff6cc" />
-        ))}
+        {detail === 'near' &&
+          [0.2, 0.5, 0.8].map((f) => (
+            <circle key={f} cx={W * f} cy={-3} r={1.4} fill="#fff6cc" />
+          ))}
       </g>
     </g>
   )
