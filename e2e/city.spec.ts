@@ -30,6 +30,21 @@ test.describe('Generations City', () => {
     await page.screenshot({ path: `${SHOTS}/01-city-overview.png` })
   })
 
+  test('the map renders as one SVG root sharing a single camera viewBox', async ({ page }) => {
+    await openCity(page)
+    const roots = page.locator('[data-testid="city"] > svg')
+    await expect(roots).toHaveCount(1)
+    const svg = page.getByTestId('city-svg')
+    await expect(svg).toHaveAttribute('role', 'application')
+    // Ground and objects live in that same root.
+    await expect(svg.locator('.ground-layer [data-testid="district-d4"]')).toBeAttached()
+    await expect(svg.locator('[data-testid="building-812"]')).toBeAttached()
+    const before = await svg.getAttribute('viewBox')
+    await page.getByRole('button', { name: 'Zoom in' }).click()
+    await expect.poll(() => svg.getAttribute('viewBox')).not.toBe(before)
+    await expect(roots).toHaveCount(1)
+  })
+
   test('Build Board surfaces the high-impact building and WARP flies to it', async ({ page }) => {
     await openCity(page)
     await page.getByTestId('nav-board').click()

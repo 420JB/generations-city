@@ -507,13 +507,11 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
 
   return (
     <div className={`city-wrap detail-${detail}`} ref={wrapRef} data-testid="city" data-zoom={cam.zoom.toFixed(2)} data-detail={detail} data-rendered={visible.length} data-radius={radius}>
-      {/* Static ground layer: never animates, so its raster is reused while objects animate. */}
-      <svg className="city-svg layer-ground" viewBox={viewBox} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        <CityDefs />
-        <CityGround wards={game.wards} capital={game.capital.holder} radius={radius} detail={detail} occupied={occupied} />
-      </svg>
+      {/* ONE svg root with ONE camera viewBox: ground and objects always repaint together
+          (separate roots could tear apart during production pan/zoom). Ground draws first. */}
       <svg
-        className="city-svg layer-objects"
+        className="city-svg"
+        data-testid="city-svg"
         viewBox={viewBox}
         preserveAspectRatio="xMidYMid meet"
         onPointerDown={onPointerDown}
@@ -531,6 +529,10 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
         role="application"
         aria-label="Generations City map. Drag to pan, scroll to zoom, Tab to buildings."
       >
+        <CityDefs />
+        <g className="ground-layer" aria-hidden="true">
+          <CityGround wards={game.wards} capital={game.capital.holder} radius={radius} detail={detail} occupied={occupied} />
+        </g>
         <g className="gates">
           {gates.map(({ d, g }) => (
             <g key={d.id} transform={`translate(${g.screen.x.toFixed(1)} ${g.screen.y.toFixed(1)})`}>

@@ -130,7 +130,7 @@ Drawing every property as SVG nodes would not scale. The renderer asks a level-o
 - **Label discipline:** at overview and mid zoom, only the selected building, your buildings (**YOU**), the Crown holder, the current guided objective (**★ #812**) and monuments are labelled. Up close, Tier 3+ buildings get labels, and smaller buildings reveal theirs on hover or focus.
 - `src/game/lod.ts` contains the renderer-independent LOD logic (`wardRenderMode`, `representativeBuildings`, `intersects`). It is unit-tested.
 - **Viewport culling is live.** Only objects whose bounds intersect the camera view are mounted (see `data-rendered` on the map element).
-- The static ground renders in its own SVG layer, separate from the animated objects layer.
+- Ground and objects render in a single SVG root with one camera `viewBox`, so they always repaint together during pan and zoom (two stacked SVG roots could tear apart in production builds).
 - In production, the server or indexer would also stream only nearby wards or tiles to the client. The client should never hold every property.
 
 ## Seasons: Representative Friend and Home District

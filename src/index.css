@@ -139,10 +139,6 @@ button {
 .city-wrap:active {
   cursor: grabbing;
 }
-.layer-objects {
-  /* Own compositing layer: ambient animation repaints never re-raster the ground. */
-  will-change: transform;
-}
 .city-svg {
   position: absolute;
   inset: 0;
