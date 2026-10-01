@@ -7,8 +7,8 @@ import { PlazaGround } from './CapitalPlaza'
 import { propertyLotHalf } from './roads'
 import { arcPath, boxCorners, isoEllipse, isoW, sectorPolygon, type Detail } from './geometry'
 
-function StreetArc({ id, r, width = 11 }: { id: DistrictId; r: number; width?: number }) {
-  const d = arcPath(id, r)
+function StreetArc({ id, r, width = 11, rot }: { id: DistrictId; r: number; width?: number; rot: number }) {
+  const d = arcPath(id, r, undefined, rot)
   return (
     <g>
       <polyline points={d} fill="none" stroke="#0c0f1a" strokeWidth={width} strokeLinecap="round" />
@@ -17,12 +17,12 @@ function StreetArc({ id, r, width = 11 }: { id: DistrictId; r: number; width?: n
   )
 }
 
-function StreetTrees({ id, r, count = 9, span = 34 }: { id: DistrictId; r: number; count?: number; span?: number }) {
+function StreetTrees({ id, r, count = 9, span = 34, rot }: { id: DistrictId; r: number; count?: number; span?: number; rot: number }) {
   const a = districtAngle(id)
   return (
     <g>
       {Array.from({ length: count }, (_, i) => {
-        const p = isoW(polar(r, a - span / 2 + (i * span) / (count - 1)))
+        const p = isoW(polar(r, a - span / 2 + (i * span) / (count - 1)), rot)
         return (
           <g key={i} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`}>
             <rect x={-0.6} y={-6} width={1.2} height={6} fill="#3d2e22" />
@@ -42,12 +42,13 @@ function StreetTrees({ id, r, count = 9, span = 34 }: { id: DistrictId; r: numbe
  * on the boundary itself (midway between its last lots and the next ward's first lots); the
  * outermost ward's label nudges out into the empty margin before the ghost ward.
  */
-function wardMarkerPlacement(id: DistrictId, ward: number, outermost: boolean) {
+function wardMarkerPlacement(id: DistrictId, ward: number, outermost: boolean, cityRot: number) {
   const r = wardBand(ward).outer + (outermost ? 1 : 0)
   const deg = districtAngle(id) + usableHalfSpanDeg() * 0.6
-  const p = isoW(polar(r, deg))
-  // Run the text along the ward boundary as it appears on screen (never upside down).
-  const q = isoW(polar(r, deg + 1))
+  const p = isoW(polar(r, deg), cityRot)
+  // Run the text along the ward boundary as it appears on screen (never upside down),
+  // re-derived from the projected boundary so it stays readable at any city rotation.
+  const q = isoW(polar(r, deg + 1), cityRot)
   let rot = (Math.atan2(q.y - p.y, q.x - p.x) * 180) / Math.PI
   if (rot > 90) rot -= 180
   if (rot < -90) rot += 180
@@ -55,8 +56,8 @@ function wardMarkerPlacement(id: DistrictId, ward: number, outermost: boolean) {
 }
 
 /** Civic ground signage naming a ward; Ward I adds its Founding Ward title (prestige only). */
-function WardMarker({ id, ward, outermost }: { id: DistrictId; ward: number; outermost: boolean }) {
-  const { p, rot } = wardMarkerPlacement(id, ward, outermost)
+function WardMarker({ id, ward, outermost, rot: cityRot }: { id: DistrictId; ward: number; outermost: boolean; rot: number }) {
+  const { p, rot } = wardMarkerPlacement(id, ward, outermost, cityRot)
   const founding = isFoundingWard(ward)
   // Thin dark halo in the ground colour (not a card) so roads/ground never swallow the text.
   const halo = { stroke: '#0b0f1a', strokeOpacity: 0.85, strokeWidth: 3, strokeLinejoin: 'round' as const, paintOrder: 'stroke' as const }
@@ -75,16 +76,16 @@ function WardMarker({ id, ward, outermost }: { id: DistrictId; ward: number; out
 }
 
 /** Faint outline of the next ward that will open as more Friends join. */
-function GhostWard({ id, ward, detail }: { id: DistrictId; ward: number; detail: Detail }) {
+function GhostWard({ id, ward, detail, rot }: { id: DistrictId; ward: number; detail: Detail; rot: number }) {
   const band = wardBand(ward)
   const cap = wardCapacity(ward)
-  const mid = isoW(polar((band.inner + band.outer) / 2, districtAngle(id)))
+  const mid = isoW(polar((band.inner + band.outer) / 2, districtAngle(id)), rot)
   return (
     <g className="ghost-ward" data-testid={`ghost-ward-${id}`} data-ward={ward}>
-      <polygon points={sectorPolygon(id, band.inner + 0.6, band.outer)} fill="#8fb4ff" fillOpacity={0.035} stroke="#8fb4ff" strokeOpacity={0.3} strokeDasharray="10 10" strokeWidth={1.6} />
+      <polygon points={sectorPolygon(id, band.inner + 0.6, band.outer, undefined, rot)} fill="#8fb4ff" fillOpacity={0.035} stroke="#8fb4ff" strokeOpacity={0.3} strokeDasharray="10 10" strokeWidth={1.6} />
       {Array.from({ length: cap }, (_, i) => {
-        const p = isoW(plotWorld(id, ward, i))
-        const c = boxCorners(propertyLotHalf(id, ward, i))
+        const p = isoW(plotWorld(id, ward, i), rot)
+        const c = boxCorners(propertyLotHalf(id, ward, i, 0, rot))
         return (
           <polygon
             key={i}
@@ -106,33 +107,33 @@ function GhostWard({ id, ward, detail }: { id: DistrictId; ward: number; detail:
 }
 
 /** Temporary Capital identity on the ground: gold causeway, civic border, string lights. */
-function CapitalGround({ id }: { id: DistrictId }) {
+function CapitalGround({ id, rot }: { id: DistrictId; rot: number }) {
   const d = getDistrict(id)
   const a = districtAngle(id)
   const strip = (r0: number, r1: number, half: number) => {
     const pts = [polar(r0, a - (half / r0) * 57.3), polar(r1, a - (half / r1) * 57.3), polar(r1, a + (half / r1) * 57.3), polar(r0, a + (half / r0) * 57.3)]
-    return pts.map((p) => isoW(p)).map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+    return pts.map((p) => isoW(p, rot)).map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
   }
   return (
     <g className="capital-ground" data-testid="capital-ground" data-district={id}>
-      <polygon points={sectorPolygon(id, WORLD.ringRoadOuter, WORLD.coreWard.outer)} fill={d.color} fillOpacity={0.07} />
-      <polygon points={sectorPolygon(id, WORLD.plazaRadius + 0.3, WORLD.ringRoadOuter - 0.3, 6)} fill="#ffd45a" fillOpacity={0.14} />
+      <polygon points={sectorPolygon(id, WORLD.ringRoadOuter, WORLD.coreWard.outer, undefined, rot)} fill={d.color} fillOpacity={0.07} />
+      <polygon points={sectorPolygon(id, WORLD.plazaRadius + 0.3, WORLD.ringRoadOuter - 0.3, 6, rot)} fill="#ffd45a" fillOpacity={0.14} />
       <polygon points={strip(WORLD.plazaRadius - 2, WORLD.civicSquare.inner + 0.5, 2.2)} fill="#ffd45a" fillOpacity={0.35} stroke="#ffe7a6" strokeOpacity={0.8} />
       <polygon points={strip(WORLD.plazaRadius - 2, WORLD.civicSquare.inner + 0.5, 1)} fill="#b8322f" fillOpacity={0.55} />
-      <polyline points={arcPath(id, WORLD.coreWard.outer - 0.8)} fill="none" stroke="#ffd45a" strokeWidth={2.4} strokeDasharray="1 9" strokeLinecap="round" />
-      <polygon points={sectorPolygon(id, WORLD.civicSquare.inner, WORLD.civicSquare.outer, 2.6)} fill="none" stroke="#ffd45a" strokeWidth={2} strokeOpacity={0.8} />
+      <polyline points={arcPath(id, WORLD.coreWard.outer - 0.8, undefined, rot)} fill="none" stroke="#ffd45a" strokeWidth={2.4} strokeDasharray="1 9" strokeLinecap="round" />
+      <polygon points={sectorPolygon(id, WORLD.civicSquare.inner, WORLD.civicSquare.outer, 2.6, rot)} fill="none" stroke="#ffd45a" strokeWidth={2} strokeOpacity={0.8} />
     </g>
   )
 }
 
 /** Unclaimed plots in open wards: ready for the next Friend who joins this district. */
-function OpenPlots({ id, open, occupied }: { id: DistrictId; open: number; occupied: Set<string> }) {
+function OpenPlots({ id, open, occupied, rot }: { id: DistrictId; open: number; occupied: Set<string>; rot: number }) {
   const out = []
   for (let w = 0; w < open; w++) {
     for (let i = 0; i < wardCapacity(w); i++) {
       if (occupied.has(`${w}:${i}`)) continue
-      const p = isoW(plotWorld(id, w, i))
-      const c = boxCorners(propertyLotHalf(id, w, i))
+      const p = isoW(plotWorld(id, w, i), rot)
+      const c = boxCorners(propertyLotHalf(id, w, i, 0, rot))
       out.push(
         <g key={`${w}-${i}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`} data-testid={`open-plot-${id}-${w}-${i}`}>
           <polygon points={`${c.W.x},0 0,${c.N.y} ${c.E.x},0 0,${c.Sx.y}`} fill="#ffffff" fillOpacity={0.03} stroke="#9fb6d9" strokeOpacity={0.35} strokeDasharray="4 4" />
@@ -152,12 +153,15 @@ export const CityGround = memo(function CityGround({
   radius,
   detail,
   occupied,
+  rot,
 }: {
   wards: Record<DistrictId, number>
   capital: DistrictId | null
   radius: number
   detail: Detail
   occupied: Record<DistrictId, Set<string>>
+  /** City rotation in degrees: the ground turns about City Hall, re-projected point by point. */
+  rot: number
 }) {
   const city = isoEllipse(radius + 1.5)
   const water = isoEllipse(radius + WORLD.wardDepth + 14)
@@ -175,7 +179,7 @@ export const CityGround = memo(function CityGround({
               return (
                 <polygon
                   key={w}
-                  points={sectorPolygon(d.id, w === 0 ? WORLD.ringRoadOuter + 0.6 : band.inner + 0.9, band.outer)}
+                  points={sectorPolygon(d.id, w === 0 ? WORLD.ringRoadOuter + 0.6 : band.inner + 0.9, band.outer, undefined, rot)}
                   fill={`url(#ground-${d.id})`}
                   stroke={d.color}
                   strokeOpacity={capital === d.id ? 0.9 : 0.35}
@@ -186,34 +190,34 @@ export const CityGround = memo(function CityGround({
               )
             })}
             {Array.from({ length: open }, (_, w) => (
-              <polygon key={`blk-${w}`} points={sectorPolygon(d.id, w === 0 ? WORLD.civicSquare.outer + 2 : wardBand(w).inner + 1, wardBand(w).outer)} fill="url(#city-blocks)" />
+              <polygon key={`blk-${w}`} points={sectorPolygon(d.id, w === 0 ? WORLD.civicSquare.outer + 2 : wardBand(w).inner + 1, wardBand(w).outer, undefined, rot)} fill="url(#city-blocks)" />
             ))}
             {/* Civic square: a lawn park with paved promenade where monuments stand */}
-            <polygon points={sectorPolygon(d.id, WORLD.civicSquare.inner, WORLD.civicSquare.outer, 2.6)} fill="#2b3040" stroke={d.color} strokeOpacity={0.35} />
-            <polygon points={sectorPolygon(d.id, WORLD.civicSquare.inner + 1.4, WORLD.civicSquare.outer - 1.4, 4)} fill="#1b3a2b" fillOpacity={0.9} />
-            <polyline points={arcPath(d.id, WORLD.civicSquare.center, 4)} fill="none" stroke="#3e4459" strokeWidth={12} />
-            <polyline points={arcPath(d.id, WORLD.civicSquare.center, 4)} fill="none" stroke={d.color} strokeOpacity={0.25} strokeWidth={1} strokeDasharray="2 6" />
-            <StreetTrees id={d.id} r={WORLD.civicSquare.inner + 1.9} count={8} span={30} />
-            <StreetTrees id={d.id} r={WORLD.civicSquare.outer - 1.7} count={9} span={32} />
-            <OpenPlots id={d.id} open={open} occupied={occupied[d.id]} />
-            <StreetArc id={d.id} r={WORLD.civicSquare.outer + 1} />
+            <polygon points={sectorPolygon(d.id, WORLD.civicSquare.inner, WORLD.civicSquare.outer, 2.6, rot)} fill="#2b3040" stroke={d.color} strokeOpacity={0.35} />
+            <polygon points={sectorPolygon(d.id, WORLD.civicSquare.inner + 1.4, WORLD.civicSquare.outer - 1.4, 4, rot)} fill="#1b3a2b" fillOpacity={0.9} />
+            <polyline points={arcPath(d.id, WORLD.civicSquare.center, 4, rot)} fill="none" stroke="#3e4459" strokeWidth={12} />
+            <polyline points={arcPath(d.id, WORLD.civicSquare.center, 4, rot)} fill="none" stroke={d.color} strokeOpacity={0.25} strokeWidth={1} strokeDasharray="2 6" />
+            <StreetTrees id={d.id} r={WORLD.civicSquare.inner + 1.9} count={8} span={30} rot={rot} />
+            <StreetTrees id={d.id} r={WORLD.civicSquare.outer - 1.7} count={9} span={32} rot={rot} />
+            <OpenPlots id={d.id} open={open} occupied={occupied[d.id]} rot={rot} />
+            <StreetArc id={d.id} r={WORLD.civicSquare.outer + 1} rot={rot} />
             {Array.from({ length: open }, (_, w) => (
               <g key={`st-${w}`}>
-                {w > 0 && <StreetArc id={d.id} r={wardBand(w).inner} width={12} />}
-                <StreetArc id={d.id} r={wardStreetRadius(w)} width={10} />
-                <StreetTrees id={d.id} r={wardStreetRadius(w) + 1.6} count={9 + w * 3} />
+                {w > 0 && <StreetArc id={d.id} r={wardBand(w).inner} width={12} rot={rot} />}
+                <StreetArc id={d.id} r={wardStreetRadius(w)} width={10} rot={rot} />
+                <StreetTrees id={d.id} r={wardStreetRadius(w) + 1.6} count={9 + w * 3} rot={rot} />
               </g>
             ))}
-            <GhostWard id={d.id} ward={open} detail={detail} />
+            <GhostWard id={d.id} ward={open} detail={detail} rot={rot} />
           </g>
         )
       })}
-      {capital && <CapitalGround id={capital} />}
+      {capital && <CapitalGround id={capital} rot={rot} />}
       {DISTRICTS.map((d) => {
         const a = districtAngle(d.id) + WORLD.districtSpanDeg / 2
         const outer = Math.max(wardBand((wards[d.id] ?? 1) - 1).outer, wardBand((wards[DISTRICTS[d.index % 9].id] ?? 1) - 1).outer)
-        const s0 = isoW(polar(WORLD.ringRoadOuter, a))
-        const s1 = isoW(polar(outer + 1, a))
+        const s0 = isoW(polar(WORLD.ringRoadOuter, a), rot)
+        const s1 = isoW(polar(outer + 1, a), rot)
         return (
           <g key={d.id}>
             <line x1={s0.x} y1={s0.y} x2={s1.x} y2={s1.y} stroke="#0c0f1a" strokeWidth={20} strokeLinecap="round" />
@@ -226,11 +230,11 @@ export const CityGround = memo(function CityGround({
         <g className="ward-markers">
           {DISTRICTS.flatMap((d) => {
             const open = wards[d.id] ?? 1
-            return Array.from({ length: open }, (_, w) => <WardMarker key={`${d.id}-${w}`} id={d.id} ward={w} outermost={w === open - 1} />)
+            return Array.from({ length: open }, (_, w) => <WardMarker key={`${d.id}-${w}`} id={d.id} ward={w} outermost={w === open - 1} rot={rot} />)
           })}
         </g>
       )}
-      <PlazaGround capital={capital} />
+      <PlazaGround capital={capital} rot={rot} />
     </g>
   )
 })

@@ -1819,12 +1819,14 @@ button {
 }
 
 /* Zoom controls */
+/* Two columns: rotation (left, right, reset orientation) beside zoom (in, out, overview). */
 .zoom-controls {
   position: absolute;
   right: 16px;
   bottom: 16px;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: repeat(3, 44px);
+  grid-auto-flow: column;
   gap: 6px;
   z-index: 8;
 }
@@ -1832,13 +1834,20 @@ button {
   right: 440px;
 }
 .zoom-controls button {
+  display: grid;
+  place-items: center;
   width: 44px;
   height: 44px;
+  padding: 0;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--glass);
   font-size: 20px;
   cursor: pointer;
+}
+/* The compass dims while the city faces its default way and lights up once it is turned. */
+.zoom-controls [data-testid='rotate-reset'][data-turned='false'] svg {
+  opacity: 0.55;
 }
 .zoom-controls button:hover {
   background: rgba(40, 50, 80, 0.9);
@@ -2147,6 +2156,19 @@ button {
   .has-drawer .zoom-controls,
   .has-drawer .badge-toasts {
     right: 16px;
+  }
+  /* Phones: one slim column, clear of the Demo Guide card and the guide reminder. */
+  .zoom-controls {
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
+  /* Bottom sheet open: zoom stays on pinch; the rotation controls ride above the sheet. */
+  .has-drawer .zoom-controls {
+    bottom: calc(55vh + 16px);
+    grid-auto-flow: column;
+  }
+  .has-drawer .zoom-controls .cam-zoom {
+    display: none;
   }
   .has-drawer .radio-ticker,
   .has-drawer .intro-card,

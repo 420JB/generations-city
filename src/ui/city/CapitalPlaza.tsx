@@ -6,7 +6,7 @@ import { iso, isoEllipse, leftFace, PLAZA_R, polar, RING_OUTER, rightFace } from
 import { IsoBox } from './parts'
 
 /** Ground-level plaza, ring road and traffic. Rendered beneath all objects. */
-export const PlazaGround = memo(function PlazaGround({ capital }: { capital: DistrictId | null }) {
+export const PlazaGround = memo(function PlazaGround({ capital, rot = 0 }: { capital: DistrictId | null; rot?: number }) {
   const plaza = isoEllipse(PLAZA_R)
   const ring = isoEllipse(RING_OUTER)
   const mid = isoEllipse((PLAZA_R + RING_OUTER) / 2)
@@ -24,8 +24,8 @@ export const PlazaGround = memo(function PlazaGround({ capital }: { capital: Dis
       {Array.from({ length: 16 }, (_, i) => {
         const w = polar(PLAZA_R, i * 22.5)
         const w2 = polar(PLAZA_R * 0.42, i * 22.5)
-        const p = iso(w.x, w.y)
-        const p2 = iso(w2.x, w2.y)
+        const p = iso(w.x, w.y, rot)
+        const p2 = iso(w2.x, w2.y, rot)
         return <line key={i} x1={p2.x} y1={p2.y} x2={p.x} y2={p.y} stroke="#ffffff" strokeOpacity={0.05} />
       })}
       {d && <ellipse rx={plaza.rx * 0.98} ry={plaza.ry * 0.98} fill="none" stroke={d.glow} strokeWidth={6} strokeOpacity={0.18} />}

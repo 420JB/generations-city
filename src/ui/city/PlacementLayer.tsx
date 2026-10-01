@@ -20,19 +20,22 @@ export const PlacementLayer = memo(function PlacementLayer({
   selected,
   onPick,
   labelScale,
+  rot = 0,
 }: {
   candidates: PlotCandidate[]
   selected: { ward: number; plot: number } | null
   /** Screen-constant label scale from the camera (as used by building/monument labels). */
   labelScale: number
   onPick: (c: PlotCandidate, e: MouseEvent | KeyboardEvent) => void
+  /** City rotation in degrees: sites follow their plots exactly as the ground draws them. */
+  rot?: number
 }) {
   if (candidates.length === 0) return null
   const d = getDistrict(candidates[0].districtId)
   const preview = candidates[0].newWard ? candidates[0].ward : null
   // Centred over the previewed ward's plots (which the camera frames), just above the topmost
   // site, so the marker stays on screen at any width without covering a site's centre.
-  const sites = preview !== null ? candidates.map((c) => isoW(plotWorld(c.districtId, c.ward, c.plot))) : []
+  const sites = preview !== null ? candidates.map((c) => isoW(plotWorld(c.districtId, c.ward, c.plot), rot)) : []
   const label =
     sites.length > 0
       ? { x: (Math.min(...sites.map((p) => p.x)) + Math.max(...sites.map((p) => p.x))) / 2, y: Math.min(...sites.map((p) => p.y)) - 34 }
@@ -55,8 +58,8 @@ export const PlacementLayer = memo(function PlacementLayer({
           site so a tap on a site's own diamond always wins over a neighbour's hit area. */}
       <g className="candidate-hits" aria-hidden="true">
         {candidates.map((c) => {
-          const p = isoW(plotWorld(c.districtId, c.ward, c.plot))
-          const k = boxCorners(Math.max(propertyLotHalf(c.districtId, c.ward, c.plot), CANDIDATE_HIT_HALF))
+          const p = isoW(plotWorld(c.districtId, c.ward, c.plot), rot)
+          const k = boxCorners(Math.max(propertyLotHalf(c.districtId, c.ward, c.plot, 0, rot), CANDIDATE_HIT_HALF))
           return (
             <polygon
               key={`${c.ward}-${c.plot}`}
@@ -70,8 +73,8 @@ export const PlacementLayer = memo(function PlacementLayer({
         })}
       </g>
       {candidates.map((c) => {
-        const p = isoW(plotWorld(c.districtId, c.ward, c.plot))
-        const k = boxCorners(propertyLotHalf(c.districtId, c.ward, c.plot))
+        const p = isoW(plotWorld(c.districtId, c.ward, c.plot), rot)
+        const k = boxCorners(propertyLotHalf(c.districtId, c.ward, c.plot, 0, rot))
         const on = selected?.ward === c.ward && selected.plot === c.plot
         const pts = `${k.W.x},${k.W.y} ${k.N.x},${k.N.y} ${k.E.x},${k.E.y} ${k.Sx.x},${k.Sx.y}`
         return (

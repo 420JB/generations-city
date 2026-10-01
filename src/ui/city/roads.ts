@@ -2,11 +2,15 @@ import type { DistrictId } from '../../config/districts'
 import { WORLD } from '../../config/world'
 import { districtAngle, plotWorld, polar, wardBand, wardStreetRadius, type WorldPoint } from '../../game/world'
 import { arcPoints, footprintHalf, isoW, LOT_MARGIN, type Pt } from './geometry'
+import { rotatePointAroundCenter } from './rotation'
 
 /**
  * ROAD MODEL (pure). Mirrors exactly how CityGround draws asphalt: arc streets are polylines
  * of `arcPoints()` and every road has a fixed SCREEN-pixel stroke. Used to derive road-safe
  * property envelopes and to test clearance in projected space at every district angle.
+ *
+ * `rot` is the city rotation (degrees): roads turn with the city while lots stay screen-aligned
+ * (like the buildings on them), so the road-safe envelope is re-derived for the turned roads.
  */
 export type RoadKind = 'civic' | 'ward-street' | 'ward-boundary' | 'radial'
 
@@ -34,12 +38,12 @@ function wardArcs(ward: number): { kind: RoadKind; r: number }[] {
 }
 
 /** Every road polyline near a district's ward (arcs as drawn + both radial boundary avenues). */
-export function wardRoads(id: DistrictId, ward: number): RoadPolyline[] {
-  const arcs = wardArcs(ward).map(({ kind, r }) => ({ kind, points: arcPoints(id, r), halfWidth: ROAD_STROKE[kind] / 2 }))
+export function wardRoads(id: DistrictId, ward: number, rot = 0): RoadPolyline[] {
+  const arcs = wardArcs(ward).map(({ kind, r }) => ({ kind, points: arcPoints(id, r, undefined, rot), halfWidth: ROAD_STROKE[kind] / 2 }))
   const outer = wardBand(ward + 1).outer + 1
   const radials = [-1, 1].map((s) => {
     const a = districtAngle(id) + (s * WORLD.districtSpanDeg) / 2
-    return { kind: 'radial' as const, points: [isoW(polar(WORLD.ringRoadOuter, a)), isoW(polar(outer, a))], halfWidth: ROAD_STROKE.radial / 2 }
+    return { kind: 'radial' as const, points: [isoW(polar(WORLD.ringRoadOuter, a), rot), isoW(polar(outer, a), rot)], halfWidth: ROAD_STROKE.radial / 2 }
   })
   return [...arcs, ...radials]
 }
@@ -49,17 +53,19 @@ export function wardRoads(id: DistrictId, ward: number): RoadPolyline[] {
  * stays LOT_SETBACK clear of each nearby road, whatever the district's rotation. For a road
  * whose normal is n, a square of half-size L reaches L·(|nx|+|ny|) toward it; road widths are
  * converted from screen px to world units conservatively (worst-case iso scale).
+ * `p` is the unrotated plot centre; `rot` turns it and its roads together about City Hall.
  */
-export function roadSafeHalf(id: DistrictId, ward: number, p: WorldPoint): number {
+export function roadSafeHalf(id: DistrictId, ward: number, p: WorldPoint, rot = 0): number {
+  const turn = (rot * Math.PI) / 180
   const r = Math.hypot(p.x, p.y)
-  const theta = Math.atan2(p.y, p.x)
+  const theta = Math.atan2(p.y, p.x) + turn
   let best = Number.POSITIVE_INFINITY
   for (const { kind, r: R } of wardArcs(ward)) {
     const reach = Math.abs(Math.cos(theta)) + Math.abs(Math.sin(theta))
     best = Math.min(best, (Math.abs(R - r) - ROAD_STROKE[kind] / 2 / ISO_MIN_SCALE - LOT_SETBACK) / reach)
   }
   for (const s of [-1, 1]) {
-    const phi = ((districtAngle(id) + (s * WORLD.districtSpanDeg) / 2) * Math.PI) / 180
+    const phi = ((districtAngle(id) + (s * WORLD.districtSpanDeg) / 2) * Math.PI) / 180 + turn
     const dist = Math.abs(r * Math.sin(theta - phi))
     const reach = Math.abs(Math.sin(phi)) + Math.abs(Math.cos(phi))
     best = Math.min(best, (dist - ROAD_STROKE.radial / 2 / ISO_MIN_SCALE - LOT_SETBACK) / reach)
@@ -113,8 +119,12 @@ export function polygonRoadClearance(poly: Pt[], road: RoadPolyline): number {
   return min - road.halfWidth
 }
 
-/** Screen-space diamond of an axis-aligned world square (half-size `half`) centred at `p`. */
-export function squareOnScreen(p: WorldPoint, half: number): Pt[] {
+/**
+ * Screen-space diamond of an axis-aligned square (half-size `half`) centred at `p`. Under a
+ * city rotation the centre orbits but the square stays screen-aligned, exactly as lots draw.
+ */
+export function squareOnScreen(p0: WorldPoint, half: number, rot = 0): Pt[] {
+  const p = rotatePointAroundCenter(p0, rot)
   return [
     isoW({ x: p.x - half, y: p.y - half }),
     isoW({ x: p.x + half, y: p.y - half }),
@@ -124,10 +134,10 @@ export function squareOnScreen(p: WorldPoint, half: number): Pt[] {
 }
 
 /** Minimum clearance (screen px) and the road kind it is measured against. */
-export function minClearance(id: DistrictId, ward: number, p: WorldPoint, half: number): { px: number; kind: RoadKind } {
-  const poly = squareOnScreen(p, half)
+export function minClearance(id: DistrictId, ward: number, p: WorldPoint, half: number, rot = 0): { px: number; kind: RoadKind } {
+  const poly = squareOnScreen(p, half, rot)
   let best = { px: Number.POSITIVE_INFINITY, kind: 'civic' as RoadKind }
-  for (const road of wardRoads(id, ward)) {
+  for (const road of wardRoads(id, ward, rot)) {
     const c = polygonRoadClearance(poly, road)
     if (c < best.px) best = { px: c, kind: road.kind }
   }
@@ -137,13 +147,17 @@ export function minClearance(id: DistrictId, ward: number, p: WorldPoint, half: 
 /** Minimum paved apron kept around a podium even on the tightest plot. */
 export const MIN_APRON = 0.15
 
+/** A tier's lot half-size inside a plot's road-safe envelope `safe`. */
+export function lotHalfWithin(tier: number, safe: number): number {
+  const nominal = footprintHalf(tier) + LOT_MARGIN
+  return Math.max(footprintHalf(tier) + MIN_APRON, Math.min(nominal, safe))
+}
+
 /**
  * Paved-lot half-size for a property: the normal lot (footprint + LOT_MARGIN) trimmed to the
  * road-safe envelope of its plot. Open and ghost plots use the Tier 0 lot so an open plot and
  * the property that later fills it read as the same parcel.
  */
-export function propertyLotHalf(id: DistrictId, ward: number, plot: number, tier = 0): number {
-  const nominal = footprintHalf(tier) + LOT_MARGIN
-  const safe = roadSafeHalf(id, ward, plotWorld(id, ward, plot))
-  return Math.max(footprintHalf(tier) + MIN_APRON, Math.min(nominal, safe))
+export function propertyLotHalf(id: DistrictId, ward: number, plot: number, tier = 0, rot = 0): number {
+  return lotHalfWithin(tier, roadSafeHalf(id, ward, plotWorld(id, ward, plot), rot))
 }

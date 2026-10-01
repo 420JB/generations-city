@@ -14,10 +14,11 @@ const H = 38
  * crest and a name plaque. Wayfinding at mid/near zoom; decorative for screen readers
  * (the district label and panels already name the district).
  */
-export const DistrictGate = memo(function DistrictGate({ id, detail, isCapital }: { id: DistrictId; detail: Detail; isCapital: boolean }) {
+export const DistrictGate = memo(function DistrictGate({ id, detail, isCapital, rot = 0 }: { id: DistrictId; detail: Detail; isCapital: boolean; rot?: number }) {
   const d = getDistrict(id)
+  // The gate spans its avenue, so the pylon pair turns with the city (the pylons stay upright).
   const perp = polar(GATE_HALF, districtAngle(id) + 90)
-  const pylons = [iso(-perp.x, -perp.y), iso(perp.x, perp.y)].sort((a, b) => a.y - b.y)
+  const pylons = [iso(-perp.x, -perp.y, rot), iso(perp.x, perp.y, rot)].sort((a, b) => a.y - b.y)
   const trim = isCapital ? '#ffd45a' : d.color
   const plaqueW = Math.max(52, d.title.length * 4.7 + 14)
   return (

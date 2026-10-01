@@ -3,10 +3,16 @@ import { WORLD } from '../../config/world'
 import { floorsFor } from '../../game/economy'
 import type { Building } from '../../game/types'
 import { districtAngle, plotWorld, polar, type WorldPoint } from '../../game/world'
+import { rotatePointAroundCenter } from './rotation'
 
 /**
  * SVG strategic-map projection. World layout lives in `game/world.ts`; this module only
  * projects world coordinates to isometric screen space and holds SVG drawing helpers.
+ *
+ * CITY ROTATION: every ground-position helper takes an optional `rot` (degrees, see
+ * `rotation.ts`). The world point is turned about City Hall BEFORE it is projected, so the
+ * whole layout orbits as one while sprites, lots and labels stay upright and readable.
+ * `rot = 0` (the default) is the unrotated city, bit-for-bit.
  */
 
 /** Pixels per world unit. */
@@ -25,17 +31,33 @@ export interface Pt {
   y: number
 }
 
-/** World (x, y) on the ground plane → screen pixels (isometric). */
-export function iso(x: number, y: number): Pt {
+/** World (x, y) on the ground plane → screen pixels (isometric), at city rotation `rot`. */
+export function iso(x: number, y: number, rot = 0): Pt {
+  if (rot) ({ x, y } = rotatePointAroundCenter({ x, y }, rot))
   return { x: (x - y) * COS30 * S, y: (x + y) * 0.5 * S }
 }
 
-export function isoW(w: WorldPoint): Pt {
-  return iso(w.x, w.y)
+export function isoW(w: WorldPoint, rot = 0): Pt {
+  return iso(w.x, w.y, rot)
 }
 
-export function depthOf(w: { x: number; y: number }): number {
-  return w.x + w.y
+export function depthOf(w: { x: number; y: number }, rot = 0): number {
+  const r = rot ? rotatePointAroundCenter(w, rot) : w
+  return r.x + r.y
+}
+
+/**
+ * Turn a SCREEN-space ground point by `deg` about City Hall: the projected equivalent of
+ * rotating its world point (`rotateScreen(isoW(w), deg)` equals `isoW(w, deg)`). In iso
+ * screen space a ground rotation is an elliptical turn (x is √3 wider than y). Camera use only.
+ */
+export function rotateScreen(p: Pt, deg: number): Pt {
+  if (!deg) return { x: p.x, y: p.y }
+  const a = (deg * Math.PI) / 180
+  const cos = Math.cos(a)
+  const sin = Math.sin(a)
+  const k = COS30 / 0.5
+  return { x: p.x * cos - p.y * k * sin, y: (p.x / k) * sin + p.y * cos }
 }
 
 function pointsStr(pts: Pt[]): string {
@@ -43,7 +65,7 @@ function pointsStr(pts: Pt[]): string {
 }
 
 /** Annular sector of a district between radii r0..r1, inset from the boundary avenues. */
-export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits = 1.4): string {
+export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits = 1.4, rot = 0): string {
   const a = districtAngle(id)
   const half = WORLD.districtSpanDeg / 2
   const pts: Pt[] = []
@@ -54,7 +76,7 @@ export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits
     const to = a + half - insetDeg
     for (let i = 0; i <= steps; i++) {
       const t = reverse ? 1 - i / steps : i / steps
-      pts.push(isoW(polar(r, from + (to - from) * t)))
+      pts.push(isoW(polar(r, from + (to - from) * t), rot))
     }
   }
   arc(r1, false)
@@ -63,17 +85,17 @@ export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits
 }
 
 /** Iso polyline along an arc (used for ward boundary streets). */
-export function arcPoints(id: DistrictId, r: number, insetUnits = 1.4): Pt[] {
+export function arcPoints(id: DistrictId, r: number, insetUnits = 1.4, rot = 0): Pt[] {
   const a = districtAngle(id)
   const half = WORLD.districtSpanDeg / 2
   const insetDeg = (insetUnits / r) * (180 / Math.PI)
   const pts: Pt[] = []
-  for (let i = 0; i <= 18; i++) pts.push(isoW(polar(r, a - half + insetDeg + ((2 * half - 2 * insetDeg) * i) / 18)))
+  for (let i = 0; i <= 18; i++) pts.push(isoW(polar(r, a - half + insetDeg + ((2 * half - 2 * insetDeg) * i) / 18), rot))
   return pts
 }
 
-export function arcPath(id: DistrictId, r: number, insetUnits = 1.4): string {
-  return pointsStr(arcPoints(id, r, insetUnits))
+export function arcPath(id: DistrictId, r: number, insetUnits = 1.4, rot = 0): string {
+  return pointsStr(arcPoints(id, r, insetUnits, rot))
 }
 
 /** Iso ellipse radii for a world-space circle of radius r. */
@@ -103,22 +125,23 @@ export interface Placement {
   depth: number
 }
 
-export function place(w: WorldPoint): Placement {
-  return { world: w, screen: isoW(w), depth: depthOf(w) }
+/** Where a world point is drawn at city rotation `rot` (`world` stays the unrotated point). */
+export function place(w: WorldPoint, rot = 0): Placement {
+  return { world: w, screen: isoW(w, rot), depth: depthOf(w, rot) }
 }
 
-export function placeBuilding(b: Pick<Building, 'districtId' | 'ward' | 'plot'>): Placement {
-  return place(plotWorld(b.districtId, b.ward, b.plot))
+export function placeBuilding(b: Pick<Building, 'districtId' | 'ward' | 'plot'>, rot = 0): Placement {
+  return place(plotWorld(b.districtId, b.ward, b.plot), rot)
 }
 
 /** Screen point near the middle of a building (used for camera warp). */
-export function buildingFocus(b: Building, total: number): Pt {
-  const p = placeBuilding(b).screen
+export function buildingFocus(b: Building, total: number, rot = 0): Pt {
+  const p = placeBuilding(b, rot).screen
   return { x: p.x, y: p.y - buildingHeightPx(total) * 0.5 }
 }
 
-export function districtLabelPos(id: DistrictId, radius: number): Pt {
-  return isoW(polar(radius + 5, districtAngle(id)))
+export function districtLabelPos(id: DistrictId, radius: number, rot = 0): Pt {
+  return isoW(polar(radius + 5, districtAngle(id)), rot)
 }
 
 /** Iso box corner offsets for half-sizes ax (along world x) and ay (along world y). */

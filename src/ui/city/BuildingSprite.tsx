@@ -8,7 +8,7 @@ import type { Building, DemoUser, LandscapeKind } from '../../game/types'
 import { useTween } from '../motion'
 import { facadeBillboardWidth, landscapeSlotPos, sectionsFor } from './buildingGeometry'
 import { boxCorners, buildingHeightPx, FLOOR_PX, footprintHalf, hsl, iso, isoEllipse, leftFace, rightFace, S, TAN30, WINDOW_TILES, type Detail } from './geometry'
-import { propertyLotHalf } from './roads'
+import { lotHalfWithin, propertyLotHalf } from './roads'
 import { IsoBox } from './parts'
 
 export type { Detail }
@@ -237,6 +237,11 @@ interface Props {
   isObjective: boolean
   /** Open the property-media viewer (billboards with an image are clickable). */
   onViewMedia?: (id: string) => void
+  /**
+   * Road-safe lot envelope of this plot while the city is rotated (capped at the property's
+   * full lot, so it only changes for plots a turned road actually trims). Omitted at 0°.
+   */
+  roadSafe?: number
 }
 
 /**
@@ -263,7 +268,7 @@ function mediaHit(b: Building, onViewMedia?: (id: string) => void) {
   }
 }
 
-export const BuildingSprite = memo(function BuildingSprite({ building: b, total: target, users, selected, isPlayer, isCrown, detail, fx, onSelect, labelScale, isObjective, onViewMedia }: Props) {
+export const BuildingSprite = memo(function BuildingSprite({ building: b, total: target, users, selected, isPlayer, isCrown, detail, fx, onSelect, labelScale, isObjective, onViewMedia, roadSafe }: Props) {
   const total = useTween(target)
   const tier = tierFor(total)
   const stage = stageFor(total)
@@ -279,7 +284,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const podium = sections[0]
   const cPod = boxCorners(podium.a)
   // Paved lot trimmed to the plot's road-safe envelope (never paints over asphalt).
-  const lot = propertyLotHalf(b.districtId, b.ward, b.plot, tier)
+  const lot = roadSafe === undefined ? propertyLotHalf(b.districtId, b.ward, b.plot, tier) : lotHalfWithin(tier, roadSafe)
   const cl = boxCorners(lot)
   const patrons = rankedPatrons(b).slice(0, MAX_VISIBLE_PATRONS)
   // Dense city: at far/mid zoom only important buildings carry labels.

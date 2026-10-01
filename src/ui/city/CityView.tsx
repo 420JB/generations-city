@@ -3,7 +3,7 @@ import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
 import { DEMO_PLAYER_ID } from '../../config/identity'
 import { MONUMENTS } from '../../config/monuments'
 import { WORLD } from '../../config/world'
-import { totalBuilt } from '../../game/economy'
+import { tierFor, totalBuilt } from '../../game/economy'
 import { intersects, representativeBuildings, wardRenderMode, type Rect } from '../../game/lod'
 import type { Building, GameState } from '../../game/types'
 import { cityRadius, districtAngle, polar, wardBand } from '../../game/world'
@@ -12,9 +12,11 @@ import { BuildingSprite, MassingSprite, type BuildFx } from './BuildingSprite'
 import { CapitalSign, CityHall, CrestDisc, Fountain, RegistryPylon } from './CapitalPlaza'
 import { CityGround } from './CityGround'
 import { CityDefs } from './Defs'
-import { buildingFocus, buildingHeightPx, detailFor, districtLabelPos, iso, isoW, place, placeBuilding, pylonWorld, gateWorld, type Detail } from './geometry'
+import { buildingFocus, buildingHeightPx, detailFor, districtLabelPos, footprintHalf, isoW, LOT_MARGIN, place, placeBuilding, pylonWorld, gateWorld, rotateScreen, type Detail, type Pt } from './geometry'
 import { DistrictGate } from './DistrictGate'
 import { PlacementLayer } from './PlacementLayer'
+import { roadSafeHalf } from './roads'
+import { normalizeAngle, ROTATION_STEP_DEG, shortestAngleDelta } from './rotation'
 import type { PlotCandidate } from '../../game/allocation'
 import type { WorldPoint } from '../../game/world'
 
@@ -24,18 +26,33 @@ import { EmptyCivicSite, MonumentSprite } from './MonumentSprite'
 
 export type { MonumentTransfer }
 
-/** Camera: centre in screen-space world pixels, zoom = screen px per world px. */
-export interface Camera {
+/** Framing: centre in screen-space world pixels, zoom = screen px per world px. */
+interface Framing {
   x: number
   y: number
   zoom: number
 }
 
+/**
+ * Camera = framing + city rotation in degrees (0 = the default orientation, positive turns the
+ * city clockwise about City Hall). UI state only: never stored in GameState or persisted.
+ */
+export interface Camera extends Framing {
+  angle: number
+}
+
 const MAX_ZOOM = 3.2
 const HEADROOM = 420
+/** Time constant of the rotation ease: a 15° step reads as done in about a third of a second. */
+const ROTATE_EASE_MS = 90
+/** Held Q / E repeats are paced to one step per this many ms (a full orbit in about 3 s). */
+const ROTATE_REPEAT_MS = 110
+/** A selected property becomes the rotation pivot once the camera is this far past overview. */
+const PIVOT_ON_SELECTION_ZOOM = 1.5
 
-/** Overview framing for the current city radius (grows as wards open). */
-function homeFor(w: number, h: number, radius: number, drawerOpen = false): Camera {
+/** Overview framing for the current city radius (grows as wards open). The city's footprint
+ *  is a circle about City Hall, so the same framing fits it at every rotation. */
+function homeFor(w: number, h: number, radius: number, drawerOpen = false): Framing {
   const e = { rx: (radius + 13) * 1.2247 * 16, ry: (radius + 13) * 0.7071 * 16 }
   const fit = Math.min(w / (2 * e.rx), h / (2 * e.ry + HEADROOM))
   if (w < 820) return { x: 0, y: -120, zoom: fit * Math.min(2.4, Math.max(1.4, h / w)) }
@@ -49,17 +66,19 @@ const DistrictLabels = memo(function DistrictLabels({
   onSelect,
   scale,
   radii,
+  rot,
 }: {
   capital: DistrictId | null
   monumentsHeld: Record<string, number>
   onSelect: (d: DistrictId) => void
   scale: number
   radii: Record<DistrictId, number>
+  rot: number
 }) {
   return (
     <g className="district-labels">
       {DISTRICTS.map((d) => {
-        const p = districtLabelPos(d.id, radii[d.id])
+        const p = districtLabelPos(d.id, radii[d.id], rot)
         const isCap = capital === d.id
         const w = 50 + Math.max(64, d.name.length * 9.2) + (isCap ? 78 : 0)
         return (
@@ -102,7 +121,7 @@ const DistrictLabels = memo(function DistrictLabels({
 })
 
 /** Capital flags lining the district's edge toward City Hall (depth-sorted object). */
-function CapitalFlags({ id, detail }: { id: DistrictId; detail: Detail }) {
+function CapitalFlags({ id, detail, rot }: { id: DistrictId; detail: Detail; rot: number }) {
   const d = getDistrict(id)
   const a = districtAngle(id)
   // Flags flank the district gateway (±7°) rather than standing in front of it.
@@ -110,7 +129,7 @@ function CapitalFlags({ id, detail }: { id: DistrictId; detail: Detail }) {
   return (
     <g className="capital-flags" data-testid="capital-flags">
       {offs.map((o) => {
-        const p = isoW(polar(WORLD.civicSquare.inner - 0.6, a + o))
+        const p = isoW(polar(WORLD.civicSquare.inner - 0.6, a + o), rot)
         return (
           <g key={o} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`}>
             <circle cx={0} cy={-2} r={8} fill="url(#glow-warm)" opacity={0.45} />
@@ -127,9 +146,9 @@ function CapitalFlags({ id, detail }: { id: DistrictId; detail: Detail }) {
 }
 
 /** Floating crest above the Capital district's civic square (overlay layer). */
-function CapitalCrest({ id, scale, compact }: { id: DistrictId; scale: number; compact: boolean }) {
+function CapitalCrest({ id, scale, compact, rot }: { id: DistrictId; scale: number; compact: boolean; rot: number }) {
   const d = getDistrict(id)
-  const p = isoW(polar(WORLD.civicSquare.center, districtAngle(id)))
+  const p = isoW(polar(WORLD.civicSquare.center, districtAngle(id)), rot)
   // Away from near zoom the district label (★ CAPITAL) and the City Hall sign already name
   // the Capital, so the crest shrinks to a gold medallion marking the district's square.
   if (compact)
@@ -192,13 +211,18 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 1280, h: 800 })
   const radius = useMemo(() => cityRadius(game.wards), [game.wards])
-  const [cam, setCamState] = useState<Camera>(() => homeFor(1280, 800, radius))
+  const [cam, setCamState] = useState<Camera>(() => ({ ...homeFor(1280, 800, radius), angle: 0 }))
   const camRef = useRef(cam)
   const setCam = useCallback((c: Camera) => {
     camRef.current = c
     setCamState(c)
   }, [])
   const animRef = useRef(0)
+  // Where the rotation is heading. Equals cam.angle at rest; runs ahead of it while a turn
+  // animates (and may leave [0, 360) until the turn settles, so repeated presses never unwind).
+  const goalAngle = useRef(0)
+  /** True while the rotation ease owns the animation frame. */
+  const turning = useRef(false)
   const touched = useRef(false)
   const radiusRef = useRef(radius)
   useEffect(() => {
@@ -212,7 +236,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       const r = entry.contentRect
       if (r.width > 0 && r.height > 0) {
         setSize({ w: r.width, h: r.height })
-        if (!touched.current) setCam(homeFor(r.width, r.height, radiusRef.current))
+        if (!touched.current) setCam({ ...homeFor(r.width, r.height, radiusRef.current), angle: camRef.current.angle })
       }
     })
     ro.observe(el)
@@ -226,40 +250,131 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const vbH = size.h / cam.zoom
   const viewBox = `${(cam.x - vbW / 2).toFixed(1)} ${(cam.y - vbH / 2).toFixed(1)} ${vbW.toFixed(1)} ${vbH.toFixed(1)}`
   const detail = detailFor(cam.zoom)
+  const rot = cam.angle
+  /** Whole degrees in [0, 360) for controls, tests and assistive text. */
+  const orientation = normalizeAngle(Math.round(rot))
   // Labels stay roughly constant on screen; quantised so sprites only re-render on steps.
   const labelScale = Math.round(Math.min(2.4, Math.max(0.6, 1 / cam.zoom)) * 10) / 10
   const view: Rect = { x0: cam.x - vbW / 2 - 60, y0: cam.y - vbH / 2 - 60, x1: cam.x + vbW / 2 + 60, y1: cam.y + vbH / 2 + 60 }
 
+  /**
+   * Fly to a framing, given for the rotation the city is heading to (`goalAngle`): any turn
+   * still in flight simply completes along the way, so WARP and overview never reset it.
+   */
   const animateTo = useCallback(
-    (target: Camera, duration = 1000) => {
+    (target: Framing, duration = 1000) => {
       touched.current = true
       cancelAnimationFrame(animRef.current)
+      turning.current = false
+      const goal = goalAngle.current
+      const settle = () => {
+        goalAngle.current = normalizeAngle(goal)
+        setCam({ ...target, angle: goalAngle.current })
+      }
       if (prefersReducedMotion()) {
-        animRef.current = requestAnimationFrame(() => setCam(target))
+        animRef.current = requestAnimationFrame(settle)
         return
       }
       const from = camRef.current
+      // Interpolate the camera centre in unrotated space so it tracks the turning city.
+      const from0 = rotateScreen(from, -from.angle)
+      const to0 = rotateScreen(target, -goal)
       const start = performance.now()
       const tick = (now: number) => {
         const t = Math.min(1, (now - start) / duration)
+        if (t >= 1) return settle()
         const e = easeInOutCubic(t)
         // Pull back mid-flight for a "warp" arc.
         const hop = 1 - Math.sin(Math.PI * t) * 0.22
         const zoom = Math.exp(Math.log(from.zoom) + (Math.log(target.zoom) - Math.log(from.zoom)) * e) * hop
-        setCam({ x: from.x + (target.x - from.x) * e, y: from.y + (target.y - from.y) * e, zoom })
-        if (t < 1) animRef.current = requestAnimationFrame(tick)
+        const angle = from.angle + (goal - from.angle) * e
+        setCam({ ...rotateScreen({ x: from0.x + (to0.x - from0.x) * e, y: from0.y + (to0.y - from0.y) * e }, angle), zoom, angle })
+        animRef.current = requestAnimationFrame(tick)
       }
       animRef.current = requestAnimationFrame(tick)
     },
     [setCam],
   )
 
+  /**
+   * The point (rotated screen space) the city turns about on screen. A selected property that
+   * is in view up close stays put, so it can be inspected from every side; otherwise the pivot
+   * is the ground under the middle of the visible map, which at overview is City Hall itself.
+   */
+  const pivot = (c: Camera): Pt => {
+    const sel = selectedId ? game.buildings[selectedId] : null
+    const overview = homeFor(size.w, size.h, radius, drawerOpen)
+    if (sel && c.zoom >= overview.zoom * PIVOT_ON_SELECTION_ZOOM) {
+      const p = placeBuilding(sel, c.angle).screen
+      if (Math.abs(p.x - c.x) * c.zoom < size.w / 2 && Math.abs(p.y - c.y) * c.zoom < size.h / 2) return p
+    }
+    return { x: c.x - (overview.x * overview.zoom) / c.zoom, y: c.y - (overview.y * overview.zoom) / c.zoom }
+  }
+
+  /**
+   * Turn the city toward `goal` degrees about the pivot (pan and zoom are kept). The angle
+   * eases exponentially toward the goal, so presses during a turn just move the goal: no
+   * restarts, no snapping, and held keys blend into a steady orbit.
+   */
+  const rotateTo = (goal: number) => {
+    touched.current = true
+    goalAngle.current = goal
+    if (turning.current) return
+    cancelAnimationFrame(animRef.current)
+    const from = camRef.current
+    const q = pivot(from)
+    // The pivot keeps its place on screen: the camera rides the turn around it. Derived from
+    // the start pose and the absolute angle each frame, so nothing accumulates.
+    const q0 = rotateScreen(q, -from.angle)
+    const at = (angle: number): Camera => {
+      const p = rotateScreen(q0, angle)
+      return { x: from.x + p.x - q.x, y: from.y + p.y - q.y, zoom: from.zoom, angle }
+    }
+    const settle = () => {
+      turning.current = false
+      const end = goalAngle.current
+      goalAngle.current = normalizeAngle(end)
+      setCam({ ...at(end), angle: goalAngle.current })
+    }
+    if (prefersReducedMotion()) {
+      animRef.current = requestAnimationFrame(settle)
+      return
+    }
+    turning.current = true
+    let last = performance.now()
+    const tick = (now: number) => {
+      const rest = goalAngle.current - camRef.current.angle
+      if (Math.abs(rest) < 0.05) return settle()
+      const dt = Math.min(64, now - last)
+      last = now
+      setCam(at(camRef.current.angle + rest * (1 - Math.exp(-dt / ROTATE_EASE_MS))))
+      animRef.current = requestAnimationFrame(tick)
+    }
+    animRef.current = requestAnimationFrame(tick)
+  }
+  const rotateBy = (deg: number) => rotateTo(goalAngle.current + deg)
+  const resetRotation = () => rotateTo(camRef.current.angle + shortestAngleDelta(camRef.current.angle, 0))
+
+  /**
+   * Direct input (drag, pinch, wheel) takes over the camera: stop any flight, and finish a
+   * turn still in progress so the city never rests between rotation steps.
+   */
+  const takeOver = () => {
+    touched.current = true
+    cancelAnimationFrame(animRef.current)
+    turning.current = false
+    const c = camRef.current
+    const goal = normalizeAngle(goalAngle.current)
+    goalAngle.current = goal
+    if (c.angle !== goal) setCam({ ...rotateScreen(c, goalAngle.current - c.angle), zoom: c.zoom, angle: goal })
+  }
+
   // Warp requests
   useEffect(() => {
     if (!focus) return
     const b = game.buildings[focus.buildingId]
     if (!b) return
-    const p = buildingFocus(b, totalBuilt(b))
+    const p = buildingFocus(b, totalBuilt(b), goalAngle.current)
     const zoom = size.w < 820 ? 0.62 : Math.min(1.5, Math.max(0.85, size.w / 560))
     const offsetX = drawerOpen && size.w > 820 ? 210 / zoom : 0
     const offsetY = drawerOpen && size.w <= 820 ? (size.h * 0.16) / zoom : 0
@@ -278,9 +393,8 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const suppressClick = useRef(false)
 
   const onPointerDown = (e: RPointerEvent) => {
-    touched.current = true
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    cancelAnimationFrame(animRef.current)
+    takeOver()
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()]
       drag.current = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, cam: camRef.current, moved: true, pinch: Math.hypot(a.x - b.x, a.y - b.y) }
@@ -312,8 +426,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     if (pointers.current.size === 0) drag.current = null
   }
   const onWheel = (e: RWheelEvent) => {
-    touched.current = true
-    cancelAnimationFrame(animRef.current)
+    takeOver()
     const rect = wrapRef.current!.getBoundingClientRect()
     const c = camRef.current
     const mx = e.clientX - rect.left - rect.width / 2
@@ -321,9 +434,36 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     const wx = c.x + mx / c.zoom
     const wy = c.y + my / c.zoom
     const zoom = clampZoom(c.zoom * Math.exp(-e.deltaY * 0.0015))
-    setCam({ zoom, x: wx - mx / zoom, y: wy - my / zoom })
+    setCam({ zoom, x: wx - mx / zoom, y: wy - my / zoom, angle: c.angle })
   }
-  const zoomBy = (f: number) => animateTo({ ...camRef.current, zoom: clampZoom(camRef.current.zoom * f) }, 350)
+  const zoomBy = (f: number) => {
+    const c = camRef.current
+    // Same ground centre, expressed for the rotation the city is heading to.
+    animateTo({ ...rotateScreen(c, goalAngle.current - c.angle), zoom: clampZoom(c.zoom * f) }, 350)
+  }
+
+  // Keyboard orbit: Q / E turn the city (never while typing, in a dialog, or with a modifier).
+  const rotateByRef = useRef(rotateBy)
+  useEffect(() => {
+    rotateByRef.current = rotateBy
+  })
+  useEffect(() => {
+    let lastRepeat = 0
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const key = e.key.toLowerCase()
+      if (key !== 'q' && key !== 'e') return
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+      if (document.querySelector('[aria-modal="true"]')) return
+      e.preventDefault()
+      if (e.repeat && e.timeStamp - lastRepeat < ROTATE_REPEAT_MS) return
+      lastRepeat = e.timeStamp
+      rotateByRef.current(key === 'q' ? -ROTATION_STEP_DEG : ROTATION_STEP_DEG)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   useEffect(() => {
     const el = wrapRef.current
@@ -361,7 +501,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   // Placement framing: fit the candidate sites (existing camera animation, fit-to-bounds zoom).
   useEffect(() => {
     if (!frame || frame.points.length === 0) return
-    const pts = frame.points.map((w) => isoW(w))
+    const pts = frame.points.map((w) => isoW(w, goalAngle.current))
     const x0 = Math.min(...pts.map((p) => p.x)) - 70
     const x1 = Math.max(...pts.map((p) => p.x)) + 70
     const y0 = Math.min(...pts.map((p) => p.y)) - 150
@@ -439,7 +579,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const objects = useMemo(() => {
     const out: CityObject[] = []
     for (const b of Object.values(game.buildings)) {
-      const p = placeBuilding(b)
+      const p = placeBuilding(b, rot)
       const total = totalBuilt(b)
       const H = buildingHeightPx(total)
       const full = lodFull.has(b.id)
@@ -464,6 +604,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
                 labelScale={labelScale}
                 isObjective={objectiveId === b.id}
                 onViewMedia={handleViewMedia}
+                roadSafe={rot ? Math.min(footprintHalf(tierFor(total)) + LOT_MARGIN, roadSafeHalf(b.districtId, b.ward, p.world, rot)) : undefined}
               />
             ) : (
               <MassingSprite building={b} total={total} onSelect={handleSelect} onViewMedia={handleViewMedia} />
@@ -473,7 +614,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       })
     }
     for (const m of placedMonuments) {
-      const p = place(m.world)
+      const p = place(m.world, rot)
       out.push({
         depth: p.depth,
         key: `mon-${m.districtId}-${m.monumentId}`,
@@ -495,7 +636,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     }
     for (const d of DISTRICTS) {
       if (placedMonuments.some((m) => m.districtId === d.id)) continue
-      const p = place(polar(WORLD.civicSquare.center, districtAngle(d.id)))
+      const p = place(polar(WORLD.civicSquare.center, districtAngle(d.id)), rot)
       out.push({
         depth: p.depth,
         key: `civic-${d.id}`,
@@ -508,20 +649,19 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       })
     }
     if (game.capital.holder) {
-      const cp = place(polar(WORLD.civicSquare.inner - 0.6, districtAngle(game.capital.holder)))
+      const cp = place(polar(WORLD.civicSquare.inner - 0.6, districtAngle(game.capital.holder)), rot)
       const holder = game.capital.holder
       out.push({
         depth: cp.depth,
         key: 'capital-flags',
         bbox: { x0: cp.screen.x - 260, x1: cp.screen.x + 260, y0: cp.screen.y - 200, y1: cp.screen.y + 200 },
-        render: () => <CapitalFlags key="capital-flags" id={holder} detail={detail} />,
+        render: () => <CapitalFlags key="capital-flags" id={holder} detail={detail} rot={rot} />,
       })
     }
     MONUMENTS.forEach((m, i) => {
-      const w = pylonWorld(i)
-      const s = iso(w.x, w.y)
+      const { screen: s, depth } = place(pylonWorld(i), rot)
       out.push({
-        depth: w.x + w.y,
+        depth,
         key: `pylon-${m.id}`,
         bbox: { x0: s.x - 30, x1: s.x + 30, y0: s.y - 80, y1: s.y + 20 },
         render: () => (
@@ -532,10 +672,10 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       })
     })
     out.push({ depth: 0, key: 'city-hall', bbox: { x0: -200, x1: 200, y0: -260, y1: 120 }, render: () => <CityHall key="city-hall" capital={game.capital.holder} /> })
-    const f = iso(9.5, 9.5)
-    out.push({ depth: 19, key: 'fountain', bbox: { x0: f.x - 50, x1: f.x + 50, y0: f.y - 40, y1: f.y + 30 }, render: () => <g key="fountain" transform={`translate(${f.x} ${f.y})`}><Fountain /></g> })
+    const { screen: f, depth: fountainDepth } = place({ x: 9.5, y: 9.5 }, rot)
+    out.push({ depth: fountainDepth, key: 'fountain', bbox: { x0: f.x - 50, x1: f.x + 50, y0: f.y - 40, y1: f.y + 30 }, render: () => <g key="fountain" transform={`translate(${f.x} ${f.y})`}><Fountain /></g> })
     return out.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key))
-  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId])
+  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId, rot])
 
   // Viewport culling: only mount what intersects the camera view.
   const visible = objects.filter((o) => intersects(o.bbox, view))
@@ -545,7 +685,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const gates =
     detail === 'far'
       ? []
-      : DISTRICTS.map((d) => ({ d, g: place(gateWorld(d.id)) })).filter(({ g }) =>
+      : DISTRICTS.map((d) => ({ d, g: place(gateWorld(d.id), rot) })).filter(({ g }) =>
           intersects({ x0: g.screen.x - 90, x1: g.screen.x + 90, y0: g.screen.y - 110, y1: g.screen.y + 40 }, view),
         )
 
@@ -555,16 +695,16 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       ? []
       : placedMonuments
           .filter((m) => m.phase !== 'falling' && visible.some((o) => o.key === `mon-${m.districtId}-${m.monumentId}`))
-          .map((m) => ({ key: `${m.districtId}-${m.monumentId}`, p: place(m.world).screen, s: m.scale * 1.15 }))
+          .map((m) => ({ key: `${m.districtId}-${m.monumentId}`, p: place(m.world, rot).screen, s: m.scale * 1.15 }))
 
   // Priority building labels (selected, yours, Crown, objective) are re-drawn above the
   // district labels with a cheap <use> of the label each sprite already renders.
   const priorityLabels = [...new Set([selectedId, objectiveId, game.crown.holder, ...Object.values(game.buildings).filter((b) => b.ownerId === DEMO_PLAYER_ID).map((b) => b.id)])]
     .filter((id): id is string => !!id && !!game.buildings[id] && lodFull.has(id) && visible.some((o) => o.key === id))
-    .map((id) => ({ id, p: placeBuilding(game.buildings[id]).screen }))
+    .map((id) => ({ id, p: placeBuilding(game.buildings[id], rot).screen }))
 
   return (
-    <div className={`city-wrap detail-${detail}`} ref={wrapRef} data-testid="city" data-zoom={cam.zoom.toFixed(2)} data-detail={detail} data-rendered={visible.length} data-radius={radius}>
+    <div className={`city-wrap detail-${detail}`} ref={wrapRef} data-testid="city" data-zoom={cam.zoom.toFixed(2)} data-detail={detail} data-rendered={visible.length} data-radius={radius} data-rotation={orientation}>
       {/* ONE svg root with ONE camera viewBox: ground and objects always repaint together
           (separate roots could tear apart during production pan/zoom). Ground draws first. */}
       <svg
@@ -585,16 +725,16 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
           if (!placing) onSelect(null)
         }}
         role="application"
-        aria-label="Rare City map. Drag to pan, scroll to zoom, Tab to buildings."
+        aria-label="Rare City map. Drag to pan, scroll to zoom, Q and E to rotate, Tab to buildings."
       >
         <CityDefs />
         <g className="ground-layer" aria-hidden="true">
-          <CityGround wards={game.wards} capital={game.capital.holder} radius={radius} detail={detail} occupied={occupied} />
+          <CityGround wards={game.wards} capital={game.capital.holder} radius={radius} detail={detail} occupied={occupied} rot={rot} />
         </g>
         <g className="gates">
           {gates.map(({ d, g }) => (
             <g key={d.id} transform={`translate(${g.screen.x.toFixed(1)} ${g.screen.y.toFixed(1)})`}>
-              <DistrictGate id={d.id} detail={detail} isCapital={game.capital.holder === d.id} />
+              <DistrictGate id={d.id} detail={detail} isCapital={game.capital.holder === d.id} rot={rot} />
             </g>
           ))}
         </g>
@@ -608,26 +748,39 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
           ))}
         </g>
         {/* District identity reads above ordinary towers; priority building labels above that. */}
-        <DistrictLabels capital={game.capital.holder} monumentsHeld={monumentsHeld} onSelect={placing ? noop : onSelectDistrict} scale={Math.max(0.8, labelScale * 0.95)} radii={labelRadii} />
+        <DistrictLabels capital={game.capital.holder} monumentsHeld={monumentsHeld} onSelect={placing ? noop : onSelectDistrict} scale={Math.max(0.8, labelScale * 0.95)} radii={labelRadii} rot={rot} />
         <g className="priority-labels" pointerEvents="none" aria-hidden="true">
           {priorityLabels.map(({ id, p }) => (
             <use key={id} href={`#bl-${id}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`} />
           ))}
         </g>
         <CapitalSign capital={game.capital.holder} featuredFriend={featuredFriend} detail={detail} />
-        {game.capital.holder && <CapitalCrest id={game.capital.holder} scale={Math.min(1.15, labelScale)} compact={detail !== 'near'} />}
-        <TransferArcs transfers={transfers} placed={placedMonuments} />
+        {game.capital.holder && <CapitalCrest id={game.capital.holder} scale={Math.min(1.15, labelScale)} compact={detail !== 'near'} rot={rot} />}
+        <TransferArcs transfers={transfers} placed={placedMonuments} rot={rot} />
         {/* Placement mode only: candidate sites on top of everything so towers and labels never hide them. */}
-        {placement && <PlacementLayer candidates={placement.candidates} selected={placement.selected} onPick={handlePick} labelScale={labelScale} />}
+        {placement && <PlacementLayer candidates={placement.candidates} selected={placement.selected} onPick={handlePick} labelScale={labelScale} rot={rot} />}
       </svg>
       <div className="zoom-controls" role="group" aria-label="Camera">
-        <button type="button" onClick={() => zoomBy(1.4)} aria-label="Zoom in">
+        <button type="button" onClick={() => rotateBy(-ROTATION_STEP_DEG)} aria-label="Rotate city left (Q)" aria-keyshortcuts="Q" title="Rotate left (Q)" data-testid="rotate-left">
+          <RotateIcon dir={-1} />
+        </button>
+        <button type="button" onClick={() => rotateBy(ROTATION_STEP_DEG)} aria-label="Rotate city right (E)" aria-keyshortcuts="E" title="Rotate right (E)" data-testid="rotate-right">
+          <RotateIcon dir={1} />
+        </button>
+        <button type="button" onClick={resetRotation} aria-label={`Reset orientation (city is turned ${orientation}°)`} title="Reset orientation" data-testid="rotate-reset" data-turned={orientation !== 0}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style={{ transform: `rotate(${rot.toFixed(1)}deg)` }}>
+            <circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" strokeOpacity="0.35" strokeWidth="1.4" />
+            <path d="M12 3.6 15 12H9Z" fill="#ffd45a" />
+            <path d="M12 20.4 9 12h6Z" fill="currentColor" fillOpacity="0.45" />
+          </svg>
+        </button>
+        <button type="button" className="cam-zoom" onClick={() => zoomBy(1.4)} aria-label="Zoom in">
           +
         </button>
-        <button type="button" onClick={() => zoomBy(1 / 1.4)} aria-label="Zoom out">
+        <button type="button" className="cam-zoom" onClick={() => zoomBy(1 / 1.4)} aria-label="Zoom out">
           −
         </button>
-        <button type="button" onClick={() => animateTo(homeFor(size.w, size.h, radius, drawerOpen), 800)} aria-label="City overview" title="City overview">
+        <button type="button" className="cam-zoom" onClick={() => animateTo(homeFor(size.w, size.h, radius, drawerOpen), 800)} aria-label="City overview" title="City overview">
           ⌂
         </button>
       </div>
@@ -635,7 +788,17 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   )
 }
 
-function TransferArcs({ transfers, placed }: { transfers: MonumentTransfer[]; placed: ReturnType<typeof layoutMonuments> }) {
+/** Curved arrow for the rotate controls: `dir` 1 turns the city clockwise, -1 anticlockwise. */
+function RotateIcon({ dir }: { dir: 1 | -1 }) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={dir < 0 ? { transform: 'scaleX(-1)' } : undefined}>
+      <path d="M19.5 12a7.5 7.5 0 1 1-2.6-5.7" />
+      <path d="M20 3.5v4.6h-4.6" />
+    </svg>
+  )
+}
+
+function TransferArcs({ transfers, placed, rot }: { transfers: MonumentTransfer[]; placed: ReturnType<typeof layoutMonuments>; rot: number }) {
   return (
     <g pointerEvents="none">
       {transfers.map((t) => {
@@ -643,8 +806,8 @@ function TransferArcs({ transfers, placed }: { transfers: MonumentTransfer[]; pl
         const from = placed.find((m) => m.monumentId === t.monumentId && m.districtId === t.from)
         const to = placed.find((m) => m.monumentId === t.monumentId && m.districtId === t.to)
         if (!from || !to) return null
-        const a = isoW(from.world)
-        const b = isoW(to.world)
+        const a = isoW(from.world, rot)
+        const b = isoW(to.world, rot)
         const mx = (a.x + b.x) / 2
         const my = Math.min(a.y, b.y) - 520
         const color = getDistrict(t.to).glow
