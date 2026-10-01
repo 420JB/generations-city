@@ -9,6 +9,7 @@ import type { Building, GameState } from '../../game/types'
 import { cityRadius, districtAngle, polar, wardBand } from '../../game/world'
 import { easeInOutCubic, prefersReducedMotion } from '../motion'
 import { BuildingSprite, MassingSprite, type BuildFx } from './BuildingSprite'
+import { standsInView, turnAbout, type Camera, type Framing } from './camera'
 import { CapitalSign, CityHall, CrestDisc, Fountain, RegistryPylon } from './CapitalPlaza'
 import { CityGround } from './CityGround'
 import { CityDefs } from './Defs'
@@ -24,22 +25,7 @@ const noop = () => {}
 import { layoutMonuments, type MonumentTransfer } from './monumentLayout'
 import { EmptyCivicSite, MonumentSprite } from './MonumentSprite'
 
-export type { MonumentTransfer }
-
-/** Framing: centre in screen-space world pixels, zoom = screen px per world px. */
-interface Framing {
-  x: number
-  y: number
-  zoom: number
-}
-
-/**
- * Camera = framing + city rotation in degrees (0 = the default orientation, positive turns the
- * city clockwise about City Hall). UI state only: never stored in GameState or persisted.
- */
-export interface Camera extends Framing {
-  angle: number
-}
+export type { Camera, MonumentTransfer }
 
 const MAX_ZOOM = 3.2
 const HEADROOM = 420
@@ -221,8 +207,8 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   // Where the rotation is heading. Equals cam.angle at rest; runs ahead of it while a turn
   // animates (and may leave [0, 360) until the turn settles, so repeated presses never unwind).
   const goalAngle = useRef(0)
-  /** True while the rotation ease owns the animation frame. */
-  const turning = useRef(false)
+  /** The turn in flight, as angle -> camera pose about that turn's pivot (null at rest). */
+  const turn = useRef<((angle: number) => Camera) | null>(null)
   const touched = useRef(false)
   const radiusRef = useRef(radius)
   useEffect(() => {
@@ -265,7 +251,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     (target: Framing, duration = 1000) => {
       touched.current = true
       cancelAnimationFrame(animRef.current)
-      turning.current = false
+      turn.current = null
       const goal = goalAngle.current
       const settle = () => {
         goalAngle.current = normalizeAngle(goal)
@@ -300,13 +286,15 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
    * The point (rotated screen space) the city turns about on screen. A selected property that
    * is in view up close stays put, so it can be inspected from every side; otherwise the pivot
    * is the ground under the middle of the visible map, which at overview is City Hall itself.
+   * "In view" is the property as it stands, plot to roof: close in on a tall tower its plot is
+   * off screen, and turning about anything else would swing the tower out of the view.
    */
   const pivot = (c: Camera): Pt => {
     const sel = selectedId ? game.buildings[selectedId] : null
     const overview = homeFor(size.w, size.h, radius, drawerOpen)
     if (sel && c.zoom >= overview.zoom * PIVOT_ON_SELECTION_ZOOM) {
       const p = placeBuilding(sel, c.angle).screen
-      if (Math.abs(p.x - c.x) * c.zoom < size.w / 2 && Math.abs(p.y - c.y) * c.zoom < size.h / 2) return p
+      if (standsInView(p, buildingHeightPx(totalBuilt(sel)), c, size)) return p
     }
     return { x: c.x - (overview.x * overview.zoom) / c.zoom, y: c.y - (overview.y * overview.zoom) / c.zoom }
   }
@@ -319,19 +307,14 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const rotateTo = (goal: number) => {
     touched.current = true
     goalAngle.current = goal
-    if (turning.current) return
+    if (turn.current) return
     cancelAnimationFrame(animRef.current)
     const from = camRef.current
-    const q = pivot(from)
-    // The pivot keeps its place on screen: the camera rides the turn around it. Derived from
-    // the start pose and the absolute angle each frame, so nothing accumulates.
-    const q0 = rotateScreen(q, -from.angle)
-    const at = (angle: number): Camera => {
-      const p = rotateScreen(q0, angle)
-      return { x: from.x + p.x - q.x, y: from.y + p.y - q.y, zoom: from.zoom, angle }
-    }
+    // One pivot for the whole turn, however it ends: eased here, or cut short by other input.
+    const at = turnAbout(from, pivot(from))
+    turn.current = at
     const settle = () => {
-      turning.current = false
+      turn.current = null
       const end = goalAngle.current
       goalAngle.current = normalizeAngle(end)
       setCam({ ...at(end), angle: goalAngle.current })
@@ -340,7 +323,6 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       animRef.current = requestAnimationFrame(settle)
       return
     }
-    turning.current = true
     let last = performance.now()
     const tick = (now: number) => {
       const rest = goalAngle.current - camRef.current.angle
@@ -356,17 +338,29 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const resetRotation = () => rotateTo(camRef.current.angle + shortestAngleDelta(camRef.current.angle, 0))
 
   /**
+   * Where the camera rests once the rotation still in flight completes. A turn finishes about
+   * its own pivot, exactly where its ease would have settled; a flight tracks the ground, so
+   * its remaining rotation is about City Hall. At rest this is the current pose.
+   */
+  const restPose = (): Camera => {
+    const c = camRef.current
+    const angle = normalizeAngle(goalAngle.current)
+    if (turn.current) return { ...turn.current(goalAngle.current), angle }
+    return { ...rotateScreen(c, angle - c.angle), zoom: c.zoom, angle }
+  }
+
+  /**
    * Direct input (drag, pinch, wheel) takes over the camera: stop any flight, and finish a
    * turn still in progress so the city never rests between rotation steps.
    */
   const takeOver = () => {
     touched.current = true
     cancelAnimationFrame(animRef.current)
-    turning.current = false
     const c = camRef.current
-    const goal = normalizeAngle(goalAngle.current)
-    goalAngle.current = goal
-    if (c.angle !== goal) setCam({ ...rotateScreen(c, goalAngle.current - c.angle), zoom: c.zoom, angle: goal })
+    const rest = restPose()
+    turn.current = null
+    goalAngle.current = rest.angle
+    if (c.angle !== rest.angle) setCam(rest)
   }
 
   // Warp requests
@@ -437,9 +431,9 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     setCam({ zoom, x: wx - mx / zoom, y: wy - my / zoom, angle: c.angle })
   }
   const zoomBy = (f: number) => {
-    const c = camRef.current
-    // Same ground centre, expressed for the rotation the city is heading to.
-    animateTo({ ...rotateScreen(c, goalAngle.current - c.angle), zoom: clampZoom(c.zoom * f) }, 350)
+    // Same view, as it will rest once any rotation in flight has completed.
+    const rest = restPose()
+    animateTo({ x: rest.x, y: rest.y, zoom: clampZoom(rest.zoom * f) }, 350)
   }
 
   // Keyboard orbit: Q / E turn the city (never while typing, in a dialog, or with a modifier).
