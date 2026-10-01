@@ -147,6 +147,12 @@ button {
   display: block;
   user-select: none;
   font-family: var(--font-display);
+  /* The whole map is one painted surface that the camera redraws on every move, so nothing in
+     it may be given a compositor layer of its own. Chrome otherwise promotes each animated
+     light (.flicker, .blink, .pulse, ...) and has to split everything painted after it into
+     further layers, dozens of them: up close on a large screen it cannot keep them all
+     rastered while the camera moves and drops whole bands of the city. The lights still animate. */
+  will-change: contents;
 }
 .bldg {
   cursor: pointer;
