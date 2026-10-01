@@ -4,6 +4,7 @@ import { WORLD } from '../../config/world'
 import { isFoundingWard, wardName } from '../../game/allocation'
 import { districtAngle, plotWorld, polar, usableHalfSpanDeg, wardBand, wardCapacity, wardStreetRadius } from '../../game/world'
 import { PlazaGround } from './CapitalPlaza'
+import { CityPerimeter } from './CityPerimeter'
 import { propertyLotHalf } from './roads'
 import { arcPath, boxCorners, isoEllipse, isoW, sectorPolygon, type Detail } from './geometry'
 
@@ -164,11 +165,9 @@ export const CityGround = memo(function CityGround({
   rot: number
 }) {
   const city = isoEllipse(radius + 1.5)
-  const water = isoEllipse(radius + WORLD.wardDepth + 14)
   return (
     <g className="ground">
-      <ellipse rx={water.rx * 1.3} ry={water.ry * 1.3} fill="url(#city-halo)" />
-      <ellipse rx={water.rx} ry={water.ry} fill="url(#water)" />
+      <CityPerimeter radius={radius} rot={rot} />
       <ellipse rx={city.rx} ry={city.ry} fill="#0a0d18" stroke="#2a3558" strokeWidth={2} opacity={0.6} />
       {DISTRICTS.map((d) => {
         const open = wards[d.id] ?? 1

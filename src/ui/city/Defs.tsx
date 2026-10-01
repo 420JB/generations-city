@@ -88,11 +88,6 @@ export const CityDefs = memo(function CityDefs() {
         <stop offset="0.7" stopColor="#221f33" />
         <stop offset="1" stopColor="#15141f" />
       </radialGradient>
-      <radialGradient id="city-halo" cx="0.5" cy="0.5" r="0.5">
-        <stop offset="0.55" stopColor="#1b2446" stopOpacity="0.9" />
-        <stop offset="0.8" stopColor="#0c1128" stopOpacity="0.6" />
-        <stop offset="1" stopColor="#050810" stopOpacity="0" />
-      </radialGradient>
       <pattern id="city-blocks" width={64} height={64} patternUnits="userSpaceOnUse" patternTransform="matrix(0.866 0.5 -0.866 0.5 0 0)">
         <rect x={0} y={0} width={64} height={64} fill="none" stroke="#ffffff" strokeOpacity={0.045} strokeWidth={1.2} />
         <rect x={6} y={6} width={22} height={22} fill="#ffffff" fillOpacity={0.018} />
@@ -103,9 +98,12 @@ export const CityDefs = memo(function CityDefs() {
         <stop offset="0.45" stopColor="#ffffff" stopOpacity="0" />
         <stop offset="1" stopColor="#0b3a66" stopOpacity="0.35" />
       </linearGradient>
-      <radialGradient id="water" cx="0.5" cy="0.45" r="0.5">
-        <stop offset="0.7" stopColor="#0d1733" />
-        <stop offset="1" stopColor="#060a18" />
+      {/* Open sea around the island: deepens away from the city, then dissolves into the night. */}
+      <radialGradient id="perimeter-sea" cx="0.5" cy="0.5" r="0.5">
+        <stop offset="0.5" stopColor="#101c40" />
+        <stop offset="0.68" stopColor="#0b1431" />
+        <stop offset="0.86" stopColor="#070d22" stopOpacity="0.55" />
+        <stop offset="1" stopColor="#050810" stopOpacity="0" />
       </radialGradient>
       {DISTRICTS.map((d) => (
         <g key={d.id}>
