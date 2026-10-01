@@ -260,9 +260,10 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   /**
    * Fly to a framing, given for the rotation the city is heading to (`goalAngle`): any turn
    * still in flight simply completes along the way, so WARP and overview never reset it.
+   * `arc` pulls the camera back mid-flight (the WARP arc); a plain zoom step goes straight there.
    */
   const animateTo = useCallback(
-    (target: Framing, duration = 1000) => {
+    (target: Framing, duration = 1000, arc = true) => {
       touched.current = true
       cancelAnimationFrame(animRef.current)
       turning.current = false
@@ -285,7 +286,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
         if (t >= 1) return settle()
         const e = easeInOutCubic(t)
         // Pull back mid-flight for a "warp" arc.
-        const hop = 1 - Math.sin(Math.PI * t) * 0.22
+        const hop = arc ? 1 - Math.sin(Math.PI * t) * 0.22 : 1
         const zoom = Math.exp(Math.log(from.zoom) + (Math.log(target.zoom) - Math.log(from.zoom)) * e) * hop
         const angle = from.angle + (goal - from.angle) * e
         setCam({ ...rotateScreen({ x: from0.x + (to0.x - from0.x) * e, y: from0.y + (to0.y - from0.y) * e }, angle), zoom, angle })
@@ -439,7 +440,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   const zoomBy = (f: number) => {
     const c = camRef.current
     // Same ground centre, expressed for the rotation the city is heading to.
-    animateTo({ ...rotateScreen(c, goalAngle.current - c.angle), zoom: clampZoom(c.zoom * f) }, 350)
+    animateTo({ ...rotateScreen(c, goalAngle.current - c.angle), zoom: clampZoom(c.zoom * f) }, 350, false)
   }
 
   // Keyboard orbit: Q / E turn the city (never while typing, in a dialog, or with a modifier).

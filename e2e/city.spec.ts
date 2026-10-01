@@ -45,6 +45,38 @@ test.describe('Rare City', () => {
     await expect(roots).toHaveCount(1)
   })
 
+  test('the + / − controls zoom straight to the next step, with no pull-back', async ({ page }) => {
+    await openCity(page)
+    await page.getByTestId('guide-hide').click()
+    /** Every zoom the camera passes through in the flight a press starts. */
+    const flight = (label: string) =>
+      page.evaluate(async (label) => {
+        const city = document.querySelector<HTMLElement>('[data-testid="city"]')!
+        const seen = [Number(city.dataset.zoom)]
+        document.querySelector<HTMLButtonElement>(`.zoom-controls [aria-label="${label}"]`)!.click()
+        const end = performance.now() + 700
+        while (performance.now() < end) {
+          await new Promise((frame) => requestAnimationFrame(frame))
+          seen.push(Number(city.dataset.zoom))
+        }
+        return seen
+      }, label)
+
+    const zoomIn = await flight('Zoom in')
+    expect(zoomIn.at(-1)!).toBeCloseTo(zoomIn[0] * 1.4, 1)
+    for (let i = 1; i < zoomIn.length; i++) expect(zoomIn[i], `zoom in dipped at frame ${i}: ${zoomIn.join(' ')}`).toBeGreaterThanOrEqual(zoomIn[i - 1] - 0.011)
+
+    const zoomOut = await flight('Zoom out')
+    expect(zoomOut.at(-1)!).toBeCloseTo(zoomIn[0], 1)
+    for (let i = 1; i < zoomOut.length; i++) expect(zoomOut[i], `zoom out rose at frame ${i}: ${zoomOut.join(' ')}`).toBeLessThanOrEqual(zoomOut[i - 1] + 0.011)
+
+    // At the closest zoom a further + has nowhere to go: the camera must not bounce out and back.
+    await page.mouse.move(720, 450)
+    await page.mouse.wheel(0, -3000)
+    await expect(page.getByTestId('city')).toHaveAttribute('data-zoom', '3.20')
+    expect(new Set(await flight('Zoom in'))).toEqual(new Set([3.2]))
+  })
+
   test('Build Board surfaces the high-impact building and WARP flies to it', async ({ page }) => {
     await openCity(page)
     await page.getByTestId('nav-board').click()
