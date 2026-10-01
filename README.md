@@ -202,6 +202,7 @@ Shared city / game state (src/game, src/config: pure TypeScript, no DOM)
 **P0: core loop**
 - Large, dense pseudo-isometric SVG city: 9 districts with park-like civic squares, streets, street trees, open plots and ghost expansion wards; 180 seeded buildings with narrow footprints and a strong skyline; a central Capital Plaza with City Hall and the monument registry
 - Camera pan (drag), zoom (wheel, buttons, pinch) and animated **WARP**
+- **City rotation:** the Camera controls add **Rotate Left** and **Rotate Right** (15° per press, or **Q** / **E** on a keyboard) and a **compass** that resets the orientation. The city turns about City Hall while labels, buildings and billboards stay upright and readable; WARP and City Overview keep the current orientation. Rotation is camera/presentation only: it never changes property locations, districts, plots or gameplay state, is not saved, and a reload starts at the default view.
 - Selectable buildings with owner/other distinction. The player's tower carries a high-contrast **YOU · #4471 · T4** marker, and labels stay a constant size on screen at any zoom.
 - Tiers 1–6 at 100 / 500 / 2,500 / 10,000 / 50,000 / 250,000 RF, each with **10 intermediate construction stages** (floors, trim bands, corner lighting, scaffolding and a crane in late stages, uplights, setbacks and roof elements), plus a bigger transformation at each tier
 - Height strictly increasing in Total RF, with a readable metre value for the Crown race

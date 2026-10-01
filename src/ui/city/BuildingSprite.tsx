@@ -6,7 +6,7 @@ import { friendLabel } from '../../config/identity'
 import { patronLevelIndex, rankedPatrons, stageFor, tierFor } from '../../game/economy'
 import type { Building, DemoUser, LandscapeKind } from '../../game/types'
 import { useTween } from '../motion'
-import { facadeBillboardWidth, landscapeSlotPos, sectionsFor } from './buildingGeometry'
+import { CROWN_STEM, crownAnchor, crownScale, facadeBillboardWidth, landscapeSlotPos, ROOFTOP_BILLBOARD, roofHeightPx, rooftopExtent, sectionsFor } from './buildingGeometry'
 import { boxCorners, buildingHeightPx, FLOOR_PX, footprintHalf, hsl, iso, isoEllipse, leftFace, rightFace, S, TAN30, WINDOW_TILES, type Detail } from './geometry'
 import { lotHalfWithin, propertyLotHalf } from './roads'
 import { IsoBox } from './parts'
@@ -291,8 +291,15 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const showLabel = detail === 'near' || selected || isPlayer || isCrown || isObjective
   // Small buildings only reveal their label on hover/focus, even up close.
   const minorLabel = !(selected || isPlayer || isCrown || isObjective) && tierFor(target) < 3
-  const roofH = b.architecture.roof === 'spire' ? 48 : b.architecture.roof === 'halo' ? 26 : b.architecture.roof === 'dome' ? topSec.a * S + 12 : 12
-  const topY = -topSec.z1 - roofH - (isCrown ? (detail === 'far' ? 92 : 64) : 0)
+  const roofH = roofHeightPx(b.architecture.roof, topSec.a)
+  const roofMedia = b.fixtures.includes('billboard') && tier >= 5
+  // The City Crown floats above the highest rooftop attachment (billboard, crane, ...).
+  const crownK = crownScale(detail === 'far')
+  const crown = isCrown
+    ? crownAnchor(roofH, rooftopExtent({ roof: b.architecture.roof, rooftop: b.architecture.rooftop, topA: topSec.a, tier, stage, billboard: roofMedia }), crownK)
+    : null
+  const crownAt = crown ? `translate(0 ${-topSec.z1 - crown.base}) scale(${crownK})` : undefined
+  const topY = -topSec.z1 - (crown ? crown.base + (detail === 'far' ? 92 : 64) : roofH)
   const label = `${friendLabel(b.friendId)}, Tier ${tierFor(target)}, ${district.name}${isPlayer ? ', your building' : ''}`
 
   const onKey = (e: KeyboardEvent) => {
@@ -457,14 +464,22 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
         {tier > 0 && <Rooftop kind={b.architecture.rooftop} a={topSec.a} accent={accent} friendId={b.friendId} detail={detail} />}
       </g>
 
-      {b.fixtures.includes('billboard') && tier >= 5 && (
+      {/* Next section under construction (late stages). Behind rooftop media, so scaffold and
+          crane lines never cross a billboard image or take its clicks. */}
+      {tier > 0 && tier < 6 && stage >= 7 && <Scaffold a={topSec.a * 0.8} z={topSec.z1} stage={stage} />}
+
+      {/* Crown glow: painted beneath rooftop media so its halo never tints a billboard. */}
+      {crown && (
+        <g transform={crownAt} className="crown-glow" pointerEvents="none">
+          <circle cx={0} cy={-28} r={30} fill="url(#glow-gold)" opacity={0.8} className="pulse" />
+        </g>
+      )}
+
+      {roofMedia && (
         <g transform={`translate(0 ${-topSec.z1})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail={detail} {...mediaHit(b, onViewMedia)}>
           <RooftopBillboard id={b.id} image={b.billboard.image} accent={accent} landmark={tier >= 6} detail={detail} />
         </g>
       )}
-
-      {/* Next section under construction (late stages) */}
-      {tier > 0 && tier < 6 && stage >= 7 && <Scaffold a={topSec.a * 0.8} z={topSec.z1} stage={stage} />}
 
       {/* Landscaping */}
       {tier > 0 &&
@@ -494,12 +509,12 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
             )
           })}
 
-      {/* City Crown */}
-      {isCrown && (
-        <g transform={`translate(0 ${-topSec.z1 - roofH}) scale(${detail === 'far' ? 2 : 1.4})`} className="crown-spire" data-testid="crown-spire">
-          <rect x={-3} y={-900} width={6} height={900} fill="url(#beam-gold)" opacity={0.55} />
-          <circle cx={0} cy={-28} r={30} fill="url(#glow-gold)" opacity={0.8} className="pulse" />
-          <line x1={0} y1={0} x2={0} y2={-18} stroke="#ffd45a" strokeWidth={2} />
+      {/* City Crown: never a pointer target, so rooftop media beneath it stays clickable
+          (the building's own hit area still selects it). */}
+      {crown && (
+        <g transform={crownAt} className="crown-spire" data-testid="crown-spire" pointerEvents="none">
+          <rect x={-3} y={-900} width={6} height={900 + crown.stem} fill="url(#beam-gold)" opacity={0.55} />
+          <line x1={0} y1={crown.stem} x2={0} y2={-CROWN_STEM} stroke="#ffd45a" strokeWidth={2} data-crown-mast="true" />
           <path d="M-12 -20 L-12 -36 L-6 -28 L0 -40 L6 -28 L12 -36 L12 -20 Z" fill="#ffd45a" stroke="#fff6cc" strokeWidth={0.8} />
           <circle cx={0} cy={-42} r={2.2} fill="#fff" />
         </g>
@@ -697,9 +712,9 @@ function Billboard({ w, id, image, accent, detail }: { w: number; id: string; im
 
 /** T5 skyline rooftop billboard / T6 landmark crown screen standing on the roof. */
 function RooftopBillboard({ id, image, accent, landmark, detail }: { id: string; image: string | null; accent: string; landmark: boolean; detail: Detail }) {
-  const W = landmark ? 92 : 68
+  const { w: W, legs } = landmark ? ROOFTOP_BILLBOARD.landmark : ROOFTOP_BILLBOARD.skyline
   const H = W / 2
-  const legs = landmark ? 14 : 10
+  const F = ROOFTOP_BILLBOARD.frame
   const clip = `rb-clip-${id}`
   const frame = landmark ? '#ffd45a' : accent
   return (
@@ -708,7 +723,7 @@ function RooftopBillboard({ id, image, accent, landmark, detail }: { id: string;
       <line x1={-W * 0.22} y1={0} x2={-W * 0.22} y2={-legs - 4} stroke="#8a93a8" strokeWidth={1.4} />
       <line x1={W * 0.22} y1={0} x2={W * 0.22} y2={-legs - 4} stroke="#8a93a8" strokeWidth={1.4} />
       <g transform={`matrix(1 ${TAN30} 0 1 ${-W / 2} ${(-W / 2) * TAN30 - H - legs})`}>
-        <rect x={-3} y={-3} width={W + 6} height={H + 6} fill="#0a0d16" stroke={frame} strokeWidth={landmark ? 2.4 : 1.4} />
+        <rect x={-F} y={-F} width={W + 2 * F} height={H + 2 * F} fill="#0a0d16" stroke={frame} strokeWidth={landmark ? 2.4 : 1.4} />
         <clipPath id={clip}>
           <rect x={0} y={0} width={W} height={H} />
         </clipPath>

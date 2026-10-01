@@ -266,6 +266,9 @@ test.describe('Rare City', () => {
     await page.getByRole('button', { name: 'City overview' }).click()
     const city = page.getByTestId('city')
     const billboard = page.getByTestId('billboard-4471')
+    // The wheel takes over the camera and cancels a flight in progress, so let the overview
+    // actually reach far zoom before any wheel input.
+    await expect(city).toHaveAttribute('data-detail', 'far')
     for (const detail of ['far', 'mid', 'near'] as const) {
       // Zoom about the tower (wheel zooms around the cursor) until this detail level is reached.
       await expect
