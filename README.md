@@ -295,12 +295,24 @@ src/
     demo.ts          guided-demo progress derived from state
     seed.ts          deterministic demo city
     persistence.ts   versioned localStorage load/save
+    commands.ts      player intents + applyCityCommand (shared with the server)
+    demoCommands.ts  demo-only controls (faucet, rival, simulated joins, growth)
+  transport/     # authority seam between the UI and whoever owns the city
+    types.ts         CityTransport, CitySnapshot, Viewer
+    local.ts         local demo authority: engine in the browser + localStorage
   ui/            # React presentation
     city/            SVG strategic map: projection, ground layer, buildings,
                      monuments, plaza, camera, culling
     panels/          Build Board, building, Architect, standings, profile, radio
 e2e/             # Playwright specs
+server/          # production foundation: Node/TypeScript service + SQL migrations
+                 # (diagnostics only so far; see server/README.md)
 ```
+
+The UI never calls the engine directly. `src/ui/store.ts` reads a `CitySnapshot` from a
+`CityTransport` and sends commands to it; the transport also says who the viewer is. Today the
+only transport is the local demo one, which behaves exactly as the demo always has. The
+`server/` service is not used by the live demo.
 
 ## Known limitations
 

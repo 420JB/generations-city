@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { BADGES, BADGE_LEVEL_NAMES } from '../../config/badges'
 import { getDistrict } from '../../config/districts'
-import { DEMO_PLAYER_ID, friendLabel, IDENTITY_SOURCE } from '../../config/identity'
+import { friendLabel, IDENTITY_SOURCE } from '../../config/identity'
 import { MONUMENTS } from '../../config/monuments'
 import { profileSummary } from '../../game/badges'
 import { formatRF } from '../../game/economy'
@@ -31,17 +31,17 @@ function Reigns<T>({ title, entries, label, game }: { title: string; entries: Hi
   )
 }
 
-export function ProfilePanel({ game, onClose, onWarp }: { game: GameState; onClose: () => void; onWarp: (id: string) => void }) {
-  const me = game.users[DEMO_PLAYER_ID]
-  const summary = useMemo(() => profileSummary(game, DEMO_PLAYER_ID), [game])
-  const earned = new Map((game.badges[DEMO_PLAYER_ID] ?? []).map((b) => [b.badgeId, b]))
-  const rep = game.season.representatives[DEMO_PLAYER_ID]
-  const seasonHome = homeDistrict(game, DEMO_PLAYER_ID)
+export function ProfilePanel({ game, viewerId, onClose, onWarp }: { game: GameState; viewerId: string; onClose: () => void; onWarp: (id: string) => void }) {
+  const me = game.users[viewerId]
+  const summary = useMemo(() => profileSummary(game, viewerId), [game, viewerId])
+  const earned = new Map((game.badges[viewerId] ?? []).map((b) => [b.badgeId, b]))
+  const rep = game.season.representatives[viewerId]
+  const seasonHome = homeDistrict(game, viewerId)
   const home = seasonHome
-  const owned = ownedFriends(game, DEMO_PLAYER_ID)
+  const owned = ownedFriends(game, viewerId)
   const titles: string[] = []
   if (home && game.capital.holder === home) titles.push(`Citizen of the Capital (${getDistrict(home).title})`)
-  if (game.crown.holder && game.buildings[game.crown.holder].ownerId === DEMO_PLAYER_ID) titles.push('Holder of the City Crown')
+  if (game.crown.holder && game.buildings[game.crown.holder].ownerId === viewerId) titles.push('Holder of the City Crown')
   for (const m of MONUMENTS) if (home && game.monuments[m.id].holder === home) titles.push(`The ${getDistrict(home).title} holds ${m.name}`)
 
   return (

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { getDistrict } from '../../config/districts'
 import { PATRON_LEVELS, QUICK_AMOUNTS, STAGES_PER_TIER } from '../../config/economy'
-import { DEMO_PLAYER_ID, friendLabel } from '../../config/identity'
+import { friendLabel } from '../../config/identity'
 import {
   architectLevel,
   buildSplit,
@@ -26,6 +26,7 @@ import type { GameAction } from '../store'
 
 interface Props {
   game: GameState
+  viewerId: string
   buildingId: string
   act: (a: GameAction) => void
   onClose: () => void
@@ -33,7 +34,7 @@ interface Props {
   onArchitect: () => void
 }
 
-export function BuildingPanel({ game, buildingId, act, onClose, onBack, onArchitect }: Props) {
+export function BuildingPanel({ game, viewerId, buildingId, act, onClose, onBack, onArchitect }: Props) {
   const b = game.buildings[buildingId]
   const [pending, setPending] = useState<number | null>(null)
   const [custom, setCustom] = useState('')
@@ -42,17 +43,17 @@ export function BuildingPanel({ game, buildingId, act, onClose, onBack, onArchit
   const tier = tierFor(split.total)
   const stage = stageFor(split.total)
   const need = rfToNextTier(split.total)
-  const isOwner = b.ownerId === DEMO_PLAYER_ID
+  const isOwner = b.ownerId === viewerId
   const owner = game.users[b.ownerId]
   const district = getDistrict(b.districtId)
-  const wallet = game.wallets[DEMO_PLAYER_ID] ?? 0
+  const wallet = game.wallets[viewerId] ?? 0
   const patrons = rankedPatrons(b)
   const nextLines = need === null ? [] : describeImpact(game, projectImpact(game, buildingId, need))
   const pendingLines = pending ? describeImpact(game, projectImpact(game, buildingId, pending)) : []
   const pendingTier = pending ? tierFor(split.total + pending) : tier
   const isCrown = game.crown.holder === b.id
-  const allegiance = contributionAllegiance(game, DEMO_PLAYER_ID, buildingId)
-  const home = homeDistrict(game, DEMO_PLAYER_ID)
+  const allegiance = contributionAllegiance(game, viewerId, buildingId)
+  const home = homeDistrict(game, viewerId)
   const homeName = home ? getDistrict(home).name : 'none'
   const media = mediaTierFor(tier)
   const nextMedia = nextMediaTier(tier)

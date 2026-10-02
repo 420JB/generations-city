@@ -1,6 +1,6 @@
 import { getBadge } from '../config/badges'
 import { getDistrict } from '../config/districts'
-import { DEMO_PLAYER_ID, friendLabel } from '../config/identity'
+import { friendLabel } from '../config/identity'
 import { getMonument } from '../config/monuments'
 import { badgeLabel, districtName, districtTitle } from '../game/narration'
 import { wardName } from '../game/allocation'
@@ -20,7 +20,7 @@ export interface BadgeToast {
   glyph: string
 }
 
-export function announcementsFor(game: GameState, events: GameEvent[], seq: number): { banners: Announcement[]; badges: BadgeToast[] } {
+export function announcementsFor(game: GameState, events: GameEvent[], seq: number, viewerId: string): { banners: Announcement[]; badges: BadgeToast[] } {
   const banners: Announcement[] = []
   const badges: BadgeToast[] = []
   events.forEach((e, i) => {
@@ -39,7 +39,7 @@ export function announcementsFor(game: GameState, events: GameEvent[], seq: numb
     } else if (e.type === 'crown-transfer') {
       const b = e.to ? game.buildings[e.to] : null
       banners.push({ key, kind: 'crown', title: 'CITY CROWN TRANSFERRED', body: b ? `${friendLabel(b.friendId)} is now the tallest building` : 'Crown vacant', color: '#ffd45a' })
-    } else if (e.type === 'tier-up' && e.byUserId === DEMO_PLAYER_ID) {
+    } else if (e.type === 'tier-up' && e.byUserId === viewerId) {
       const b = game.buildings[e.buildingId]
       banners.push({ key, kind: 'tier', title: `TIER ${e.toTier} REACHED`, body: `${friendLabel(b.friendId)} · ${districtName(b.districtId)}`, color: getDistrict(b.districtId).color })
     } else if (e.type === 'ward-opened' && e.simulatedResidents) {
@@ -47,7 +47,7 @@ export function announcementsFor(game: GameState, events: GameEvent[], seq: numb
       banners.push({ key, kind: 'growth', title: `${districtTitle(e.districtId).toUpperCase()} EXPANDS`, body: `${wardName(e.ward)} opened · ${n} simulated Friend${n === 1 ? '' : 's'} activated (demo)`, color: getDistrict(e.districtId).color })
     } else if (e.type === 'ward-opened') {
       banners.push({ key, kind: 'growth', title: 'THE CITY GROWS', body: `The ${districtTitle(e.districtId)} opens ${wardName(e.ward)}`, color: getDistrict(e.districtId).color })
-    } else if (e.type === 'badge' && e.userId === DEMO_PLAYER_ID) {
+    } else if (e.type === 'badge' && e.userId === viewerId) {
       badges.push({ key, label: badgeLabel(e.badgeId, e.level), glyph: getBadge(e.badgeId)?.glyph ?? '★' })
     }
   })

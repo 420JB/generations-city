@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
-import { DEMO_PLAYER_ID } from '../../config/identity'
 import { MONUMENTS } from '../../config/monuments'
 import { WORLD } from '../../config/world'
 import { tierFor, totalBuilt } from '../../game/economy'
@@ -179,6 +178,8 @@ function CapitalCrest({ id, scale, compact, rot }: { id: DistrictId; scale: numb
 
 interface Props {
   game: GameState
+  /** Whose properties count as "yours" on the map. */
+  viewerId: string
   selectedId: string | null
   onSelect: (id: string | null) => void
   onSelectDistrict: (d: DistrictId) => void
@@ -206,7 +207,7 @@ interface CityObject {
   render: () => ReactNode
 }
 
-export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia, placement, onPickPlot, frame }: Props) {
+export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia, placement, onPickPlot, frame }: Props) {
   const placing = !!placement
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 1280, h: 800 })
@@ -563,7 +564,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
   // Level of detail: which buildings render individually vs as simple massing.
   const lodFull = useMemo(() => {
     const keep = new Set<string>([selectedId ?? '', game.crown.holder ?? '', objectiveId ?? ''])
-    for (const b of Object.values(game.buildings)) if (b.ownerId === DEMO_PLAYER_ID) keep.add(b.id)
+    for (const b of Object.values(game.buildings)) if (b.ownerId === viewerId) keep.add(b.id)
     const groups = new Map<string, Building[]>()
     for (const b of Object.values(game.buildings)) {
       const k = `${b.districtId}:${b.ward}`
@@ -575,7 +576,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
       else representativeBuildings(list, keep).forEach((id) => full.add(id))
     }
     return full
-  }, [game.buildings, game.crown.holder, selectedId, detail, objectiveId])
+  }, [game.buildings, game.crown.holder, selectedId, detail, objectiveId, viewerId])
 
   const objects = useMemo(() => {
     const out: CityObject[] = []
@@ -597,7 +598,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
                 total={total}
                 users={game.users}
                 selected={selectedId === b.id}
-                isPlayer={b.ownerId === DEMO_PLAYER_ID}
+                isPlayer={b.ownerId === viewerId}
                 isCrown={game.crown.holder === b.id}
                 detail={detail}
                 fx={fx[b.id] ?? null}
@@ -676,7 +677,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
     const { screen: f, depth: fountainDepth } = place({ x: 9.5, y: 9.5 }, rot)
     out.push({ depth: fountainDepth, key: 'fountain', bbox: { x0: f.x - 50, x1: f.x + 50, y0: f.y - 40, y1: f.y + 30 }, render: () => <g key="fountain" transform={`translate(${f.x} ${f.y})`}><Fountain /></g> })
     return out.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key))
-  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId, rot])
+  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId, rot, viewerId])
 
   // Viewport culling: only mount what intersects the camera view.
   const visible = objects.filter((o) => intersects(o.bbox, view))
@@ -700,7 +701,7 @@ export function CityView({ game, selectedId, onSelect, onSelectDistrict, focus, 
 
   // Priority building labels (selected, yours, Crown, objective) are re-drawn above the
   // district labels with a cheap <use> of the label each sprite already renders.
-  const priorityLabels = [...new Set([selectedId, objectiveId, game.crown.holder, ...Object.values(game.buildings).filter((b) => b.ownerId === DEMO_PLAYER_ID).map((b) => b.id)])]
+  const priorityLabels = [...new Set([selectedId, objectiveId, game.crown.holder, ...Object.values(game.buildings).filter((b) => b.ownerId === viewerId).map((b) => b.id)])]
     .filter((id): id is string => !!id && !!game.buildings[id] && lodFull.has(id) && visible.some((o) => o.key === id))
     .map((id) => ({ id, p: placeBuilding(game.buildings[id], rot).screen }))
 

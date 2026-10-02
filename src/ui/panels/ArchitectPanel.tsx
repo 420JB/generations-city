@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ARCH_OPTIONS, ARCH_SLOT_LABELS, FACADE_PALETTES, LIGHTING_COLORS, type ArchitectureSlot } from '../../config/architecture'
 import { ARCHITECT_LEVELS, BILLBOARD_MIN_TIER, LANDSCAPE_MAX_SLOTS } from '../../config/economy'
 import { FIXTURES, LANDSCAPE_KINDS, getFixture, type FixtureId, type LandscapeKind } from '../../config/fixtures'
-import { DEMO_PLAYER_ID, friendLabel } from '../../config/identity'
+import { friendLabel } from '../../config/identity'
 import { optionUnlocked } from '../../game/actions'
 import { architectLevel, buildSplit, formatRF, landscapeCapacity, nextArchitectThreshold, tierFor } from '../../game/economy'
 import type { GameState } from '../../game/types'
@@ -19,6 +19,7 @@ const LS_ICON: Record<LandscapeKind, string> = { tree: '🌳', shrub: '🌿', pl
 
 interface Props {
   game: GameState
+  viewerId: string
   buildingId: string
   act: (a: GameAction) => void
   onClose: () => void
@@ -27,7 +28,7 @@ interface Props {
   onBillboardDraft: (image: string | null) => void
 }
 
-export function ArchitectPanel({ game, buildingId, act, onClose, onBack, onBillboardDraft }: Props) {
+export function ArchitectPanel({ game, viewerId, buildingId, act, onClose, onBack, onBillboardDraft }: Props) {
   const b = game.buildings[buildingId]
   const [tab, setTab] = useState<Tab>('design')
   const [buying, setBuying] = useState<FixtureId | null>(null)
@@ -51,13 +52,13 @@ export function ArchitectPanel({ game, buildingId, act, onClose, onBack, onBillb
   // Never leave an unsaved preview on the building after the panel closes.
   useEffect(() => () => onBillboardDraft(null), [onBillboardDraft])
   const onDraft = useCallback((img: string) => onBillboardDraft(img), [onBillboardDraft])
-  if (b.ownerId !== DEMO_PLAYER_ID) return null
+  if (b.ownerId !== viewerId) return null
   const split = buildSplit(b)
   const tier = tierFor(split.total)
   const lvl = architectLevel(b.ownerBuilt)
   const next = nextArchitectThreshold(b.ownerBuilt)
   const cap = landscapeCapacity(b.ownerBuilt)
-  const wallet = game.wallets[DEMO_PLAYER_ID] ?? 0
+  const wallet = game.wallets[viewerId] ?? 0
 
   const buy = (id: FixtureId) => {
     act({ type: 'fixture', buildingId, fixtureId: id })

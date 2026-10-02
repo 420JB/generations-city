@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { DistrictId } from '../config/districts'
-import { DEMO_PLAYER_ID } from '../config/identity'
 import { buildingIdFor, SCENARIO } from '../game/seed'
 import { announcementsFor } from './announce'
 import { Announcements } from './Announcements'
@@ -46,9 +45,10 @@ function readIntro(): boolean {
 export default function App() {
   const { store, act } = useGameStore()
   const game = store.game
+  const viewerId = store.viewer.userId
   const playerBuilding = useMemo(
-    () => Object.values(game.buildings).find((b) => b.ownerId === DEMO_PLAYER_ID) ?? null,
-    [game.buildings],
+    () => Object.values(game.buildings).find((b) => b.ownerId === viewerId) ?? null,
+    [game.buildings, viewerId],
   )
   const homeDistrict: DistrictId = playerBuilding?.districtId ?? 'd4'
 
@@ -101,7 +101,7 @@ export default function App() {
 
   // Derived, time-boxed presentation of the latest action.
   const { banners, badges } = useMemo(
-    () => (last && last.seq !== dismissedSeq ? announcementsFor(game, last.events, last.seq) : { banners: [], badges: [] }),
+    () => (last && last.seq !== dismissedSeq ? announcementsFor(game, last.events, last.seq, viewerId) : { banners: [], badges: [] }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [last, dismissedSeq],
   )
@@ -253,9 +253,9 @@ export default function App() {
 
   const progress = useMemo(() => demoProgress(game), [game])
   // Demo growth targets the player's Home District (Family in the seeded demo).
-  const growDistrict: DistrictId = seasonHome(game, DEMO_PLAYER_ID) ?? homeDistrict
+  const growDistrict: DistrictId = seasonHome(game, viewerId) ?? homeDistrict
   // Rally Calls are derived from current state (never persisted) and refresh after every action.
-  const rallyCalls = useMemo(() => radioDispatches(game, DEMO_PLAYER_ID), [game])
+  const rallyCalls = useMemo(() => radioDispatches(game, viewerId), [game, viewerId])
   // The next guided objective stays labelled on the map even at overview zoom.
   const objectiveId = !progress.primaryComplete ? progress.kingmakerId : !progress.capital ? buildingIdFor(SCENARIO.capitalFriend) : null
 
@@ -265,7 +265,7 @@ export default function App() {
     ) : panel === 'standings' ? (
       <StandingsPanel game={game} onClose={closePanel} onWarp={warp} onJoin={startPlacement} growthFocusSeq={growthFocusSeq} />
     ) : panel === 'profile' ? (
-      <ProfilePanel game={game} onClose={closePanel} onWarp={warp} />
+      <ProfilePanel game={game} viewerId={viewerId} onClose={closePanel} onWarp={warp} />
     ) : panel === 'radio' ? (
       <RadioPanel
         game={game}
@@ -284,6 +284,7 @@ export default function App() {
       <BuildingPanel
         key={selectedId}
         game={game}
+        viewerId={viewerId}
         buildingId={selectedId}
         act={act}
         onClose={() => select(null)}
@@ -291,7 +292,7 @@ export default function App() {
         onArchitect={() => setPanel('architect')}
       />
     ) : panel === 'architect' && selectedId && game.buildings[selectedId] ? (
-      <ArchitectPanel game={game} buildingId={selectedId} act={act} onClose={() => select(null)} onBack={() => setPanel('building')} onBillboardDraft={onBillboardDraft} />
+      <ArchitectPanel game={game} viewerId={viewerId} buildingId={selectedId} act={act} onClose={() => select(null)} onBack={() => setPanel('building')} onBillboardDraft={onBillboardDraft} />
     ) : null
 
   const revealing =
@@ -309,6 +310,7 @@ export default function App() {
       </div>
       <CityView
         game={game}
+        viewerId={viewerId}
         selectedId={selectedId}
         onSelect={select}
         onSelectDistrict={(d) => {
@@ -339,7 +341,7 @@ export default function App() {
           onCancel={cancelPlacement}
         />
       )}
-      <Hud game={game} panel={panel} onPanel={openPanel} onHelp={() => setGuideOpen((v) => !v)} guideOpen={guideOpen} onSearch={search} onFaucet={() => act({ type: 'faucet' })} onReset={() => setConfirmReset(true)} onWarp={warp} />
+      <Hud game={game} viewerId={viewerId} panel={panel} onPanel={openPanel} onHelp={() => setGuideOpen((v) => !v)} guideOpen={guideOpen} onSearch={search} onFaucet={() => act({ type: 'faucet' })} onReset={() => setConfirmReset(true)} onWarp={warp} />
 
       <div className="radio-ticker" aria-label="Latest District Radio">
         <button type="button" className="ticker-head" onClick={() => openPanel('radio')}>

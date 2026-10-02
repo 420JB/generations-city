@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { getDistrict } from '../config/districts'
-import { DEMO_PLAYER_ID, friendLabel } from '../config/identity'
+import { friendLabel } from '../config/identity'
 import { MONUMENTS } from '../config/monuments'
 import { formatRF, heightMeters, totalBuilt } from '../game/economy'
 import type { GameState } from '../game/types'
@@ -10,6 +10,7 @@ import type { PanelKind } from './App'
 
 interface Props {
   game: GameState
+  viewerId: string
   panel: PanelKind | null
   onPanel: (p: PanelKind) => void
   onFaucet: () => void
@@ -20,10 +21,10 @@ interface Props {
   onSearch: (friendId: number) => void
 }
 
-export function Hud({ game, panel, onPanel, onFaucet, onReset, onWarp, onHelp, guideOpen, onSearch }: Props) {
+export function Hud({ game, viewerId, panel, onPanel, onFaucet, onReset, onWarp, onHelp, guideOpen, onSearch }: Props) {
   const [query, setQuery] = useState('')
-  const me = game.users[DEMO_PLAYER_ID]
-  const home = homeDistrict(game, DEMO_PLAYER_ID)
+  const me = game.users[viewerId]
+  const home = homeDistrict(game, viewerId)
   const cap = game.capital.holder ? getDistrict(game.capital.holder) : null
   const crownB = game.crown.holder ? game.buildings[game.crown.holder] : null
   const nav: [PanelKind, string, string][] = [
@@ -98,7 +99,7 @@ export function Hud({ game, panel, onPanel, onFaucet, onReset, onWarp, onHelp, g
           <div>
             <div className="player-name">@{me.handle}</div>
             <div className="wallet">
-              <b data-testid="wallet">{formatRF(game.wallets[DEMO_PLAYER_ID] ?? 0)}</b> <span className="sim-tag">SIMULATED RF</span>
+              <b data-testid="wallet">{formatRF(game.wallets[viewerId] ?? 0)}</b> <span className="sim-tag">SIMULATED RF</span>
             </div>
             <button type="button" className="season-line link-btn" onClick={() => onPanel('profile')} data-testid="hud-season" title="Season allegiance: locked until next season">
               {game.season.name.toUpperCase()} · Home District {home && <DistrictEmblem id={home} size={14} />} <b data-district={home ?? ''}>{home ? getDistrict(home).name : 'not chosen'}</b> 🔒
