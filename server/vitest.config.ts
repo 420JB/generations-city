@@ -5,5 +5,6 @@ export default defineConfig({
   test: {
     include: ['server/tests/**/*.test.ts'],
     environment: 'node',
+    globalSetup: ['server/tests/globalSetup.ts'],
   },
 })

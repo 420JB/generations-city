@@ -1,8 +1,9 @@
 import { createLocalTransport } from './local'
 import { resolveClientMode } from './mode'
+import { createServerTransport } from './server'
 import type { CityTransport } from './types'
 
-export type { CitySnapshot, CityTransport, ClientCommand, Viewer } from './types'
+export type { CitySnapshot, CityTransport, ClientCommand, Connection, Viewer } from './types'
 
 let transport: CityTransport | null = null
 
@@ -10,7 +11,10 @@ let transport: CityTransport | null = null
 export function getTransport(): CityTransport {
   if (transport) return transport
   const mode = resolveClientMode(import.meta.env.VITE_APP_MODE)
-  if (mode === 'server') throw new Error('VITE_APP_MODE=server is not available yet: this build ships the local demo transport only.')
-  transport = createLocalTransport(typeof window !== 'undefined' ? window.localStorage : null)
+  transport =
+    mode === 'server'
+      ? // Same origin: the Rare City service serves this page and the API. No storage is handed over.
+        createServerTransport({ fetch: (input, init) => window.fetch(input, init) })
+      : createLocalTransport(typeof window !== 'undefined' ? window.localStorage : null)
   return transport
 }

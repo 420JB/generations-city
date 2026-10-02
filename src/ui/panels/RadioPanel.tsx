@@ -75,24 +75,27 @@ export interface GrowthTool {
   nextWard: string
 }
 
+/** Local-demo-only simulations. */
+export interface DemoTools {
+  growth: GrowthTool
+  onRival: () => void
+  onGrow: () => void
+}
+
 export function RadioPanel({
   game,
   calls,
-  growth,
   onClose,
   onWarp,
-  onRival,
-  onGrow,
+  demoTools,
 }: {
   game: GameState
   calls: RallyCall[]
-  growth: GrowthTool
   onClose: () => void
   onWarp: (id: string) => void
-  onRival: () => void
-  onGrow: () => void
+  /** null outside the local demo: the simulations are not offered. */
+  demoTools: DemoTools | null
 }) {
-  const growName = getDistrict(growth.districtId).name
   return (
     <section className="panel radio-panel" aria-label="District Radio" data-testid="radio">
       <PanelHeader kicker="GAME-GENERATED BROADCASTS · NO FREE-TEXT CHAT" title="District Radio" onClose={onClose} />
@@ -109,26 +112,28 @@ export function RadioPanel({
           No urgent moves right now. The Build Board lists every opportunity.
         </p>
       )}
-      <div className="demo-tools" data-testid="demo-tools">
-        <div className="kicker">DEMO TOOLS · SIMULATIONS</div>
-        <div className="demo-tools-row">
-          <button type="button" className="btn sm" onClick={onRival} data-testid="rival-turn" title="A simulated rival district funds its best move through the same economy rules">
-            ⏭ Simulate rival move
-          </button>
-          <button
-            type="button"
-            className="btn sm"
-            onClick={onGrow}
-            data-testid="simulate-growth"
-            data-district={growth.districtId}
-            data-next-ward={growth.nextWard}
-            title="Activates simulated demo residents through the real plot allocator until the next ward opens"
-          >
-            ⌂ Simulate {growName} growth · Open {growth.nextWard}
-          </button>
+      {demoTools && (
+        <div className="demo-tools" data-testid="demo-tools">
+          <div className="kicker">DEMO TOOLS · SIMULATIONS</div>
+          <div className="demo-tools-row">
+            <button type="button" className="btn sm" onClick={demoTools.onRival} data-testid="rival-turn" title="A simulated rival district funds its best move through the same economy rules">
+              ⏭ Simulate rival move
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={demoTools.onGrow}
+              data-testid="simulate-growth"
+              data-district={demoTools.growth.districtId}
+              data-next-ward={demoTools.growth.nextWard}
+              title="Activates simulated demo residents through the real plot allocator until the next ward opens"
+            >
+              ⌂ Simulate {getDistrict(demoTools.growth.districtId).name} growth · Open {demoTools.growth.nextWard}
+            </button>
+          </div>
+          <div className="small muted">Simulated rivals and demo residents only; no real Friends or RF.</div>
         </div>
-        <div className="small muted">Simulated rivals and demo residents only; no real Friends or RF.</div>
-      </div>
+      )}
       <h3 className="section-title">City Feed</h3>
       <ul className="radio-list" data-testid="radio-list">
         {game.radio.map((e) => (

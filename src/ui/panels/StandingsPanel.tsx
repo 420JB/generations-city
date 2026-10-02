@@ -26,7 +26,8 @@ export function StandingsPanel({
   game: GameState
   onClose: () => void
   onWarp: (id: string) => void
-  onJoin: (d: DistrictId) => void
+  /** Local demo only: add a simulated Friend. Omitted for visitors, who see the wards without the controls. */
+  onJoin?: (d: DistrictId) => void
   /** Bumped by the Demo Guide's "Choose a plot" to scroll City Growth into view. */
   growthFocusSeq?: number
 }) {
@@ -125,11 +126,13 @@ export function StandingsPanel({
         </tbody>
       </table>
       <h3 className="section-title" id="city-growth" ref={growthRef} data-testid="city-growth">
-        Simulate Real City Growth · Wards
+        {onJoin ? 'Simulate Real City Growth · Wards' : 'City Growth · Wards'}
       </h3>
-      <p className="muted small">
-        Choose any family below and add a Demo Friend. Their family determines the district; <b>you choose the exact available plot</b>. When all plots in the current Wards are occupied, the next Ward opens automatically, with no ward limit. Plot location is preference only: no gameplay advantage. Ward I is the Founding Ward, a prestige title only.
-      </p>
+      {onJoin && (
+        <p className="muted small">
+          Choose any family below and add a Demo Friend. Their family determines the district; <b>you choose the exact available plot</b>. When all plots in the current Wards are occupied, the next Ward opens automatically, with no ward limit. Plot location is preference only: no gameplay advantage. Ward I is the Founding Ward, a prestige title only.
+        </p>
+      )}
       <ul className="growth-list">
         {DISTRICTS.map((d) => {
           const g = districtGrowth(game, d.id)
@@ -142,9 +145,11 @@ export function StandingsPanel({
                   · {g.wards.map((w) => `${wardName(w.ward).replace('Ward ', '')} ${w.population}/${w.capacity}`).join(' · ')}
                 </span>
               </span>
-              <button type="button" className="btn sm" onClick={() => onJoin(d.id)} data-testid={`join-${d.id}`}>
-                + Add Friend · choose plot
-              </button>
+              {onJoin && (
+                <button type="button" className="btn sm" onClick={() => onJoin(d.id)} data-testid={`join-${d.id}`}>
+                  + Add Friend · choose plot
+                </button>
+              )}
             </li>
           )
         })}

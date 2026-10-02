@@ -20,7 +20,7 @@ export interface BadgeToast {
   glyph: string
 }
 
-export function announcementsFor(game: GameState, events: GameEvent[], seq: number, viewerId: string): { banners: Announcement[]; badges: BadgeToast[] } {
+export function announcementsFor(game: GameState, events: GameEvent[], seq: number, viewerId: string | null): { banners: Announcement[]; badges: BadgeToast[] } {
   const banners: Announcement[] = []
   const badges: BadgeToast[] = []
   events.forEach((e, i) => {

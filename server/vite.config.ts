@@ -10,7 +10,7 @@ export default defineConfig({
     outDir: 'dist-server',
     emptyOutDir: true,
     rolldownOptions: {
-      input: { main: 'server/src/main.ts', migrate: 'server/src/migrate-cli.ts' },
+      input: { main: 'server/src/main.ts', migrate: 'server/src/migrate-cli.ts', 'seed-demo': 'server/src/seed-demo-cli.ts' },
     },
   },
 })

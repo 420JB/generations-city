@@ -1,4 +1,5 @@
 import { createSeedState, STATE_VERSION } from './seed'
+import { isCityStateShape } from './stateSchema'
 import type { GameState } from './types'
 
 // Legacy key prefix kept on purpose after the Rare City rename: changing it would drop every saved city.
@@ -6,16 +7,8 @@ export const STORAGE_KEY = `generations-city:state:v${STATE_VERSION}`
 
 /** Structural sanity check for persisted state; anything stale or malformed falls back to seed. */
 export function isValidState(value: unknown): value is GameState {
-  if (!value || typeof value !== 'object') return false
-  const s = value as Partial<GameState>
-  if (s.version !== STATE_VERSION) return false
-  if (typeof s.clock !== 'number') return false
-  if (!s.buildings || typeof s.buildings !== 'object' || Object.keys(s.buildings).length === 0) return false
-  if (!s.users || !s.monuments || !s.capital || !s.crown || !Array.isArray(s.radio) || !s.wards || !s.season?.representatives) return false
-  for (const b of Object.values(s.buildings)) {
-    if (!b || typeof b.ownerBuilt !== 'number' || typeof b.ward !== 'number' || typeof b.plot !== 'number' || typeof b.patrons !== 'object' || !b.architecture || !Array.isArray(b.landscapeSlots)) return false
-  }
-  return true
+  // A saved demo city always has buildings; an empty one is treated as corrupt.
+  return isCityStateShape(value) && Object.keys(value.buildings).length > 0
 }
 
 export function loadState(storage: Pick<Storage, 'getItem'> | null): { state: GameState; restored: boolean } {

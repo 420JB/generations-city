@@ -11,9 +11,10 @@ import { wardCapacity } from './world'
 import { appendRadio } from './narration'
 import { initialWards } from './allocation'
 import { emptySeason } from './season'
+import { STATE_VERSION } from './stateSchema'
 import type { Building, GameState, HistoryEntry, RadioEntry } from './types'
 
-export const STATE_VERSION = 5
+export { STATE_VERSION }
 
 /** Deterministic PRNG (mulberry32) so the seed city is identical every reset. */
 export function prng(seed: number) {

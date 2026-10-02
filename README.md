@@ -295,24 +295,32 @@ src/
     demo.ts          guided-demo progress derived from state
     seed.ts          deterministic demo city
     persistence.ts   versioned localStorage load/save
+    stateSchema.ts   state version + structural check for untrusted state
     commands.ts      player intents + applyCityCommand (shared with the server)
     demoCommands.ts  demo-only controls (faucet, rival, simulated joins, growth)
+  protocol/      # wire contract shared with the server: /v1/city, Viewer
   transport/     # authority seam between the UI and whoever owns the city
-    types.ts         CityTransport, CitySnapshot, Viewer
+    types.ts         CityTransport, CitySnapshot, Connection
     local.ts         local demo authority: engine in the browser + localStorage
+    server.ts        server authority: reads /v1/city, read-only, no localStorage
   ui/            # React presentation
     city/            SVG strategic map: projection, ground layer, buildings,
                      monuments, plaza, camera, culling
     panels/          Build Board, building, Architect, standings, profile, radio
 e2e/             # Playwright specs
-server/          # production foundation: Node/TypeScript service + SQL migrations
-                 # (diagnostics only so far; see server/README.md)
+e2e-server/      # Playwright specs for the server-mode app against a real Postgres
+server/          # Node/TypeScript service + SQL migrations: the shared city, read-only
+                 # (see server/README.md)
 ```
 
 The UI never calls the engine directly. `src/ui/store.ts` reads a `CitySnapshot` from a
-`CityTransport` and sends commands to it; the transport also says who the viewer is. Today the
-only transport is the local demo one, which behaves exactly as the demo always has. The
-`server/` service is not used by the live demo.
+`CityTransport` and sends commands to it; the transport also says who the viewer is.
+
+- **Local demo** (default, and what rarecity.world serves): the engine runs in the browser,
+  the viewer is the demo player, and the city is saved in localStorage.
+- **Server mode** (`npm run build:app`): the browser reads one shared city from the
+  `server/` service and polls it for changes. The viewer is an anonymous visitor who can
+  browse everything and change nothing; no localStorage state is used.
 
 ## Known limitations
 

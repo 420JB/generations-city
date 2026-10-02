@@ -9,6 +9,8 @@ import { availablePlots, wardName, type PlotCandidate } from '../game/allocation
 import { plotWorld, type WorldPoint } from '../game/world'
 import { DemoGuide } from './DemoGuide'
 import { demoProgress } from '../game/demo'
+import { previewNextDemoFriendId } from '../game/demoCommands'
+import type { GameState } from '../game/types'
 import { findBuildingByFriend } from '../game/actions'
 import type { BuildFx } from './city/BuildingSprite'
 import { CityView, type MonumentTransfer } from './city/CityView'
@@ -21,7 +23,7 @@ import { RadioItem, RadioPanel, RallyCard } from './panels/RadioPanel'
 import { radioDispatches } from '../game/dispatch'
 import { homeDistrict as seasonHome } from '../game/season'
 import { StandingsPanel } from './panels/StandingsPanel'
-import { useGameStore } from './store'
+import { useGameStore, type GameAction, type StoreState } from './store'
 import { useMediaQuery } from './motion'
 
 /** Phone layout breakpoint (matches the bottom-sheet drawer in index.css). */
@@ -44,10 +46,28 @@ function readIntro(): boolean {
 
 export default function App() {
   const { store, act } = useGameStore()
-  const game = store.game
+  // A server-backed city is not on screen until the server has sent one.
+  if (!store.game) {
+    const { status, message } = store.connection
+    return (
+      <div className="boot" role="status" aria-live="polite" data-testid="city-connecting" data-status={status}>
+        <div>
+          <b>RARE CITY</b>
+          {status === 'unavailable' ? (message ?? 'Rare City is unavailable right now. Retrying…') : 'Raising the skyline…'}
+        </div>
+      </div>
+    )
+  }
+  return <CityApp store={store} game={store.game} act={act} />
+}
+
+function CityApp({ store, game, act }: { store: StoreState; game: GameState; act: (a: GameAction) => StoreState }) {
+  // WHO IS LOOKING. An anonymous visitor has no id: nothing below may invent one.
   const viewerId = store.viewer.userId
+  // The local demo's guide, faucet, reset and simulations exist only for the demo player.
+  const isDemo = store.viewer.source === 'demo'
   const playerBuilding = useMemo(
-    () => Object.values(game.buildings).find((b) => b.ownerId === viewerId) ?? null,
+    () => (viewerId ? (Object.values(game.buildings).find((b) => b.ownerId === viewerId) ?? null) : null),
     [game.buildings, viewerId],
   )
   const homeDistrict: DistrictId = playerBuilding?.districtId ?? 'd4'
@@ -204,10 +224,11 @@ export default function App() {
   const confirmPlacement = () => {
     const pick = placement?.selected
     if (!pick) return
-    // The next resident's building id is deterministic, so we can warp to it in the same update.
-    const nextId = `b-${20_000 + game.residentSeq + 1}`
-    act({ type: 'join-at', districtId: pick.districtId, ward: pick.ward, plot: pick.plot })
-    warp(nextId)
+    // The new property's id comes from the authority's own result, never from a guess.
+    const after = act({ type: 'join-at', districtId: pick.districtId, ward: pick.ward, plot: pick.plot })
+    const joined = after.last?.seq === after.seq ? after.last.events.find((e) => e.type === 'resident-joined') : undefined
+    if (joined) warp(joined.buildingId)
+    else setPlacement(null)
   }
 
   const showCityGrowth = () => {
@@ -253,32 +274,40 @@ export default function App() {
 
   const progress = useMemo(() => demoProgress(game), [game])
   // Demo growth targets the player's Home District (Family in the seeded demo).
-  const growDistrict: DistrictId = seasonHome(game, viewerId) ?? homeDistrict
+  const growDistrict: DistrictId = (viewerId ? seasonHome(game, viewerId) : null) ?? homeDistrict
   // Rally Calls are derived from current state (never persisted) and refresh after every action.
-  const rallyCalls = useMemo(() => radioDispatches(game, viewerId), [game, viewerId])
+  // They are personal (what this player's RF could do), so a visitor has none.
+  const rallyCalls = useMemo(() => (viewerId ? radioDispatches(game, viewerId) : []), [game, viewerId])
   // The next guided objective stays labelled on the map even at overview zoom.
-  const objectiveId = !progress.primaryComplete ? progress.kingmakerId : !progress.capital ? buildingIdFor(SCENARIO.capitalFriend) : null
+  const objectiveId = !isDemo ? null : !progress.primaryComplete ? progress.kingmakerId : !progress.capital ? buildingIdFor(SCENARIO.capitalFriend) : null
+  const showGuide = isDemo && guideOpen
 
   const drawer =
     panel === 'board' ? (
       <BuildBoardPanel game={game} districtId={boardDistrict} onDistrict={setBoardDistrict} onWarp={warp} onClose={closePanel} />
     ) : panel === 'standings' ? (
-      <StandingsPanel game={game} onClose={closePanel} onWarp={warp} onJoin={startPlacement} growthFocusSeq={growthFocusSeq} />
-    ) : panel === 'profile' ? (
+      <StandingsPanel game={game} onClose={closePanel} onWarp={warp} onJoin={isDemo ? startPlacement : undefined} growthFocusSeq={growthFocusSeq} />
+    ) : panel === 'profile' && viewerId ? (
       <ProfilePanel game={game} viewerId={viewerId} onClose={closePanel} onWarp={warp} />
     ) : panel === 'radio' ? (
       <RadioPanel
         game={game}
         calls={rallyCalls}
-        growth={{ districtId: growDistrict, nextWard: wardName(game.wards[growDistrict] ?? 1) }}
         onClose={closePanel}
         onWarp={warp}
-        onRival={() => act({ type: 'rival' })}
-        onGrow={() => {
-          act({ type: 'grow', districtId: growDistrict })
-          // Existing overview framing (radius-aware) so the newly opened ward is in view.
-          setHomeSeq((n) => n + 1)
-        }}
+        demoTools={
+          isDemo
+            ? {
+                growth: { districtId: growDistrict, nextWard: wardName(game.wards[growDistrict] ?? 1) },
+                onRival: () => act({ type: 'rival' }),
+                onGrow: () => {
+                  act({ type: 'grow', districtId: growDistrict })
+                  // Existing overview framing (radius-aware) so the newly opened ward is in view.
+                  setHomeSeq((n) => n + 1)
+                },
+              }
+            : null
+        }
       />
     ) : panel === 'building' && selectedId && game.buildings[selectedId] ? (
       <BuildingPanel
@@ -291,7 +320,7 @@ export default function App() {
         onBack={backTo ? () => { setPanel(backTo); setBackTo(null) } : undefined}
         onArchitect={() => setPanel('architect')}
       />
-    ) : panel === 'architect' && selectedId && game.buildings[selectedId] ? (
+    ) : panel === 'architect' && viewerId && selectedId && game.buildings[selectedId] ? (
       <ArchitectPanel game={game} viewerId={viewerId} buildingId={selectedId} act={act} onClose={() => select(null)} onBack={() => setPanel('building')} onBillboardDraft={onBillboardDraft} />
     ) : null
 
@@ -302,7 +331,7 @@ export default function App() {
     !!last?.events.some((e) => e.type === 'build' && e.buildingId === selectedId)
 
   return (
-    <div className={`app${placement ? ' has-placement' : ''}${drawer ? ' has-drawer' : ''}${guideOpen ? ' has-intro' : !progress.primaryComplete ? ' has-reminder' : ''}`}>
+    <div className={`app${placement ? ' has-placement' : ''}${drawer ? ' has-drawer' : ''}${showGuide ? ' has-intro' : isDemo && !progress.primaryComplete ? ' has-reminder' : ''}`}>
       <div className="sky" aria-hidden="true">
         <div className="stars" />
         <div className="stars stars-2" />
@@ -335,13 +364,23 @@ export default function App() {
           districtId={placement.districtId}
           candidates={candidates}
           selected={placement.selected}
-          nextFriendId={20_000 + game.residentSeq + 1}
+          nextFriendId={previewNextDemoFriendId(game)}
           onConfirm={confirmPlacement}
           onClearSelection={() => setPlacement((p) => (p ? { ...p, selected: null } : p))}
           onCancel={cancelPlacement}
         />
       )}
-      <Hud game={game} viewerId={viewerId} panel={panel} onPanel={openPanel} onHelp={() => setGuideOpen((v) => !v)} guideOpen={guideOpen} onSearch={search} onFaucet={() => act({ type: 'faucet' })} onReset={() => setConfirmReset(true)} onWarp={warp} />
+      <Hud
+        game={game}
+        viewerId={viewerId}
+        visitorNote={store.connection.canonical === false ? 'NON-CANONICAL TEST CITY · READ-ONLY' : 'READ-ONLY'}
+        panel={panel}
+        onPanel={openPanel}
+        guideOpen={showGuide}
+        onSearch={search}
+        onWarp={warp}
+        demo={isDemo ? { onHelp: () => setGuideOpen((v) => !v), onFaucet: () => act({ type: 'faucet' }), onReset: () => setConfirmReset(true) } : null}
+      />
 
       <div className="radio-ticker" aria-label="Latest District Radio">
         <button type="button" className="ticker-head" onClick={() => openPanel('radio')}>
@@ -355,7 +394,7 @@ export default function App() {
         </ul>
       </div>
 
-      {guideOpen ? (
+      {!isDemo ? null : guideOpen ? (
         <DemoGuide
           progress={progress}
           boardOpened={boardOpened}
@@ -394,6 +433,11 @@ export default function App() {
         </div>
       )}
       {store.restored && lastSeq === 0 && <div className="restore-note">Restored your local demo city</div>}
+      {store.connection.status === 'stale' && (
+        <div className="restore-note" role="status" style={{ animation: 'none' }} data-testid="city-stale">
+          Showing the last city received · {store.connection.message}
+        </div>
+      )}
 
       {mediaView && <BillboardViewer game={game} buildingId={mediaView} onClose={() => setMediaView(null)} />}
 

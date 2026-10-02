@@ -2,7 +2,7 @@
  * Client runtime mode, chosen at build time with VITE_APP_MODE.
  *
  * - `local-demo` (default): the engine and the city live in this browser.
- * - `server`: the city is owned by the Rare City service. Not implemented yet.
+ * - `server`: the city is owned by the Rare City service and this browser only reads it.
  */
 export type ClientMode = 'local-demo' | 'server'
 

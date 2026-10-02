@@ -1,13 +1,19 @@
 import { createServer } from 'node:http'
+import { resolve } from 'node:path'
 import { createApp, SERVICE_NAME } from './app'
+import { createCityReader } from './city/store'
 import { ConfigError, loadConfig, type ServerConfig } from './config'
 import { defaultMigrationsDir } from './db/migrations'
 import { createPool } from './db/pool'
 import { createLogger, errorFields } from './log'
+import { loadStaticSite } from './static'
 
 const SHUTDOWN_GRACE_MS = 10_000
 
-function main() {
+/** `npm run build:app` puts the server-mode client here; without it the service is API only. */
+const CLIENT_DIR = resolve(process.cwd(), 'dist-server/public')
+
+async function main() {
   const log = createLogger()
   let config: ServerConfig
   try {
@@ -19,10 +25,11 @@ function main() {
   }
 
   const db = config.databaseUrl ? createPool(config.databaseUrl, log) : null
-  const server = createServer(createApp({ config, db, migrationsDir: defaultMigrationsDir(), log }))
+  const site = await loadStaticSite(CLIENT_DIR)
+  const server = createServer(createApp({ config, db, migrationsDir: defaultMigrationsDir(), log, city: db ? createCityReader(db) : null, site }))
 
   server.listen(config.port, config.host, () => {
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, database: db ? 'configured' : 'not-configured', commit: config.commit })
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, database: db ? 'configured' : 'not-configured', client: site ? `${site.size} files` : 'none', commit: config.commit })
   })
 
   let stopping = false
@@ -43,4 +50,4 @@ function main() {
   process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
-main()
+await main()

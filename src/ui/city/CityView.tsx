@@ -178,8 +178,8 @@ function CapitalCrest({ id, scale, compact, rot }: { id: DistrictId; scale: numb
 
 interface Props {
   game: GameState
-  /** Whose properties count as "yours" on the map. */
-  viewerId: string
+  /** Whose properties count as "yours" on the map. null = a visitor, who owns none. */
+  viewerId: string | null
   selectedId: string | null
   onSelect: (id: string | null) => void
   onSelectDistrict: (d: DistrictId) => void

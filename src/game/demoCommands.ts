@@ -17,6 +17,15 @@ export type DemoCommand =
 
 const DEMO_COMMAND_TYPES: ReadonlySet<string> = new Set<DemoCommand['type']>(['faucet', 'rival', 'join', 'join-at', 'grow'])
 
+/**
+ * Preview only: the Friend id the demo's simulated join would mint next. It labels the
+ * placement bar in the local demo. Nothing may treat it as the id of a real activation;
+ * the id of what was created always comes back in the command's events.
+ */
+export function previewNextDemoFriendId(state: Pick<GameState, 'residentSeq'>): number {
+  return 20_000 + state.residentSeq + 1
+}
+
 export function isDemoCommand(command: { type: string }): command is DemoCommand {
   return DEMO_COMMAND_TYPES.has(command.type)
 }

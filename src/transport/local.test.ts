@@ -17,7 +17,7 @@ import {
 } from '../game/actions'
 import { availablePlots } from '../game/allocation'
 import { applyCityCommand } from '../game/commands'
-import { isDemoCommand } from '../game/demoCommands'
+import { isDemoCommand, previewNextDemoFriendId } from '../game/demoCommands'
 import { buildSplit, tierFor, totalBuilt } from '../game/economy'
 import { simulateDistrictGrowth } from '../game/growth'
 import { STORAGE_KEY } from '../game/persistence'
@@ -275,6 +275,10 @@ describe('local transport viewer', () => {
     expect(snap.game.wallets[DEMO_PLAYER_ID]).toBe(seed.wallets[DEMO_PLAYER_ID])
   })
 
+  it('is a local connection with nothing to connect to', () => {
+    expect(createLocalTransport(null).getSnapshot().connection).toEqual({ status: 'local', sequence: null, canonical: null, message: null })
+  })
+
   it('refuses owner-only edits from a viewer who is not the owner', () => {
     const transport = createLocalTransport(null)
     transport.send({ type: 'architecture', buildingId: KING, slot: 'lighting', optionId: 'cool' })
@@ -345,6 +349,29 @@ describe('local transport persistence compatibility', () => {
       transport.send({ type: 'reset' })
       expect(transport.getSnapshot().game).toEqual(createSeedState())
     }
+  })
+})
+
+describe('ids come from the result, not from a guess', () => {
+  it('reports the property a join created in the command events', () => {
+    const transport = createLocalTransport(null)
+    const seed = createSeedState()
+    const pick = availablePlots(seed, 'd5').at(-1)!
+    transport.send({ type: 'join-at', districtId: 'd5', ward: pick.ward, plot: pick.plot })
+    const snap = transport.getSnapshot()
+    const joined = snap.last!.events.find((e) => e.type === 'resident-joined')!
+    expect(joined).toMatchObject({ districtId: 'd5', ward: pick.ward, plot: pick.plot })
+    expect(snap.game.buildings[joined.buildingId]).toMatchObject({ ward: pick.ward, plot: pick.plot })
+    // The demo's label for the placement bar is only a preview, and it happens to agree.
+    expect(snap.game.buildings[joined.buildingId].friendId).toBe(previewNextDemoFriendId(seed))
+  })
+
+  it('reports nothing to warp to when the join is refused', () => {
+    const transport = createLocalTransport(null)
+    const taken = Object.values(createSeedState().buildings).find((b) => b.districtId === 'd1')!
+    transport.send({ type: 'join-at', districtId: 'd1', ward: taken.ward, plot: taken.plot })
+    const snap = transport.getSnapshot()
+    expect(snap.last?.seq === snap.seq).toBe(false)
   })
 })
 

@@ -28,7 +28,7 @@ describe('shared engine under Node', () => {
   })
 
   it('gives the server player intents only, never demo controls', () => {
-    expect(Object.keys(engine)).toEqual(['applyCityCommand'])
+    expect(Object.keys(engine).sort()).toEqual(['ANONYMOUS_VIEWER', 'CITY_ENDPOINT', 'STATE_VERSION', 'applyCityCommand', 'isCityStateShape', 'parseCityResponse'])
     const seed = createSeedState()
     for (const type of ['faucet', 'rival', 'join', 'join-at', 'grow', 'reset', 'nonsense']) {
       const result = applyCityCommand(seed, 'demo-player', { type } as unknown as CityCommand)

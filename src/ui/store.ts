@@ -8,6 +8,16 @@ export type StoreState = CitySnapshot
 export function useGameStore() {
   const transport = getTransport()
   const store = useSyncExternalStore(transport.subscribe, transport.getSnapshot)
-  const act = useCallback((a: GameAction) => transport.send(a), [transport])
+  /**
+   * Send a command and return the snapshot as it stands right after. A transport that
+   * settles synchronously already reflects the outcome there; one that settles later does not.
+   */
+  const act = useCallback(
+    (a: GameAction): StoreState => {
+      transport.send(a)
+      return transport.getSnapshot()
+    },
+    [transport],
+  )
   return { store, act }
 }

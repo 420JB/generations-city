@@ -15,10 +15,15 @@
     "dev:server": "tsx watch --env-file-if-exists=.env server/src/main.ts",
     "typecheck:server": "tsc -p server/tsconfig.json",
     "build:server": "tsc -p server/tsconfig.json && vite build --config server/vite.config.ts",
+    "build:app:client": "tsc -b && VITE_APP_MODE=server vite build --outDir dist-server/public --emptyOutDir",
+    "build:app": "npm run build:server && npm run build:app:client",
     "start:server": "node dist-server/main.js",
     "db:migrate": "node dist-server/migrate.js",
     "db:migrate:dev": "tsx --env-file-if-exists=.env server/src/migrate-cli.ts",
-    "test:server": "vitest run --config server/vitest.config.ts"
+    "city:seed-demo": "node dist-server/seed-demo.js",
+    "city:seed-demo:dev": "tsx --env-file-if-exists=.env server/src/seed-demo-cli.ts",
+    "test:server": "vitest run --config server/vitest.config.ts",
+    "test:e2e:server": "playwright test --config e2e-server/playwright.config.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",

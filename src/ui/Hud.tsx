@@ -10,21 +10,23 @@ import type { PanelKind } from './App'
 
 interface Props {
   game: GameState
-  viewerId: string
+  /** null = an anonymous visitor: no player chip, no wallet, no profile. */
+  viewerId: string | null
+  /** What the visitor chip says in place of a wallet. */
+  visitorNote: string
   panel: PanelKind | null
   onPanel: (p: PanelKind) => void
-  onFaucet: () => void
-  onReset: () => void
   onWarp: (id: string) => void
-  onHelp: () => void
   guideOpen: boolean
   onSearch: (friendId: number) => void
+  /** Local-demo-only controls. null hides them. */
+  demo: { onHelp: () => void; onFaucet: () => void; onReset: () => void } | null
 }
 
-export function Hud({ game, viewerId, panel, onPanel, onFaucet, onReset, onWarp, onHelp, guideOpen, onSearch }: Props) {
+export function Hud({ game, viewerId, visitorNote, panel, onPanel, onWarp, guideOpen, onSearch, demo }: Props) {
   const [query, setQuery] = useState('')
-  const me = game.users[viewerId]
-  const home = homeDistrict(game, viewerId)
+  const me = viewerId ? game.users[viewerId] : undefined
+  const home = viewerId ? homeDistrict(game, viewerId) : null
   const cap = game.capital.holder ? getDistrict(game.capital.holder) : null
   const crownB = game.crown.holder ? game.buildings[game.crown.holder] : null
   const nav: [PanelKind, string, string][] = [
@@ -33,6 +35,7 @@ export function Hud({ game, viewerId, panel, onPanel, onFaucet, onReset, onWarp,
     ['profile', 'Profile', '◉'],
     ['radio', 'Radio', '📻'],
   ]
+  const shownNav = nav.filter(([k]) => k !== 'profile' || !!me)
   return (
     <header className="hud">
       <div className="hud-brand">
@@ -94,36 +97,53 @@ export function Hud({ game, viewerId, panel, onPanel, onFaucet, onReset, onWarp,
       </div>
 
       <div className="hud-right">
-        <div className="player-chip" title={`${friendLabel(me.friendId)} — demo identity`}>
-          <Avatar user={me} size={30} />
-          <div>
-            <div className="player-name">@{me.handle}</div>
-            <div className="wallet">
-              <b data-testid="wallet">{formatRF(game.wallets[viewerId] ?? 0)}</b> <span className="sim-tag">SIMULATED RF</span>
+        {me && viewerId ? (
+          <div className="player-chip" title={`${friendLabel(me.friendId)} — demo identity`}>
+            <Avatar user={me} size={30} />
+            <div>
+              <div className="player-name">@{me.handle}</div>
+              <div className="wallet">
+                <b data-testid="wallet">{formatRF(game.wallets[viewerId] ?? 0)}</b> <span className="sim-tag">SIMULATED RF</span>
+              </div>
+              <button type="button" className="season-line link-btn" onClick={() => onPanel('profile')} data-testid="hud-season" title="Season allegiance: locked until next season">
+                {game.season.name.toUpperCase()} · Home District {home && <DistrictEmblem id={home} size={14} />} <b data-district={home ?? ''}>{home ? getDistrict(home).name : 'not chosen'}</b> 🔒
+              </button>
             </div>
-            <button type="button" className="season-line link-btn" onClick={() => onPanel('profile')} data-testid="hud-season" title="Season allegiance: locked until next season">
-              {game.season.name.toUpperCase()} · Home District {home && <DistrictEmblem id={home} size={14} />} <b data-district={home ?? ''}>{home ? getDistrict(home).name : 'not chosen'}</b> 🔒
-            </button>
+            {demo && (
+              <button type="button" className="icon-btn sm" onClick={demo.onFaucet} title="Claim 10,000 simulated demo RF" aria-label="Claim simulated demo RF">
+                ＋
+              </button>
+            )}
           </div>
-          <button type="button" className="icon-btn sm" onClick={onFaucet} title="Claim 10,000 simulated demo RF" aria-label="Claim simulated demo RF">
-            ＋
-          </button>
-        </div>
+        ) : (
+          <div className="player-chip" title="You are browsing Rare City as a visitor" data-testid="viewer-anonymous">
+            <div>
+              <div className="player-name">Visitor</div>
+              <div className="wallet">
+                <span className="sim-tag">{visitorNote}</span>
+              </div>
+            </div>
+          </div>
+        )}
         <nav className="hud-nav" aria-label="Game panels">
-          {nav.map(([k, label, icon]) => (
+          {shownNav.map(([k, label, icon]) => (
             <button key={k} type="button" className={`nav-btn${k === 'board' ? ' board-nav' : ''}${panel === k ? ' on' : ''}`} aria-label={label} onClick={() => onPanel(k)} aria-pressed={panel === k} data-testid={`nav-${k}`}>
               <span aria-hidden="true">{icon}</span>
               <span className="nav-label">{label}</span>
             </button>
           ))}
-          <button type="button" className={`nav-btn help${guideOpen ? ' on' : ''}`} onClick={onHelp} aria-pressed={guideOpen} aria-label="Demo guide" title="Demo guide" data-testid="nav-help">
-            <span aria-hidden="true">?</span>
-            <span className="nav-label">Guide</span>
-          </button>
-          <button type="button" className="nav-btn reset" onClick={onReset} data-testid="reset-demo">
-            <span aria-hidden="true">↺</span>
-            <span className="nav-label">Reset Demo</span>
-          </button>
+          {demo && (
+            <>
+              <button type="button" className={`nav-btn help${guideOpen ? ' on' : ''}`} onClick={demo.onHelp} aria-pressed={guideOpen} aria-label="Demo guide" title="Demo guide" data-testid="nav-help">
+                <span aria-hidden="true">?</span>
+                <span className="nav-label">Guide</span>
+              </button>
+              <button type="button" className="nav-btn reset" onClick={demo.onReset} data-testid="reset-demo">
+                <span aria-hidden="true">↺</span>
+                <span className="nav-label">Reset Demo</span>
+              </button>
+            </>
+          )}
         </nav>
       </div>
     </header>
