@@ -51,9 +51,12 @@ async function main() {
   server.headersTimeout = 15_000
   server.requestTimeout = 30_000
 
+  // Allowed, because a deployment may truly have nothing in front of it. Behind a proxy it would make every visitor one client.
+  if (config.mode !== 'local' && config.trustedProxy === 'none') log.warn('TRUSTED_PROXY=none: the client network is the socket peer. If a proxy is in front, every visitor shares one rate-limit bucket.', { mode: config.mode })
+
   server.listen(config.port, config.host, () => {
     // The RPC endpoint is deliberately absent: it may carry provider credentials.
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', commit: config.commit })
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, commit: config.commit })
   })
 
   let stopping = false

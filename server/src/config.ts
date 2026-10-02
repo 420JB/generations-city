@@ -6,6 +6,7 @@
  * - `staging`    the shared, non-canonical environment; the database is required.
  * - `production` the canonical city; the database is required.
  */
+import { TRUSTED_PROXIES, type TrustedProxy } from './clientKey'
 import { RARE_FRIENDS_CHAIN } from './engine'
 
 export type AppMode = 'local' | 'staging' | 'production'
@@ -29,6 +30,14 @@ export interface ServerConfig {
   rpcUrl: string
   /** Where Friend ownership is read from. `fixture` is a deterministic stand-in for local work and tests. */
   ownership: OwnershipSource
+  /** What stands in front of this process, and so where a request's client network is read from. */
+  trustedProxy: TrustedProxy
+  /** false only for local automated tests. A shared environment always limits. */
+  rateLimits: boolean
+  /** Exact https:// origins allowed to frame the app, besides this origin itself. Empty = same-origin only. */
+  frameAncestors: string[]
+  /** `Strict-Transport-Security` lifetime in seconds. Not sent in local mode. */
+  hstsMaxAge: number
 }
 
 export type OwnershipSource = 'robinhood' | 'fixture'
@@ -133,6 +142,73 @@ function readOwnership(env: Record<string, string | undefined>, mode: AppMode): 
   return raw as OwnershipSource
 }
 
+/**
+ * Proxy trust is stated, never inferred: a deployed process that guessed wrong would either
+ * rate-limit the proxy as one client or believe an address any client can type.
+ */
+function readTrustedProxy(env: Record<string, string | undefined>, mode: AppMode): TrustedProxy {
+  const raw = clean(env.TRUSTED_PROXY)
+  if (raw === undefined) {
+    if (mode !== 'local') throw new ConfigError(`TRUSTED_PROXY is required when APP_MODE=${mode}: one of ${TRUSTED_PROXIES.join(', ')}.`)
+    return 'none'
+  }
+  if ((TRUSTED_PROXIES as readonly string[]).includes(raw)) return raw as TrustedProxy
+  throw new ConfigError(`TRUSTED_PROXY must be one of: ${TRUSTED_PROXIES.join(', ')}.`)
+}
+
+function readRateLimits(env: Record<string, string | undefined>, mode: AppMode): boolean {
+  const raw = clean(env.RATE_LIMITS)
+  if (raw === undefined || raw === 'on') return true
+  if (raw !== 'off') throw new ConfigError('RATE_LIMITS must be on or off.')
+  // The browser tests sign in far faster than any visitor. Nothing shared may run without limits.
+  if (mode !== 'local') throw new ConfigError(`RATE_LIMITS=off is only allowed when APP_MODE=local, not ${mode}.`)
+  return false
+}
+
+const MAX_FRAME_ANCESTORS = 16
+const HOST_LABEL = '[a-z0-9](?:[a-z0-9-]*[a-z0-9])?'
+/** A lowercase dotted host name: no wildcard, no bare keyword, and nothing that could end the header directive it is written into. */
+const FRAME_ANCESTOR = new RegExp(`^https://${HOST_LABEL}(?:\\.${HOST_LABEL})+(?::[0-9]{1,5})?$`)
+
+/**
+ * Parent origins allowed to frame the app, separated by spaces or commas. Each must be
+ * written exactly as a browser would send it: `https://host[:port]`, nothing more.
+ */
+function readFrameAncestors(env: Record<string, string | undefined>): string[] {
+  const raw = clean(env.FRAME_ANCESTORS)
+  if (raw === undefined) return []
+  const origins: string[] = []
+  for (const value of raw.split(/[\s,]+/).filter(Boolean)) {
+    let url: URL
+    try {
+      url = new URL(value)
+    } catch {
+      throw new ConfigError(`FRAME_ANCESTORS: "${value}" is not an origin.`)
+    }
+    if (url.protocol !== 'https:') throw new ConfigError(`FRAME_ANCESTORS: "${value}" must be an https:// origin.`)
+    // Exact text only: no wildcard, path, credentials, trailing slash or other spelling of the same origin.
+    if (!FRAME_ANCESTOR.test(value) || url.origin !== value) throw new ConfigError(`FRAME_ANCESTORS: "${value}" must be an exact origin such as https://example.com (no wildcard, path or trailing slash).`)
+    if (!origins.includes(value)) origins.push(value)
+  }
+  if (origins.length > MAX_FRAME_ANCESTORS) throw new ConfigError(`FRAME_ANCESTORS lists more than ${MAX_FRAME_ANCESTORS} origins.`)
+  return origins
+}
+
+const DAY_SECONDS = 86_400
+const MAX_HSTS_SECONDS = 2 * 365 * DAY_SECONDS
+
+/**
+ * How long a browser insists on https:// for this host. Production starts at one day, so a
+ * mistake is short-lived, and is raised with HSTS_MAX_AGE once it has held.
+ */
+function readHstsMaxAge(env: Record<string, string | undefined>, mode: AppMode): number {
+  const raw = clean(env.HSTS_MAX_AGE)
+  if (raw === undefined) return mode === 'production' ? DAY_SECONDS : mode === 'staging' ? 365 * DAY_SECONDS : 0
+  const seconds = Number(raw)
+  if (!/^\d+$/.test(raw) || seconds > MAX_HSTS_SECONDS) throw new ConfigError(`HSTS_MAX_AGE must be a whole number of seconds between 0 and ${MAX_HSTS_SECONDS}.`)
+  return seconds
+}
+
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
   const mode = readMode(env)
   const port = readPort(env)
@@ -146,5 +222,9 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     publicOrigin: readPublicOrigin(env, mode, host, port),
     rpcUrl: readRpcUrl(env, mode),
     ownership: readOwnership(env, mode),
+    trustedProxy: readTrustedProxy(env, mode),
+    rateLimits: readRateLimits(env, mode),
+    frameAncestors: readFrameAncestors(env),
+    hstsMaxAge: readHstsMaxAge(env, mode),
   }
 }

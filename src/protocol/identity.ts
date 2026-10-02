@@ -86,6 +86,7 @@ export type IdentityErrorCode =
   | 'viewer_unavailable'
   | 'ownership_unavailable'
   | 'ownership_too_large'
+  | 'rate_limited'
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/

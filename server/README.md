@@ -28,6 +28,9 @@ server/
     main.ts            process entry: config, pool, client build, HTTP server, shutdown
     app.ts             HTTP routes
     http.ts            bounded JSON bodies, the session cookie, the same-origin rule
+    clientKey.ts       which network a request came from, under the configured proxy trust
+    rateLimit.ts       in-memory request limits, and the limits of today's routes
+    securityHeaders.ts HSTS, Content-Security-Policy, framing and the other response headers
     static.ts          same-origin client: a fixed list of files loaded at start-up
     config.ts          environment → validated ServerConfig
     log.ts             JSON-lines logger
@@ -68,6 +71,9 @@ path there is a JSON `404` and is never answered with the app shell. A path whos
 segment has an extension and matches no file is a `404`, not the app shell. The three
 `/v1/auth` routes accept only `POST` (`405`, `Allow: POST`); every other path accepts only
 `GET`/`HEAD` (`405`, `Allow: GET, HEAD`).
+
+Three routes are rate limited (see "Edge" below) and answer `429 {"error":"rate_limited"}`
+with `Retry-After` when a client or user is over its limit.
 
 ### `GET /v1/city`
 
@@ -157,8 +163,8 @@ the service keeps only the newest 20,000 challenges and deletes expired or consu
 after an hour (and sessions thirty days after they end). A challenge is never refused and
 there is no per-address limit, so nobody can stop an address signing in by asking for
 challenges on its behalf; to push a visitor's challenge out before they sign it, an
-attacker has to issue 20,000 in those few seconds. There is **no per-client rate limit
-yet**: see "Not done yet" below.
+attacker has to issue 20,000 in those few seconds. Asking is limited per client network
+(see "Edge" below), never per address asked about.
 
 ### Sessions and the cookie
 
@@ -187,9 +193,20 @@ yet**: see "Not done yet" below.
 4. The session cookie is `SameSite=Strict`, so a cross-site request does not carry it.
 5. `GET` and `HEAD` never change anything.
 
-**P0-D and P0-E must add every mutating route to the `posts` table in `app.ts`**, which
-applies 1-3 and the 4 KiB body limit before the handler runs. A mutating route must not be
-reachable any other way, and must not be a `GET`.
+**Every mutating route must be declared in the `posts` table in `app.ts`.** A route there
+is a `PostRoute`: its client rate limit, what to answer if it fails unexpectedly, and its
+handler. `servePost` is the one boundary in front of all of them, and runs in this order
+before a handler sees anything:
+
+1. `POST` only (`405` otherwise);
+2. the same-origin rule above (`403 origin_mismatch`);
+3. the route's client rate limit (`429 rate_limited`), counted before the body is read so a
+   malformed or oversized body is still a counted request;
+4. the body: `application/json` only, at most 4 KiB, a JSON object (`415`, `413`, `400`).
+
+The handler receives `{ req, res, body, client }` and nothing it has to re-check. A
+mutating route must not be reachable any other way, and must not be a `GET`. Limits keyed
+by the signed-in user are applied by the handler, once it knows who that is.
 
 ### `GET /v1/viewer`
 
@@ -283,23 +300,147 @@ OWNERSHIP`, and configuration refuses it outside `APP_MODE=local`.
 
 Known and deliberate, to be settled before anything of value depends on a session:
 
-- **No per-client rate limiting.** It needs a decision on which proxy header to trust for
-  the client address. Until then: a sustained flood of challenge requests can push real
-  challenges out (see above); throwaway wallets can sign in freely and add `users`,
-  `wallets` and `sessions` rows; and a few hundred signed-in throwaway wallets polling
-  `/v1/viewer/friends` can keep the four discovery slots busy, so others see
-  `ownership_unavailable`.
+- **Rate limits are per process and not yet proven against Railway's edge.** They are held
+  in memory, which is right for one replica; with more, each replica allows its own limit.
+  `TRUSTED_PROXY=railway` believes `X-Real-IP`, and Railway does not document whether its
+  edge overwrites a value a client sends. That has to be shown on staging (see "Edge")
+  before the limits are relied on there. `GET /v1/viewer`, `GET /v1/city` and
+  `POST /v1/auth/logout` are not limited.
 - **Smart-contract wallets** (EIP-1271) cannot sign in.
 - **A signature can be relayed.** As with any Sign-In with Ethereum flow, a phishing site
   can fetch a challenge for a victim's address and, if the wallet does not warn that the
   message names another site, obtain a signature and a session. Today a session only shows
   public ownership. Before sessions can act (P0-D), consider binding sign-in to the
   browser that asked for the challenge.
-- **No `Strict-Transport-Security`, `Content-Security-Policy` or `frame-ancestors`** header
-  is sent with the app shell.
+- **HSTS makes no promise beyond this host.** No `includeSubDomains` and no `preload`;
+  production starts at one day (`HSTS_MAX_AGE`).
+- **Answers written by Node itself carry no security headers**: a request too malformed to
+  parse, or one that times out before it is complete, never reaches the app.
 - **Log responses are size-limited only by the RPC provider.** The 50,000-log ceiling is
   applied after a response has been received.
 - **One wallet per user.** The schema allows several; nothing links a second one yet.
+
+## Edge: client network, rate limits, response headers
+
+Everything here exists so that routes which change something permanent can be added
+safely. None of it changes the city.
+
+### Which network a request came from
+
+Used for rate limiting only. It is configuration, never something a request says about
+itself (`clientKey.ts`):
+
+| `TRUSTED_PROXY` | The client network is | |
+| --- | --- | --- |
+| `none` | the socket's peer address | Default in `local`. Every header a client can send about itself is ignored. |
+| `railway` | Railway's `X-Real-IP` header | The process must be reachable only through Railway's edge. |
+
+- `staging` and `production` must set `TRUSTED_PROXY` explicitly; it is never inferred from
+  the platform. Without it the process, and `db:migrate`, refuse to start.
+- `X-Forwarded-For` is **never** read, in any mode. Neither is `Forwarded` or any other
+  forwarding header.
+- In `railway` mode a missing or unusable `X-Real-IP` (absent, repeated, not an address, an
+  address with a port) is not replaced by another header. Such requests share **one**
+  bucket, `unidentified`, with the same limits as a single client, and a warning is logged
+  at most once a minute. The warning carries a count and no address.
+- One spelling per network: IPv4 as its dotted form; an IPv4-mapped IPv6 address
+  (`::ffff:a.b.c.d`) as that IPv4 address; IPv6 as its `/64`, since one subscriber is
+  routinely given a whole `/64`.
+- Addresses are not logged. The request log carries `client`, eight hex characters of an
+  HMAC of the network key under a key generated at start-up, and `clientSource`
+  (`socket`, `x-real-ip` or `fallback`). The tag tells two clients apart within one
+  process's log and cannot be turned back into an address or matched across restarts.
+
+### Rate limits
+
+`rateLimit.ts`. "At most N in any window", counted exactly: each key keeps the times of the
+requests it was allowed. A refused request is not recorded, so being refused does not
+extend the wait. `Retry-After` is the number of seconds until a place frees up.
+
+| Route | Per client network | Per signed-in user |
+| --- | --- | --- |
+| `POST /v1/auth/challenge` | 10 / minute | |
+| `POST /v1/auth/verify` | 10 / minute | |
+| `GET /v1/viewer/friends` | 30 / minute | 6 / minute |
+
+- A key is always **who is asking**: the client network, or the user id from the session.
+  It is never the address in a challenge request, a wallet being signed in, or a token id.
+  A bucket keyed by something a request merely mentions could be emptied by anyone to lock
+  the real owner out.
+- The client limit runs before any database or chain work: on the sign-in routes before the
+  body is read, on `/v1/viewer/friends` before the session is looked up. The user limit
+  runs as soon as the session is known and before the ownership provider is asked.
+- A request from another origin is refused (`403`) before it is counted, so a hostile page
+  cannot spend a visitor's allowance.
+- A limiter takes several rules at once and counts against all of them or none, which is
+  what a route with a per-minute and a per-hour limit on the same user needs.
+- Time comes from the process's monotonic clock, so a correction to the system clock cannot
+  lengthen or shorten anyone's wait.
+- At most 50,000 buckets are held; past that the one unused for longest is dropped. A
+  client that is being refused counts as in use.
+- `RATE_LIMITS=off` exists for the browser tests, which sign in far faster than a visitor.
+  It is refused unless `APP_MODE=local`.
+
+### Response headers
+
+`securityHeaders.ts`. Every answer the app writes carries:
+
+```
+X-Content-Type-Options: nosniff
+Referrer-Policy: same-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+Strict-Transport-Security: max-age=<HSTS_MAX_AGE>          (staging and production only)
+```
+
+The app shell (`index.html`, including every client-side route) carries:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self';
+  img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none';
+  base-uri 'none'; form-action 'none'; frame-src 'none';
+  frame-ancestors 'self' <FRAME_ANCESTORS>; upgrade-insecure-requests
+X-Frame-Options: SAMEORIGIN                                 (only while FRAME_ANCESTORS is empty)
+```
+
+Everything else (JSON, static files, errors) carries:
+
+```
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+X-Frame-Options: DENY
+```
+
+- **No `'unsafe-inline'` and no `'unsafe-eval'` anywhere**, for scripts or styles. Chromium
+  required no exception: the app's styles are one stylesheet file plus React `style={{…}}`
+  props, which React applies as style *properties* (the CSSOM), and a policy does not
+  restrict those. It restricts style *text*: a `style="…"` attribute in markup or set with
+  `setAttribute`, and a `<style>` element. The app has neither. `e2e-server/csp.spec.ts`
+  runs the built app in Chromium with a `securitypolicyviolation` listener and requires
+  zero violations, then shows the policy refusing inline script, `eval`, style text, a
+  request and a frame to another origin, and being framed by another site.
+- `data:` and `blob:` images are billboard images: stored as data URLs, previewed from a
+  local file while cropping.
+- `connect-src 'self'` is enough because the page makes no RPC calls; an injected wallet
+  talks to its own extension. A wallet transport that connects from the page (WalletConnect,
+  for example) would need its relay added.
+- **Local mode** (plain `http://`) sends the same policy without `upgrade-insecure-requests`
+  and without HSTS, so a developer machine stays usable. Nothing else differs.
+- **Framing.** `FRAME_ANCESTORS` lists the exact `https://` origins, besides this one, that
+  may frame the app. Empty by default: same-origin only. Each value must be spelled exactly
+  as a browser sends an origin (a lowercase dotted host name, no default port, no path, no
+  trailing slash, no wildcard); anything else stops the process at start-up. It is never derived
+  from a request. `X-Frame-Options` cannot name a parent, so the app shell stops sending it
+  once a parent is listed. Data and files refuse every parent regardless.
+- A framed Rare City is read-only by construction: the session cookie is `SameSite=Strict`
+  and is not sent to a frame inside another site.
+
+### The staging proof still owed
+
+`TRUSTED_PROXY=railway` is only safe if Railway's edge **replaces** an `X-Real-IP` a client
+sends. To show it: send two requests to staging from one machine, one of them with a forged
+`X-Real-IP`, and compare the `client` tag on the two request-log lines. The same tag means
+the edge overwrote the header. A different tag means it did not, and the limits must not be
+relied on until the edge is configured to.
 
 ## The city in Postgres
 
@@ -365,6 +506,10 @@ trigger.
 | `PUBLIC_ORIGIN` | server | The one origin browsers reach this service at, e.g. `https://rarecity.example`. Written into sign-in messages and required of every `POST`. **Required, and must be `https://`, in `staging` and `production`.** In `local` it defaults to `http://<HOST>:<PORT>`. |
 | `ROBINHOOD_RPC_URL` | server | Robinhood Chain RPC endpoint. Defaults to the public RPC. Must be `https://` in `staging` and `production`. May contain provider credentials: it is never logged or echoed. |
 | `OWNERSHIP_PROVIDER` | server | `robinhood` (default) or `fixture`. `fixture` is refused unless `APP_MODE=local`. |
+| `TRUSTED_PROXY` | server, `db:migrate`, `city:seed-demo` | `none` or `railway`: where the client network is read from. **Required in `staging` and `production`**; defaults to `none` in `local`. |
+| `FRAME_ANCESTORS` | server | Exact `https://` origins allowed to frame the app, separated by spaces or commas. Empty (default) = same-origin only. A malformed value stops start-up. |
+| `HSTS_MAX_AGE` | server | `Strict-Transport-Security` lifetime in seconds, 0 to 63072000. Defaults: one day in `production`, one year in `staging`. Not sent in `local`. |
+| `RATE_LIMITS` | server | `on` (default) or `off`. `off` is refused unless `APP_MODE=local`. |
 | `PORT` | server | Default `8787`. |
 | `HOST` | server | Default `127.0.0.1` in `local`, `0.0.0.0` otherwise. |
 | `RAILWAY_GIT_COMMIT_SHA` / `GIT_SHA` | server | Reported by `/version`. |
@@ -412,17 +557,17 @@ Railway no longer lets a new service use a `railway.json` / `railway.toml` file,
 none in this repository. The staging service's build, pre-deploy, start and health-check
 configuration lives in its **Railway service settings**:
 
-| Setting | Value on staging today (P0-B) | Value P0-C needs |
+| Setting | Value on staging today (P0-C) | Value this branch needs |
 | --- | --- | --- |
 | Build command | `npm run build:app` | unchanged |
-| Pre-deploy command | `npm run db:migrate` | unchanged (applies migration `0003`) |
+| Pre-deploy command | `npm run db:migrate` | unchanged (no new migration) |
 | Start command | `npm run start:server` | unchanged |
 | Health check path | `/ready` | unchanged |
-| Variables | `APP_MODE=staging`, `DATABASE_URL=${{Postgres.DATABASE_URL}}` | add `PUBLIC_ORIGIN=https://<the staging domain>`; optionally `ROBINHOOD_RPC_URL` |
+| Variables | `APP_MODE=staging`, `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `PUBLIC_ORIGIN=https://<the staging domain>` | add `TRUSTED_PROXY=railway`; optionally `HSTS_MAX_AGE`, `FRAME_ANCESTORS`, `ROBINHOOD_RPC_URL` |
 
-Without `PUBLIC_ORIGIN` a P0-C build refuses to start in staging, so the variable has to be
-set before the branch is deployed. The fixture city on staging was installed by hand once
-and is not touched by a deploy. The production service at rarecity.world has no repo-side
+Without `PUBLIC_ORIGIN` or `TRUSTED_PROXY` this build refuses to start in staging, and
+`db:migrate` refuses with it, so both have to be set before the branch is deployed. The
+fixture city on staging was installed by hand once and is not touched by a deploy. The production service at rarecity.world has no repo-side
 configuration and is not affected by anything here.
 
 ## Migrations

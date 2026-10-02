@@ -37,8 +37,8 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))))
 })
 
-async function start(options: { auth?: AuthService | null; mode?: AppMode; lines?: string[]; friends?: boolean } = {}) {
-  const config = testConfig({ mode: options.mode ?? 'local', publicOrigin: (options.mode ?? 'local') === 'local' ? TEST_ORIGIN : 'https://rarecity.example' })
+async function start(options: { auth?: AuthService | null; mode?: AppMode; lines?: string[]; friends?: boolean; rateLimits?: boolean } = {}) {
+  const config = testConfig({ mode: options.mode ?? 'local', publicOrigin: (options.mode ?? 'local') === 'local' ? TEST_ORIGIN : 'https://rarecity.example', rateLimits: options.rateLimits ?? true })
   const app = createApp({ config, db: null, migrationsDir: '/nonexistent', log: createLogger((l) => options.lines?.push(l)), auth: options.auth ?? null, friends: options.friends === false ? null : createFriendsReader(createFixtureOwnershipProvider()) })
   const server = createServer(app)
   servers.push(server)
@@ -168,7 +168,8 @@ describe('sign-in endpoints: request hardening', () => {
 
   it('answer malformed JSON with a fixed 400 and never reach the handler', async () => {
     const { service, calls } = fakeAuth()
-    const base = await start({ auth: service })
+    // Thirteen bodies per route, more than a client is allowed in a minute; the limit has its own tests (edge.http.test.ts).
+    const base = await start({ auth: service, rateLimits: false })
     for (const path of POSTS) {
       for (const body of ['', '{', '{"nonce":', 'nonce=abc', "{'nonce': 1}", '\u0000', '{"a":1}trailing']) {
         const res = await fetch(`${base}${path}`, json(body))

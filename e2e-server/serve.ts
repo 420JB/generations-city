@@ -26,7 +26,9 @@ await admin.query(`CREATE SCHEMA ${schema}`)
 const url = new URL(target.url)
 url.searchParams.set('options', `-c search_path=${schema}`)
 // Ownership comes from the deterministic fixture provider: these tests never touch a chain or a real wallet.
-const env = { ...process.env, APP_MODE: 'local', NODE_ENV: 'test', PORT: port, HOST: '127.0.0.1', DATABASE_URL: url.toString(), PUBLIC_ORIGIN: `http://127.0.0.1:${port}`, OWNERSHIP_PROVIDER: 'fixture', ROBINHOOD_RPC_URL: 'http://127.0.0.1:1/unused' }
+// Rate limits are off: every test is the same client and signs in far faster than a visitor would. Only local
+// mode accepts that, and the limits have their own tests in server/tests.
+const env = { ...process.env, APP_MODE: 'local', NODE_ENV: 'test', PORT: port, HOST: '127.0.0.1', DATABASE_URL: url.toString(), PUBLIC_ORIGIN: `http://127.0.0.1:${port}`, OWNERSHIP_PROVIDER: 'fixture', ROBINHOOD_RPC_URL: 'http://127.0.0.1:1/unused', RATE_LIMITS: 'off', TRUSTED_PROXY: 'none', FRAME_ANCESTORS: '', HSTS_MAX_AGE: '' }
 
 for (const args of [['dist-server/migrate.js'], ['dist-server/seed-demo.js', '--non-canonical']]) {
   const result = spawnSync(process.execPath, args, { env, stdio: 'inherit' })

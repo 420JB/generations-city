@@ -1,7 +1,9 @@
+import { createHmac, randomBytes } from 'node:crypto'
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http'
 import { gzipSync } from 'node:zlib'
 import { AuthError, type AuthService } from './auth/service'
 import type { CityReader } from './city/store'
+import { clientKey, type ClientKey } from './clientKey'
 import type { ServerConfig } from './config'
 import { databaseStatus, type DatabaseStatus } from './db/migrations'
 import type { Database } from './db/pool'
@@ -25,6 +27,8 @@ import { assertSameOrigin, HttpError, readJsonBody, sessionCookie } from './http
 import { errorFields, type Logger } from './log'
 import { OwnershipError } from './ownership/provider'
 import type { FriendsReader } from './ownership/reader'
+import { createRateLimiter, LIMITS, unlimited, type RateLimiter, type RateRule } from './rateLimit'
+import { buildSecurityHeaders } from './securityHeaders'
 import type { StaticFile, StaticSite } from './static'
 
 export const SERVICE_NAME = 'rare-city-server'
@@ -45,9 +49,13 @@ export interface AppDeps {
   site?: StaticSite | null
   /** How long /ready waits for the database before answering not-ready. */
   readyTimeoutMs?: number
+  /** Request limits. Defaults to an in-memory limiter, or none when `config.rateLimits` is off. */
+  limiter?: RateLimiter
 }
 
 const READY_TIMEOUT_MS = 4_000
+/** At most one warning per this long about requests whose client network could not be established. */
+const FALLBACK_WARNING_EVERY_MS = 60_000
 /** Paths that belong to the service. They never fall through to the client app. */
 const RESERVED = ['/health', '/ready', '/version', '/v1']
 
@@ -59,6 +67,7 @@ const matchesEtag = (req: IncomingMessage, etag: string) =>
     .split(',')
     .some((tag) => tag.trim().replace(/^W\//, '') === etag)
 
+/** Every answer leaves through here. The security headers were put on the response before routing began. */
 function end(res: ServerResponse, status: number, headers: Record<string, string | number | string[]>, body?: Buffer | string) {
   res.writeHead(status, { 'x-content-type-options': 'nosniff', ...headers })
   res.end(res.req.method === 'HEAD' ? undefined : body)
@@ -118,6 +127,28 @@ const cityEtag = (meta: CityMeta) => `"${meta.instance}.${meta.sequence}"`
 /** Per-viewer answers: never stored by anything between the service and the browser. */
 const PRIVATE = { 'cache-control': 'no-store', vary: 'Cookie' }
 
+/** What a mutating handler is given. Everything in it has already passed the common boundary. */
+interface PostContext {
+  req: IncomingMessage
+  res: ServerResponse
+  /** The parsed JSON object. Its contents are still untrusted. */
+  body: Record<string, unknown>
+  client: ClientKey
+}
+
+/**
+ * A request that changes something. Declaring a route here is the only way to accept one:
+ * the boundary in `servePost` runs before `handle`, in this order: POST only, the
+ * same-origin rule, the client rate limit, then a JSON object body within the size limit.
+ */
+interface PostRoute {
+  /** Client-network limits, counted before the body is read. null = not limited. */
+  limit: readonly RateRule[] | null
+  /** What the client is told, and what is logged, when the handler fails unexpectedly. */
+  failure: { code: IdentityErrorCode; log: string }
+  handle(ctx: PostContext): Promise<void>
+}
+
 /**
  * The HTTP surface of the service: diagnostics, the public city read, identity, and (when
  * a client build is present) the Rare City app itself.
@@ -129,11 +160,50 @@ const PRIVATE = { 'cache-control': 'no-store', vary: 'Cookie' }
 export function createApp(deps: AppDeps): RequestListener {
   const { config, log, city = null, site = null, auth = null, friends = null } = deps
   const cookie = sessionCookie(config.mode)
+  const security = buildSecurityHeaders(config)
+  const limiter = deps.limiter ?? (config.rateLimits ? createRateLimiter() : unlimited)
+  /** Keys the client tag in the request log. Random per process, so a tag cannot be turned back into an address. */
+  const tagKey = randomBytes(32)
+  const clientTag = (client: ClientKey) => createHmac('sha256', tagKey).update(client.key).digest('hex').slice(0, 8)
   /** The serialised city for the sequence last served, so an unchanged city is not rebuilt per request. */
   let cached: (StaticFile & { etag: string }) | null = null
+  let unidentified = 0
+  let warnedAt = Number.NEGATIVE_INFINITY
 
   const cityError = (res: ServerResponse, code: CityErrorCode) => send(res, 503, { error: code }, { 'retry-after': '5' })
   const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
+
+  /**
+   * Count this request against `rules` for `key`. Answers 429 and returns false when it is over the limit.
+   * `close` ends the connection, for a refusal sent before an attached body has been read.
+   */
+  function withinLimit(res: ServerResponse, scope: string, key: string, rules: readonly RateRule[], close = false): boolean {
+    const decision = limiter.take(scope, key, rules)
+    if (decision.allowed) return true
+    identityError(res, 429, 'rate_limited', { 'retry-after': String(decision.retryAfterSeconds), ...(close ? { connection: 'close' } : {}) })
+    return false
+  }
+
+  /** The client-network limit for a route. Requests with no usable network share one bucket, and that is said in the log. */
+  function withinClientLimit(res: ServerResponse, scope: string, client: ClientKey, rules: readonly RateRule[], close = false): boolean {
+    if (client.source === 'fallback') {
+      unidentified += 1
+      const at = performance.now()
+      if (at - warnedAt >= FALLBACK_WARNING_EVERY_MS) {
+        log.warn('client network unavailable: requests are sharing one rate-limit bucket', { trustedProxy: config.trustedProxy, requests: unidentified })
+        warnedAt = at
+        unidentified = 0
+      }
+    }
+    return withinLimit(res, `${scope}:client`, client.key, rules, close)
+  }
+
+  /** The app shell is a document: it gets the document policy in place of the one every other answer carries. */
+  function sendDocument(req: IncomingMessage, res: ServerResponse, file: StaticFile) {
+    res.removeHeader('x-frame-options')
+    for (const [name, value] of Object.entries(security.document)) res.setHeader(name, value)
+    sendCached(req, res, file)
+  }
 
   async function serveCity(req: IncomingMessage, res: ServerResponse) {
     if (!city) return cityError(res, 'city_unavailable')
@@ -182,7 +252,9 @@ export function createApp(deps: AppDeps): RequestListener {
   }
 
   /** The Friends the signed-in wallet owns, read from the ownership provider. Never from the request. */
-  async function serveFriends(req: IncomingMessage, res: ServerResponse) {
+  async function serveFriends(req: IncomingMessage, res: ServerResponse, client: ClientKey) {
+    // Before the session is looked up: an anonymous flood is stopped without touching the database.
+    if (!withinClientLimit(res, FRIENDS_ENDPOINT, client, LIMITS.friends.client)) return
     if (!auth) return identityError(res, 401, 'not_authenticated')
     let viewer
     try {
@@ -192,6 +264,8 @@ export function createApp(deps: AppDeps): RequestListener {
       return identityError(res, 503, 'viewer_unavailable', { 'retry-after': '5' })
     }
     if (!viewer.authenticated) return identityError(res, 401, 'not_authenticated')
+    // Keyed by who is asking, from the session. Before the provider: a refused request costs no chain read.
+    if (!withinLimit(res, `${FRIENDS_ENDPOINT}:user`, viewer.userId, LIMITS.friends.user)) return
     if (!friends) return identityError(res, 503, 'ownership_unavailable', { 'retry-after': '30' })
     try {
       const owned = await friends.read(viewer.wallet.address)
@@ -211,41 +285,59 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
-  /** The requests that change something. Each runs only after the same-origin rule and the body limits have passed. */
-  const posts: Record<string, (req: IncomingMessage, res: ServerResponse, service: AuthService, body: Record<string, unknown>) => Promise<void>> = {
-    async [AUTH_CHALLENGE_ENDPOINT](_req, res, service, body) {
-      send(res, 200, await service.issueChallenge(body), PRIVATE)
+  /** A sign-in route: the common boundary, then the auth service if there is one to ask. */
+  const signIn = (limit: PostRoute['limit'], handle: (service: AuthService, ctx: PostContext) => Promise<void>): PostRoute => ({
+    limit,
+    failure: { code: 'auth_unavailable', log: 'auth request failed' },
+    async handle(ctx) {
+      if (!auth) return identityError(ctx.res, 503, 'auth_unavailable', { 'retry-after': '30' })
+      await handle(auth, ctx)
     },
-    async [AUTH_VERIFY_ENDPOINT](req, res, service, body) {
+  })
+
+  /** The requests that change something. Each handler runs only after the boundary in `servePost` has passed. */
+  const posts: Record<string, PostRoute> = {
+    // Limited by who is asking, never by the address being asked about: nobody can use up another wallet's sign-in.
+    [AUTH_CHALLENGE_ENDPOINT]: signIn(LIMITS.authChallenge.client, async (service, { res, body }) => {
+      send(res, 200, await service.issueChallenge(body), PRIVATE)
+    }),
+    [AUTH_VERIFY_ENDPOINT]: signIn(LIMITS.authVerify.client, async (service, { req, res, body }) => {
       const opened = await service.verify(body, cookie.read(req))
       // The credential leaves the service exactly here, in a cookie script cannot read. It is never in a body or a log.
       send(res, 200, opened.viewer, { ...PRIVATE, 'set-cookie': cookie.set(opened.token, opened.maxAgeSeconds) })
-    },
-    async [AUTH_LOGOUT_ENDPOINT](req, res, service) {
+    }),
+    [AUTH_LOGOUT_ENDPOINT]: signIn(null, async (service, { req, res }) => {
       await service.logout(cookie.read(req))
       send(res, 200, ANONYMOUS_VIEWER_RESPONSE, { ...PRIVATE, 'set-cookie': cookie.clear() })
-    },
+    }),
   }
 
-  async function servePost(req: IncomingMessage, res: ServerResponse, path: string) {
+  /**
+   * THE BOUNDARY for every request that changes something. In order, before the handler:
+   * the same-origin rule, the route's client rate limit, then the body (JSON only, an
+   * object, within the size limit). A request refused at any step has done no work beyond it.
+   */
+  async function servePost(req: IncomingMessage, res: ServerResponse, path: string, client: ClientKey) {
+    const route = posts[path]
     try {
       assertSameOrigin(req, config.publicOrigin)
+      // Counted before the body is read, so a malformed or oversized body is still a counted request.
+      if (route.limit && !withinClientLimit(res, path, client, route.limit, true)) return
       const body = await readJsonBody(req)
-      if (!auth) return identityError(res, 503, 'auth_unavailable', { 'retry-after': '30' })
-      await posts[path](req, res, auth, body)
+      await route.handle({ req, res, body, client })
     } catch (err) {
       if (err instanceof HttpError) return send(res, err.status, { error: err.code }, err.close ? { ...PRIVATE, connection: 'close' } : PRIVATE)
       if (err instanceof AuthError) return identityError(res, err.status, err.code)
-      // Anything else is the database or a bug. The client learns only that sign-in is unavailable.
-      log.error('auth request failed', { path, ...errorFields(err) })
-      return identityError(res, 503, 'auth_unavailable', { 'retry-after': '5' })
+      // Anything else is the database or a bug. The client learns only that the route is unavailable.
+      log.error(route.failure.log, { path, ...errorFields(err) })
+      return identityError(res, 503, route.failure.code, { 'retry-after': '5' })
     }
   }
 
-  async function route(req: IncomingMessage, res: ServerResponse, path: string) {
+  async function route(req: IncomingMessage, res: ServerResponse, path: string, client: ClientKey) {
     if (Object.hasOwn(posts, path)) {
       if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' }, { allow: 'POST', connection: 'close' })
-      return servePost(req, res, path)
+      return servePost(req, res, path, client)
     }
     // Refused before anything is read; closing the connection means an attached body is never consumed.
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method_not_allowed' }, { allow: 'GET, HEAD', connection: 'close' })
@@ -264,26 +356,29 @@ export function createApp(deps: AppDeps): RequestListener {
       case VIEWER_ENDPOINT:
         return serveViewer(req, res)
       case FRIENDS_ENDPOINT:
-        return serveFriends(req, res)
+        return serveFriends(req, res, client)
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.
     if (!site || isReserved(path)) return send(res, 404, { error: 'not_found' })
     const file = site.file(path)
-    if (file) return sendCached(req, res, file)
+    if (file) return file === site.index ? sendDocument(req, res, file) : sendCached(req, res, file)
     // A missing file is a 404; anything else is a client-side route and gets the app shell.
     if (path.slice(path.lastIndexOf('/') + 1).includes('.')) return send(res, 404, { error: 'not_found' })
-    return sendCached(req, res, site.index)
+    return sendDocument(req, res, site.index)
   }
 
   return (req, res) => {
     const started = performance.now()
+    // Before anything can answer: every response carries the restrictive policy unless it is the app shell.
+    for (const [name, value] of Object.entries(security.api)) res.setHeader(name, value)
+    const client = clientKey(req, config.trustedProxy)
     let path: string
     try {
       path = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
     } catch {
       return send(res, 400, { error: 'bad_request' })
     }
-    route(req, res, path)
+    route(req, res, path, client)
       .catch((err: unknown) => {
         log.error('request failed', { method: req.method, path, ...errorFields(err) })
         if (!res.headersSent) send(res, 500, { error: 'internal_error' })
@@ -292,7 +387,8 @@ export function createApp(deps: AppDeps): RequestListener {
       .finally(() => {
         // Platform health probes hit /health every few seconds; a 200 there is not worth a line.
         if (path === '/health' && res.statusCode === 200) return
-        log.info('request', { method: req.method, path, status: res.statusCode, ms: Math.round(performance.now() - started) })
+        // `client` is a keyed tag of the client network, not the address: enough to tell two clients apart in one process's log.
+        log.info('request', { method: req.method, path, status: res.statusCode, ms: Math.round(performance.now() - started), client: clientTag(client), clientSource: client.source })
       })
   }
 }
