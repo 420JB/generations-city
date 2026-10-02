@@ -298,7 +298,8 @@ src/
     stateSchema.ts   state version + structural check for untrusted state
     commands.ts      player intents + applyCityCommand (shared with the server)
     demoCommands.ts  demo-only controls (faucet, rival, simulated joins, growth)
-  protocol/      # wire contract shared with the server: /v1/city, Viewer
+  protocol/      # wire contracts shared with the server: /v1/city, /v1/viewer, sign-in
+  identity/      # server mode only: wallet discovery (EIP-1193/6963) and the sign-in store
   transport/     # authority seam between the UI and whoever owns the city
     types.ts         CityTransport, CitySnapshot, Connection
     local.ts         local demo authority: engine in the browser + localStorage
@@ -309,8 +310,8 @@ src/
     panels/          Build Board, building, Architect, standings, profile, radio
 e2e/             # Playwright specs
 e2e-server/      # Playwright specs for the server-mode app against a real Postgres
-server/          # Node/TypeScript service + SQL migrations: the shared city, read-only
-                 # (see server/README.md)
+server/          # Node/TypeScript service + SQL migrations: the shared read-only city,
+                 # wallet sign-in, and Rare Friend ownership reads (see server/README.md)
 ```
 
 The UI never calls the engine directly. `src/ui/store.ts` reads a `CitySnapshot` from a
@@ -319,8 +320,11 @@ The UI never calls the engine directly. `src/ui/store.ts` reads a `CitySnapshot`
 - **Local demo** (default, and what rarecity.world serves): the engine runs in the browser,
   the viewer is the demo player, and the city is saved in localStorage.
 - **Server mode** (`npm run build:app`): the browser reads one shared city from the
-  `server/` service and polls it for changes. The viewer is an anonymous visitor who can
-  browse everything and change nothing; no localStorage state is used.
+  `server/` service and polls it for changes. Anyone can browse everything and change
+  nothing; no localStorage state is used. A visitor can sign in with an EVM wallet (a
+  signed challenge, verified by the server) and see the Rare Friends that wallet owns on
+  Robinhood Chain. Signing in does not make the city editable: nothing can be activated,
+  built or spent there yet.
 
 ## Known limitations
 

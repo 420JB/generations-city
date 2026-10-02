@@ -27,7 +27,8 @@ export interface CityRead {
   etag: string | null
   sequence: number
   instance: string
-  viewer: unknown
+  /** Top-level keys of the body: the city says nothing about who is looking. */
+  keys: string[]
   /** SHA-256 of the state exactly as served. */
   stateHash: string
 }
@@ -37,7 +38,7 @@ export async function readCity(page: Page): Promise<CityRead> {
   const raw = await page.evaluate(async () => {
     const res = await fetch('/v1/city', { cache: 'no-store' })
     const body = await res.json()
-    return { status: res.status, etag: res.headers.get('etag'), sequence: body.city.sequence, instance: body.city.instance, viewer: body.viewer, state: JSON.stringify(body.state) }
+    return { status: res.status, etag: res.headers.get('etag'), sequence: body.city.sequence, instance: body.city.instance, keys: Object.keys(body), state: JSON.stringify(body.state) }
   })
   const { state, ...rest } = raw
   return { ...rest, stateHash: createHash('sha256').update(state).digest('hex') }

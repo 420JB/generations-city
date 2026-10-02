@@ -6,9 +6,10 @@ import { createApp } from '../src/app'
 import type { ServerConfig } from '../src/config'
 import type { Database } from '../src/db/pool'
 import { createLogger, silentLogger } from '../src/log'
+import { testConfig } from './testConfig'
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../migrations')
-const LOCAL: ServerConfig = { mode: 'local', port: 0, host: '127.0.0.1', databaseUrl: null, commit: null }
+const LOCAL: ServerConfig = testConfig()
 
 const servers: Server[] = []
 afterEach(async () => {

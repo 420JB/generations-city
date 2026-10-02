@@ -39,6 +39,10 @@ const MESSAGES = {
  * It polls `GET /v1/city`, never runs the engine, and never touches localStorage. A failed
  * read keeps the last city the server sent (marked stale) rather than inventing one.
  * Commands are refused: this slice has no authoritative mutations.
+ *
+ * The city's viewer here is always anonymous. Signing in with a wallet (`src/identity`)
+ * establishes who the visitor is; it does not make them an actor in the city, because
+ * nothing in the shared city can be acted on yet.
  */
 export function createServerTransport(options: ServerTransportOptions): ServerTransport {
   const { fetch: doFetch, baseUrl = '', pollMs = 5_000, maxBackoffMs = 30_000, timeoutMs = 10_000, autoStart = true } = options
@@ -117,7 +121,7 @@ export function createServerTransport(options: ServerTransportOptions): ServerTr
     const parsed = parseCityResponse(body)
     if (!parsed.ok) return failed(parsed.reason === 'unsupported-version' ? MESSAGES.outdated : MESSAGES.malformed)
 
-    const { city, viewer, state } = parsed.response
+    const { city, state } = parsed.response
     // Within one installation of the city, the sequence only moves forward.
     if (current && current.instance === city.instance && city.sequence < current.sequence) return failed(MESSAGES.unavailable)
 
@@ -125,7 +129,8 @@ export function createServerTransport(options: ServerTransportOptions): ServerTr
     const unchanged = current !== null && current.instance === city.instance && current.sequence === city.sequence
     current = { instance: city.instance, sequence: city.sequence, etag: res.headers.get('etag') }
     if (unchanged) return setConnection({ status: 'live', canonical: city.canonical, message: null })
-    publish({ ...snapshot, game: state, viewer, connection: { status: 'live', sequence: city.sequence, canonical: city.canonical, message: null } })
+    // The viewer stays as it is: the city says nothing about who is looking, and a shared city has no actors yet.
+    publish({ ...snapshot, game: state, connection: { status: 'live', sequence: city.sequence, canonical: city.canonical, message: null } })
   }
 
   const refresh = () => {

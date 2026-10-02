@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { getDistrict } from '../config/districts'
 import { friendLabel } from '../config/identity'
 import { MONUMENTS } from '../config/monuments'
@@ -14,6 +14,8 @@ interface Props {
   viewerId: string | null
   /** What the visitor chip says in place of a wallet. */
   visitorNote: string
+  /** Replaces the plain visitor chip (a server-backed city puts wallet sign-in here). */
+  visitor?: ReactNode
   panel: PanelKind | null
   onPanel: (p: PanelKind) => void
   onWarp: (id: string) => void
@@ -23,7 +25,7 @@ interface Props {
   demo: { onHelp: () => void; onFaucet: () => void; onReset: () => void } | null
 }
 
-export function Hud({ game, viewerId, visitorNote, panel, onPanel, onWarp, guideOpen, onSearch, demo }: Props) {
+export function Hud({ game, viewerId, visitorNote, visitor, panel, onPanel, onWarp, guideOpen, onSearch, demo }: Props) {
   const [query, setQuery] = useState('')
   const me = viewerId ? game.users[viewerId] : undefined
   const home = viewerId ? homeDistrict(game, viewerId) : null
@@ -115,6 +117,8 @@ export function Hud({ game, viewerId, visitorNote, panel, onPanel, onWarp, guide
               </button>
             )}
           </div>
+        ) : visitor ? (
+          visitor
         ) : (
           <div className="player-chip" title="You are browsing Rare City as a visitor" data-testid="viewer-anonymous">
             <div>

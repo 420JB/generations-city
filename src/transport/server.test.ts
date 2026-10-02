@@ -10,7 +10,6 @@ const INSTANCE = 'inst-1'
 function body(sequence: number, state: GameState = createSeedState(), patch: Partial<CityResponse['city']> = {}): CityResponse {
   return {
     city: { id: 'main', instance: INSTANCE, sequence, stateVersion: STATE_VERSION, canonical: false, origin: 'demo-fixture', updatedAt: '2026-10-02T00:00:00.000Z', ...patch },
-    viewer: { userId: null, source: 'anonymous' },
     server: { mode: 'staging' },
     state,
   }
@@ -56,11 +55,25 @@ describe('server transport: reading the authoritative city', () => {
     expect(server.requests[0].init).toMatchObject({ cache: 'no-store', credentials: 'same-origin' })
   })
 
-  it('takes its viewer from the server, never from the browser', async () => {
-    const withSession = { ...body(1), viewer: { userId: 'u-42', source: 'session' } }
-    const transport = manual(fakeServer([{ status: 200, json: withSession, etag: '"a"' }]))
+  it('never takes a viewer from the city: the shared city has no actors, whatever the body says', async () => {
+    const replies: Reply[] = [{ userId: 'u-42', source: 'session' }, { userId: 'demo-player', source: 'demo' }, { userId: null, source: 'anonymous' }].map((viewer, i) => ({ status: 200, json: { ...body(i + 1), viewer }, etag: `"${INSTANCE}.${i + 1}"` }))
+    const transport = manual(fakeServer(replies))
+    for (let sequence = 1; sequence <= 3; sequence++) {
+      await transport.refresh()
+      expect(transport.getSnapshot().connection.sequence).toBe(sequence)
+      expect(transport.getSnapshot().viewer).toEqual({ userId: null, source: 'anonymous' })
+    }
+  })
+
+  it('sends no credentials of its own and reads nothing about identity: the city request is the same for everyone', async () => {
+    const server = fakeServer([ok(1), { status: 304 }])
+    const transport = manual(server)
     await transport.refresh()
-    expect(transport.getSnapshot().viewer).toEqual({ userId: 'u-42', source: 'session' })
+    await transport.refresh()
+    for (const request of server.requests) {
+      expect(request.url).toBe('/v1/city')
+      expect(Object.keys(request.headers).sort()).toEqual(request.headers['if-none-match'] ? ['accept', 'if-none-match'] : ['accept'])
+    }
   })
 
   it('never reads or writes localStorage, even when a local demo city is saved there', async () => {
@@ -141,7 +154,6 @@ describe('server transport: failures never invent a city', () => {
       { status: 200, text: '{not json' },
       { status: 200, json: { city: 'nope' } },
       { status: 200, json: { ...body(2), state: { version: STATE_VERSION } } },
-      { status: 200, json: { ...body(2), viewer: { userId: 'demo-player', source: 'demo' } } },
       { status: 200, json: body(2, createSeedState(), { stateVersion: STATE_VERSION + 1 }) },
       { status: 404, json: { error: 'not_found' } },
     ]

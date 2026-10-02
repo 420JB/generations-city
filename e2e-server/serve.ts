@@ -25,7 +25,8 @@ await admin.query(`CREATE SCHEMA ${schema}`)
 
 const url = new URL(target.url)
 url.searchParams.set('options', `-c search_path=${schema}`)
-const env = { ...process.env, APP_MODE: 'local', NODE_ENV: 'test', PORT: port, HOST: '127.0.0.1', DATABASE_URL: url.toString() }
+// Ownership comes from the deterministic fixture provider: these tests never touch a chain or a real wallet.
+const env = { ...process.env, APP_MODE: 'local', NODE_ENV: 'test', PORT: port, HOST: '127.0.0.1', DATABASE_URL: url.toString(), PUBLIC_ORIGIN: `http://127.0.0.1:${port}`, OWNERSHIP_PROVIDER: 'fixture', ROBINHOOD_RPC_URL: 'http://127.0.0.1:1/unused' }
 
 for (const args of [['dist-server/migrate.js'], ['dist-server/seed-demo.js', '--non-canonical']]) {
   const result = spawnSync(process.execPath, args, { env, stdio: 'inherit' })

@@ -8,9 +8,10 @@ import { createApp } from '../src/app'
 import type { ServerConfig } from '../src/config'
 import { silentLogger } from '../src/log'
 import { loadStaticSite, type StaticSite } from '../src/static'
+import { testConfig } from './testConfig'
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../migrations')
-const LOCAL: ServerConfig = { mode: 'local', port: 0, host: '127.0.0.1', databaseUrl: null, commit: 'abc123' }
+const LOCAL: ServerConfig = testConfig({ commit: 'abc123' })
 const INDEX = '<!doctype html><html><body><div id="root"></div><script type="module" src="/assets/index-Dq3x9ZkP.js"></script></body></html>'
 const BUNDLE = `console.log(${JSON.stringify('rare city '.repeat(400))})`
 

@@ -20,7 +20,8 @@ test.describe('same-origin server app', () => {
     expect(city.status()).toBe(200)
     const body = await city.json()
     expect(body.city).toMatchObject({ id: 'main', sequence: 1, canonical: false, origin: 'demo-fixture' })
-    expect(body.viewer).toEqual({ userId: null, source: 'anonymous' })
+    expect(Object.keys(body)).toEqual(['city', 'server', 'state'])
+    expect(await (await request.get('/v1/viewer')).json()).toEqual({ authenticated: false })
 
     expect(await (await request.get('/health')).json()).toEqual({ status: 'ok' })
     expect(await (await request.get('/ready')).json()).toEqual({ status: 'ready', checks: { database: 'ok', migrations: 'ok', environment: 'ok' } })
@@ -123,7 +124,7 @@ test.describe('one shared city', () => {
     expect(readA.status).toBe(200)
     expect(readA.sequence).toBe(1)
     expect(readB).toEqual(readA)
-    expect(readA.viewer).toEqual({ userId: null, source: 'anonymous' })
+    expect(readA.keys).toEqual(['city', 'server', 'state'])
     expect(await drawnCity(pageB)).toBe(await drawnCity(pageA))
 
     // A refresh and a brand-new third browser land on the very same city.

@@ -1,14 +1,20 @@
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
+import { http } from 'viem'
 import { createApp, SERVICE_NAME } from './app'
+import { createAuthService } from './auth/service'
 import { createCityReader } from './city/store'
 import { ConfigError, loadConfig, type ServerConfig } from './config'
 import { defaultMigrationsDir } from './db/migrations'
 import { createPool } from './db/pool'
 import { createLogger, errorFields } from './log'
+import { createFixtureOwnershipProvider } from './ownership/fixture'
+import { createGenerationsOwnershipProvider } from './ownership/generations'
+import { createFriendsReader } from './ownership/reader'
 import { loadStaticSite } from './static'
 
 const SHUTDOWN_GRACE_MS = 10_000
+const RPC_TIMEOUT_MS = 10_000
 
 /** `npm run build:app` puts the server-mode client here; without it the service is API only. */
 const CLIENT_DIR = resolve(process.cwd(), 'dist-server/public')
@@ -26,10 +32,28 @@ async function main() {
 
   const db = config.databaseUrl ? createPool(config.databaseUrl, log) : null
   const site = await loadStaticSite(CLIENT_DIR)
-  const server = createServer(createApp({ config, db, migrationsDir: defaultMigrationsDir(), log, city: db ? createCityReader(db) : null, site }))
+  // Ownership is read from the chain. The fixture is a labelled stand-in that config only allows in local mode.
+  const ownership =
+    config.ownership === 'fixture' ? createFixtureOwnershipProvider() : createGenerationsOwnershipProvider({ transport: http(config.rpcUrl, { timeout: RPC_TIMEOUT_MS, retryCount: 1, retryDelay: 250 }) })
+  const server = createServer(
+    createApp({
+      config,
+      db,
+      migrationsDir: defaultMigrationsDir(),
+      log,
+      city: db ? createCityReader(db) : null,
+      auth: db ? createAuthService({ db, publicOrigin: config.publicOrigin }) : null,
+      friends: createFriendsReader(ownership),
+      site,
+    }),
+  )
+  // A request has this long to arrive in full; nothing the service accepts is large.
+  server.headersTimeout = 15_000
+  server.requestTimeout = 30_000
 
   server.listen(config.port, config.host, () => {
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, database: db ? 'configured' : 'not-configured', client: site ? `${site.size} files` : 'none', commit: config.commit })
+    // The RPC endpoint is deliberately absent: it may carry provider credentials.
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', commit: config.commit })
   })
 
   let stopping = false

@@ -15,6 +15,8 @@ import { findBuildingByFriend } from '../game/actions'
 import type { BuildFx } from './city/BuildingSprite'
 import { CityView, type MonumentTransfer } from './city/CityView'
 import { Hud } from './Hud'
+import { useIdentity } from './identity'
+import { AccountPanel } from './panels/AccountPanel'
 import { ArchitectPanel } from './panels/ArchitectPanel'
 import { BuildBoardPanel } from './panels/BuildBoardPanel'
 import { BuildingPanel } from './panels/BuildingPanel'
@@ -25,13 +27,14 @@ import { homeDistrict as seasonHome } from '../game/season'
 import { StandingsPanel } from './panels/StandingsPanel'
 import { useGameStore, type GameAction, type StoreState } from './store'
 import { useMediaQuery } from './motion'
+import { WalletChip } from './WalletChip'
 
 /** Phone layout breakpoint (matches the bottom-sheet drawer in index.css). */
 const MOBILE_QUERY = '(max-width: 820px)'
 /** Mobile build reveal: roughly the construction FX payoff (+RF float 2.2s, tween 1.1s). */
 export const BUILD_REVEAL_MS = 2000
 
-export type PanelKind = 'board' | 'standings' | 'profile' | 'radio' | 'building' | 'architect'
+export type PanelKind = 'board' | 'standings' | 'profile' | 'radio' | 'building' | 'architect' | 'account'
 
 // Legacy prefix kept after the Rare City rename so returning players keep their guide state.
 const INTRO_KEY = 'generations-city:intro-dismissed'
@@ -66,6 +69,8 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
   const viewerId = store.viewer.userId
   // The local demo's guide, faucet, reset and simulations exist only for the demo player.
   const isDemo = store.viewer.source === 'demo'
+  // WHO IS SIGNED IN (server-backed city only). A session is not a city actor: `viewerId` stays as it is.
+  const identity = useIdentity()
   const playerBuilding = useMemo(
     () => (viewerId ? (Object.values(game.buildings).find((b) => b.ownerId === viewerId) ?? null) : null),
     [game.buildings, viewerId],
@@ -243,6 +248,8 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
     setBackTo(null)
   }
 
+  const visitorNote = store.connection.canonical === false ? 'NON-CANONICAL TEST CITY · READ-ONLY' : 'READ-ONLY'
+
   const doReset = () => {
     act({ type: 'reset' })
     setConfirmReset(false)
@@ -322,6 +329,8 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
       />
     ) : panel === 'architect' && viewerId && selectedId && game.buildings[selectedId] ? (
       <ArchitectPanel game={game} viewerId={viewerId} buildingId={selectedId} act={act} onClose={() => select(null)} onBack={() => setPanel('building')} onBillboardDraft={onBillboardDraft} />
+    ) : panel === 'account' && identity ? (
+      <AccountPanel identity={identity} onClose={closePanel} />
     ) : null
 
   const revealing =
@@ -373,7 +382,8 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
       <Hud
         game={game}
         viewerId={viewerId}
-        visitorNote={store.connection.canonical === false ? 'NON-CANONICAL TEST CITY · READ-ONLY' : 'READ-ONLY'}
+        visitorNote={visitorNote}
+        visitor={identity ? <WalletChip identity={identity} note={visitorNote} onOpen={() => openPanel('account')} /> : undefined}
         panel={panel}
         onPanel={openPanel}
         guideOpen={showGuide}

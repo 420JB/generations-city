@@ -4,12 +4,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createSeedState } from '../../src/game/seed'
 import { createApp } from '../src/app'
 import { CITY_ID, CityInitError, createCityReader, initializeCity } from '../src/city/store'
-import type { AppMode, ServerConfig } from '../src/config'
+import type { AppMode } from '../src/config'
 import { migrate } from '../src/db/migrations'
 import { parseCityResponse, type GameState } from '../src/engine'
 import { installDemoFixture } from '../src/fixtures/demoCity'
 import { silentLogger } from '../src/log'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
+import { testConfig } from './testConfig'
 
 /** An empty city: the shape canonical genesis will have (no residents, nothing held). */
 function emptyCity(): GameState {
@@ -43,7 +44,7 @@ describe.skipIf(NO_TEST_DATABASE)('shared city against a disposable Postgres', (
     await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))))
   })
   async function serve(mode: AppMode): Promise<string> {
-    const config: ServerConfig = { mode, port: 0, host: '127.0.0.1', databaseUrl: 'postgres://unused', commit: null }
+    const config = testConfig({ mode, databaseUrl: 'postgres://unused' })
     const server = createServer(createApp({ config, db: t.db, migrationsDir: MIGRATIONS_DIR, log: silentLogger, city: createCityReader(t.db) }))
     servers.push(server)
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
@@ -229,7 +230,7 @@ describe.skipIf(NO_TEST_DATABASE)('shared city against a disposable Postgres', (
       const parsed = parseCityResponse(body)
       if (!parsed.ok) throw new Error(parsed.reason)
       expect(parsed.response.city).toEqual(meta)
-      expect(parsed.response.viewer).toEqual({ userId: null, source: 'anonymous' })
+      expect(body).not.toHaveProperty('viewer')
       expect(parsed.response.server).toEqual({ mode: 'staging' })
       expect(JSON.stringify(parsed.response.state)).toBe(JSON.stringify(createSeedState()))
     })

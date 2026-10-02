@@ -9,9 +9,10 @@ import type { CityReader, CityRecord } from '../src/city/store'
 import type { ServerConfig } from '../src/config'
 import { parseCityResponse, type CityMeta, type GameState } from '../src/engine'
 import { createLogger, silentLogger, type Logger } from '../src/log'
+import { testConfig } from './testConfig'
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../migrations')
-const STAGING: ServerConfig = { mode: 'staging', port: 0, host: '127.0.0.1', databaseUrl: 'postgres://user:hunter2@db/rarecity', commit: null }
+const STAGING: ServerConfig = testConfig({ mode: 'staging', databaseUrl: 'postgres://user:hunter2@db/rarecity' })
 const META: CityMeta = { id: 'main', instance: '11111111-2222-3333-4444-555555555555', sequence: 1, stateVersion: 5, canonical: false, origin: 'demo-fixture', updatedAt: '2026-10-02T00:00:00.000Z' }
 
 const servers: Server[] = []
@@ -52,19 +53,24 @@ describe('GET /v1/city', () => {
     expect(res.headers.get('etag')).toBe(`"${META.instance}.1"`)
     expect(res.headers.get('x-content-type-options')).toBe('nosniff')
     const body = (await res.json()) as Record<string, unknown>
-    expect(Object.keys(body)).toEqual(['city', 'viewer', 'server', 'state'])
+    expect(Object.keys(body)).toEqual(['city', 'server', 'state'])
     expect(body.city).toEqual(META)
     expect(body.server).toEqual({ mode: 'staging' })
     expect(JSON.stringify(body.state)).toBe(JSON.stringify(state))
     expect(parseCityResponse(body).ok).toBe(true)
   })
 
-  it('tells every caller they are an anonymous viewer: no user id is ever invented', async () => {
+  it('is one document for every caller: it never says who is looking, whatever the request claims', async () => {
     const base = await start(fakeCity({ meta: META, state: createSeedState() }).reader)
-    for (const headers of [{}, { cookie: 'session=demo-player' }, { authorization: 'Bearer demo-player' }, { 'x-user-id': 'demo-player' }]) {
-      const body = (await (await fetch(`${base}/v1/city`, { headers })).json()) as { viewer: unknown }
-      expect(body.viewer).toEqual({ userId: null, source: 'anonymous' })
+    const bodies: string[] = []
+    for (const headers of [{}, { cookie: 'rc_session=demo-player; __Host-rc_session=demo-player' }, { authorization: 'Bearer demo-player' }, { 'x-user-id': 'demo-player' }]) {
+      const res = await fetch(`${base}/v1/city`, { headers })
+      const text = await res.text()
+      expect(JSON.parse(text)).not.toHaveProperty('viewer')
+      expect(res.headers.get('set-cookie')).toBeNull()
+      bodies.push(text)
     }
+    expect(new Set(bodies).size).toBe(1)
   })
 
   it('answers 304 to a matching ETag, exact or weakened by a proxy, and 200 otherwise', async () => {

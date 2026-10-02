@@ -11,4 +11,18 @@
 export { applyCityCommand, type CityCommand } from '../../src/game/commands'
 export { isCityStateShape, STATE_VERSION } from '../../src/game/stateSchema'
 export type { ActionResult, GameEvent, GameState } from '../../src/game/types'
-export { ANONYMOUS_VIEWER, CITY_ENDPOINT, parseCityResponse, type CityErrorCode, type CityMeta, type CityOrigin, type CityResponse, type Viewer } from '../../src/protocol/city'
+export { CITY_ENDPOINT, parseCityResponse, type CityErrorCode, type CityMeta, type CityOrigin, type CityResponse } from '../../src/protocol/city'
+export { familyById, RARE_FRIENDS_CHAIN, RARE_FRIENDS_FAMILIES, type Family, type HexAddress } from '../../src/config/rareFriends'
+export {
+  ANONYMOUS_VIEWER_RESPONSE,
+  AUTH_CHALLENGE_ENDPOINT,
+  AUTH_LOGOUT_ENDPOINT,
+  AUTH_VERIFY_ENDPOINT,
+  FRIENDS_ENDPOINT,
+  VIEWER_ENDPOINT,
+  type AuthenticatedViewer,
+  type ChallengeResponse,
+  type FriendsResponse,
+  type IdentityErrorCode,
+  type ViewerResponse,
+} from '../../src/protocol/identity'
