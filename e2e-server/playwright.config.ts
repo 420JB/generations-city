@@ -3,6 +3,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 // Server-mode browser tests: the built Rare City app served by the built server, reading
 // one shared city from a disposable Postgres. `npm run test:e2e:server`.
+// A second server on the next port serves an EMPTY city (genesis state) for empty-city.spec.ts.
 const PORT = 4319
 
 if (!process.env.TEST_DATABASE_URL)
@@ -27,7 +28,8 @@ export default defineConfig({
   webServer: {
     command: 'npm run build:app && npx tsx e2e-server/serve.ts',
     cwd: resolve(import.meta.dirname, '..'),
-    url: `http://127.0.0.1:${PORT}/ready`,
+    // The second server (the empty city, on the next port) starts last: once it is ready, both are.
+    url: `http://127.0.0.1:${PORT + 1}/ready`,
     env: { E2E_PORT: String(PORT) },
     reuseExistingServer: false,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },

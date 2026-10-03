@@ -180,12 +180,13 @@ describe.skipIf(NO_TEST_DATABASE)('shared city against a disposable Postgres', (
 
     it('a production database rejects a non-canonical city even from raw SQL', async () => {
       await setup('production')
-      const state = JSON.stringify(createSeedState())
-      const raw = (canonical: boolean, origin: string) => t.db.query(`INSERT INTO city (id, canonical, origin, state_version, sequence, state) VALUES ('main', $1, $2, 5, 1, $3::json)`, [canonical, origin, state])
+      const raw = (canonical: boolean, origin: string, state = JSON.stringify(createSeedState())) => t.db.query(`INSERT INTO city (id, canonical, origin, state_version, sequence, state) VALUES ('main', $1, $2, 5, 1, $3::json)`, [canonical, origin, state])
       await expect(raw(false, 'demo-fixture')).rejects.toThrow('a production database cannot hold a non-canonical city')
       expect(await count('city')).toBe(0)
+      // Since migration 0004 a canonical city must also start empty: the seeded demo state is refused as one.
+      await expect(raw(true, 'genesis')).rejects.toThrow('a city that may hold properties must start with no buildings')
       // A canonical row is accepted, and cannot later be flipped to non-canonical either.
-      await raw(true, 'genesis')
+      await raw(true, 'genesis', JSON.stringify(emptyCity()))
       await expect(t.db.query(`UPDATE city SET canonical = false, origin = 'demo-fixture'`)).rejects.toThrow('a production database cannot hold a non-canonical city')
     })
 

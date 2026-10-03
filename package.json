@@ -22,6 +22,10 @@
     "db:migrate:dev": "tsx --env-file-if-exists=.env server/src/migrate-cli.ts",
     "city:seed-demo": "node dist-server/seed-demo.js",
     "city:seed-demo:dev": "tsx --env-file-if-exists=.env server/src/seed-demo-cli.ts",
+    "city:genesis": "node dist-server/genesis.js",
+    "city:genesis:dev": "tsx --env-file-if-exists=.env server/src/genesis-cli.ts",
+    "city:verify": "node dist-server/verify.js",
+    "city:verify:dev": "tsx --env-file-if-exists=.env server/src/verify-cli.ts",
     "test:server": "vitest run --config server/vitest.config.ts",
     "test:e2e:server": "playwright test --config e2e-server/playwright.config.ts"
   },

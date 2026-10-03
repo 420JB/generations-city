@@ -9,8 +9,11 @@
  * in `fixtures/demoCity.ts`.
  */
 export { applyCityCommand, type CityCommand } from '../../src/game/commands'
+export { createGenesisState, PRESEASON } from '../../src/game/genesis'
+export { checkAuthoritativeCity, checkCityState, checkPropertyParity, cityMode, isActivatable, type AuthoritativeCityCheck, type CityFlags, type CityMode, type InvariantCategory, type PropertyFacts, type Violation } from '../../src/game/invariants'
 export { isCityStateShape, STATE_VERSION } from '../../src/game/stateSchema'
-export type { ActionResult, GameEvent, GameState } from '../../src/game/types'
+export type { ActionResult, CityUser, GameEvent, GameState } from '../../src/game/types'
+export { districtForFamily, FAMILY_DISTRICTS, familyForDistrict } from '../../src/config/familyDistricts'
 export { CITY_ENDPOINT, parseCityResponse, type CityErrorCode, type CityMeta, type CityOrigin, type CityResponse } from '../../src/protocol/city'
 export { familyById, RARE_FRIENDS_CHAIN, RARE_FRIENDS_FAMILIES, type Family, type HexAddress } from '../../src/config/rareFriends'
 export {

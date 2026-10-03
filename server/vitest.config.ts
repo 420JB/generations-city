@@ -6,5 +6,8 @@ export default defineConfig({
     include: ['server/tests/**/*.test.ts'],
     environment: 'node',
     globalSetup: ['server/tests/globalSetup.ts'],
+    // Database tests migrate a fresh schema each; on a busy machine that can take longer than the default.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 })

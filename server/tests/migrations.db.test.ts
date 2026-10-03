@@ -19,7 +19,7 @@ describe.skipIf(NO_TEST_DATABASE)('migrations against a disposable Postgres', ()
     const shipped = await loadMigrations(MIGRATIONS_DIR)
     const result = await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })
     expect(result).toEqual({ applied: shipped.map((m) => m.version), current: shipped.length })
-    expect(await t.tables()).toEqual(['app_meta', 'auth_challenges', 'city', 'city_events', 'schema_migrations', 'sessions', 'users', 'wallets'])
+    expect(await t.tables()).toEqual(['activation_intents', 'app_meta', 'auth_challenges', 'city', 'city_events', 'ownership_eras', 'properties', 'schema_migrations', 'sessions', 'users', 'wallets'])
     const rows = (await t.db.query('SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version')).rows
     expect(rows.map((r) => [r.version, r.name, r.checksum])).toEqual(shipped.map((m) => [m.version, m.name, m.checksum]))
     expect(rows[0].applied_at).toBeInstanceOf(Date)

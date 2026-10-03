@@ -20,6 +20,11 @@ gameplay command, no RF read or movement, and no transaction of any kind. The on
 that change anything are the three sign-in `POST`s, and they change sessions, never the
 city. The live demo at rarecity.world does not use this service.
 
+The database is ready for permanent activation (migration `0004`: properties, ownership
+eras, activation intents, append-only events) and an empty city can be installed by an
+operator, but **no route, service or screen activates anything yet**. See "Activation
+foundation" below.
+
 ## Layout
 
 ```
@@ -36,6 +41,8 @@ server/
     log.ts             JSON-lines logger
     engine.ts          the only doorway into src/game, src/config and src/protocol
     city/store.ts      the city: read side, and the one way a city is installed
+    city/genesis.ts    operator-only: canonical genesis, rehearsal genesis, the guarded staging reset
+    city/verify.ts     read-only check of the installed city against every invariant
     auth/service.ts    sign-in challenges, signature verification, sessions
     ownership/provider.ts     the OwnershipProvider interface
     ownership/generations.ts  Rare Friends on Robinhood Chain (the real adapter)
@@ -44,6 +51,8 @@ server/
     fixtures/demoCity.ts   NON-CANONICAL demo city for staging and tests
     migrate-cli.ts     `npm run db:migrate`
     seed-demo-cli.ts   `npm run city:seed-demo -- --non-canonical`
+    genesis-cli.ts     `npm run city:genesis -- <command>`
+    verify-cli.ts      `npm run city:verify`
     db/pool.ts         pg pool
     db/migrations.ts   migration loader, runner and readiness probe
   migrations/          plain SQL, NNNN_snake_case_name.sql
@@ -471,31 +480,230 @@ Ownership of Friends is not stored anywhere: it is read from the chain when aske
 
 A later slice that applies commands will lock the `city` row, apply the engine, write the
 new state with `sequence + 1`, and append the matching `city_events` row, all in one
-transaction. Normalised tables (properties, ownership eras, ledgers) can be added beside
-the snapshot and the snapshot kept as their projection.
+transaction.
 
-## Genesis and the staging fixture
+## Activation foundation (migration 0004)
 
-Two different things, kept apart:
+Structure, guards and operator tools. **Nothing here activates a Friend**: no route, no
+service and no screen writes a property. Migration `0004` adds columns, tables and
+triggers only; it does not touch an existing city's state, sequence, instance or events.
 
-- **Canonical genesis** is the real city's starting point: empty apart from civic
-  infrastructure. Nothing installs it yet; it arrives with activation. Until then a
-  production database has no city and `/v1/city` answers `city_not_initialized`.
-- **The demo fixture** is the familiar 180-resident demo city. It is **NON-CANONICAL**:
-  simulated residents, simulated RF, to be wiped before real RF. It exists so staging and
-  tests have something to look at.
+### Three kinds of city
 
-Nothing installs a city automatically: not a migration, not a deploy, not the service at
-start-up. The fixture is installed only by running this by hand:
+| | `canonical` | `origin` | `activation_rehearsal` | May hold real properties |
+| --- | --- | --- | --- | --- |
+| Canonical genesis | `true` | `genesis` | `false` | yes |
+| Ordinary demo fixture | `false` | `demo-fixture` | `false` | **no** |
+| Activation rehearsal | `false` | `demo-fixture` | `true` | yes |
+
+`origin` keeps its two values. `activation_rehearsal` (default `false`) marks a disposable,
+empty, genesis-shaped city in which activation can be exercised for real on staging. A
+constraint forbids it on a canonical city. The `city` row is guarded by triggers:
+
+- a canonical city can only exist in a database stamped `production`, and a production
+  database can only hold a canonical city;
+- a city is inserted at sequence 1, and one that may hold properties only with an empty
+  `buildings` object;
+- what a city is never changes: its `id`, `instance_id`, `canonical`, `origin` and
+  `activation_rehearsal` are permanent, so a populated fixture can never be relabelled;
+- its `sequence` moves forward one step at a time and never back, and its `state` only
+  changes together with the sequence;
+- a production city cannot be deleted.
+
+The environment stamp those guards rely on is guarded too: once `app_meta` says
+`production` the row cannot be changed or removed, and a database holding a non-canonical
+city cannot be re-stamped `production`. So is the identity that intents and eras name: a
+`wallets` row keeps its address and chain, and a `sessions` row keeps its user and wallet.
+Which user a wallet belongs to is deliberately not frozen (a wallet is not assumed to be
+one person forever), so the "this wallet is this user's" check on an intent or era is true
+at the moment of the write; `city:verify` reports an era whose wallet no longer belongs to
+its user.
+
+**What the guards do and do not withstand.** Every guard function is pinned to its own
+schema with temporary tables searched last, so a session cannot switch a guard off by
+creating a temporary table named like the ones it reads (this also fixes
+`city_guard_canonical` from `0002`). They hold against any ordinary `INSERT`, `UPDATE` or
+`DELETE`, whatever code issues it. They do **not** hold against the table owner or a
+superuser, who can `TRUNCATE`, disable a trigger or set `session_replication_role`. Today
+the service connects as the role that owns the tables. **Before canonical production, the
+service must run as a role that does not own them**; that is a provisioning step, not
+something a migration can do.
+
+### Tables
+
+- **`properties`**: one permanent row per activated Friend: the city installation it
+  belongs to, chain, collection, token id, family, district, ward, plot, plot id, building
+  id, when and at which city sequence it was activated, by whom, through which intent, and
+  the chain block at which ownership was verified. Unique per `(chain, collection, token)`,
+  per `(city, plot)`, per `(city, building)`, per intent and per sequence. Checks pin the
+  chain to `4663` and the collection to Generations, the token id to `0 ..
+  9007199254740991` (the city state holds a Friend id as a JavaScript number), the family
+  to its district (`0 Skeleton d8 · 1 Mask d6 · 2 Family d4 · 3 Cellular d5 · 4 Asymmetry
+  d7 · 5 Hoverer d9 · 6 Colossus d3 · 7 Sparkling d2 · 8 Hollow d1`), `plot_id` to
+  `<district>-w<ward>-p<plot>` and `building_id` to `b-<token id>`. Composite foreign keys
+  tie it to the exact city installation `(id, instance_id)` and to the exact event
+  `(city_id, sequence)`. A trigger refuses a property unless its city may hold properties,
+  it is exactly what its *issued, unexpired* intent authorised, and a `property.activated`
+  event exists at the sequence the city has just reached. At commit, a second (deferred)
+  trigger refuses a property whose intent was not committed to it or which has no first
+  ownership era, so a half-finished activation can never be committed.
+  **`UPDATE` is always refused; `DELETE` is refused in production.**
+- **`ownership_eras`**: who a property has belonged to. Era 1 opens at activation and
+  belongs to the activating wallet; a later era would open after a transfer (not
+  implemented). Numbered consecutively per property, at most one open, each opening only
+  after the one before has closed, normalised owner address, and the address, wallet and
+  user naming one owner. **The only `UPDATE` is closing an era, once.** `DELETE` is refused
+  in production.
+- **`activation_intents`**: what a wallet was asked to sign: a 32-byte id, user, wallet,
+  session, owner address, chain, collection, token id, family, city installation, plot,
+  origin, the 32-byte EIP-712 digest, issue and expiry times, the block at issue, and a
+  status of `issued`, `committed` or `superseded`. An intent begins as `issued`, for a city
+  that may hold properties, by one user through their own wallet and a session of theirs.
+  At most one `issued` intent per wallet and Friend. `committed` requires a time before
+  the intent expires, a 65-byte signature and the property, and the property must be the
+  one that names this intent. **Signed fields can never change.** The
+  only transitions are `issued -> committed` and `issued -> superseded`. The one other
+  change allowed is `session_id` becoming `NULL`: that is the `sessions` foreign key
+  (`ON DELETE SET NULL`) doing its normal clean-up, so session retention keeps working.
+- **`city_events`** is now append-only by trigger: an event can only be inserted at the
+  sequence its city has just reached, **`UPDATE` is always refused, and `DELETE` is refused
+  in production.** Outside production, removal stays possible for the one operator command
+  below that replaces a disposable fixture.
+
+Not enforced by the database:
+
+- ward capacity and which plots are candidates: the engine's rules, checked by the
+  invariants below;
+- that a token id arrives as a whole number: Postgres rounds `1.5` on its way into a
+  `numeric(78,0)`, so the service must refuse anything that is not a canonical decimal
+  before it reaches the database;
+- that every sequence has an event: a sequence can be advanced without one, and
+  `city:verify` reports it;
+- outside production, anything: a non-production database is disposable, and one statement
+  that deletes and re-inserts a city gets round "what a city is never changes".
+
+Two operational consequences of the guards: a **data-only** reload into an existing schema
+cannot replay events or properties past them (restore from a full dump, where triggers are
+created after the data), and migration `0004` gives up after 10 seconds if another session
+is holding one of the tables it alters, rather than queue readers behind it.
+
+### Which layer is the truth
+
+`properties` and `ownership_eras` are the authority for which Friend has a property, where,
+and whose it is. `city.state` is the authority for gameplay and *projects* each property as
+a building. In a city that may hold properties the two must agree, and `city:verify` checks
+it: the same set of buildings and properties, the same Friend, district, ward and plot for
+each, and each building owned in the state by the user of its property's open era. If they
+ever disagree, the property rows win.
+
+### Users in the city state are presentation
+
+`state.users[*]` is a `CityUser`: an id, a handle and an avatar. Its `friendId` picks which
+Friend is drawn as the avatar and **is never authority**: it does not prove ownership, does
+not limit a user to one Friend, and grants no control over a property. Who may act will
+come from the session, a fresh ownership read from the chain, and `properties` /
+`ownership_eras`. (`DemoUser` remains as an alias of the same shape for the demo code; the
+serialised shape and `STATE_VERSION` are unchanged.)
+
+### Authoritative invariants
+
+`isCityStateShape` says a state can be drawn. `src/game/invariants.ts` says a state is one
+an authority may hold. It is pure, shared with the client, and run before a city is
+installed, by the staging reset, and by `city:verify`:
+
+- **state**: supported version; every collection the right kind; every district present
+  with a positive whole number of open wards and none open beyond the last occupied one;
+  whatever is held is held by a real district or building; a Representative is a building
+  its user owns; no simulated wallets in a city that may hold real properties.
+- **buildings**: the map key is the building's id; the id is `b-<friendId>`; the Friend id
+  is a non-negative safe integer and unique; a valid district; ward and plot non-negative
+  integers; the ward is open; the plot is within the ward's capacity; no two buildings on
+  one plot; the owner and every patron is a user of the city; each part is the kind of
+  thing it should be.
+- **users**: the map key is a plain id and is the user's id; the avatar Friend id is
+  well-formed. Nothing is inferred from it.
+- **mode**: the city is one of the three kinds above. Anything else is rejected, never
+  treated as a fixture.
+- **properties** (canonical and rehearsal cities): the buildings and the property rows are
+  the same set, and each pair agrees on Friend, building id, district, ward, plot and
+  family district. An ordinary demo fixture is recognised as such: its simulated buildings
+  are not properties, so parity is not asked of it, and it must have no property rows.
+
+### `npm run city:verify`
+
+Read-only. One `REPEATABLE READ, READ ONLY` transaction reads the city, its events, its
+properties, their eras and the intents, then checks the invariants above plus: events
+numbered `1..sequence` starting with `city.initialized`, one `property.activated` event per
+property at the property's sequence, every property the property of a committed intent,
+eras numbered from 1 with only the latest open, each era's address, wallet and user naming
+one owner, and each building owned in the state by the user of its open era.
+
+- exit `0`: valid, with one `city verified` line of metadata and counts;
+- exit `1`: invalid; each violation is logged with its `category` (`city`, `mode`,
+  `state`, `buildings`, `users`, `properties`, `events`, `eras`, `intents`), `rule` and
+  detail;
+- exit `2`: the check could not be run.
+
+## Genesis, the rehearsal city and the staging fixture
+
+**Nothing installs or replaces a city automatically**: not a migration, not a deploy, not
+the service at start-up, not a request. Only these operator commands do, each run by hand.
+
+`createGenesisState()` is the empty city: no users, no buildings, no simulated wallets, no
+badges or counters, nothing held, no history, no radio, one founding ward open per
+district, and a neutral season (`Preseason`, number `0`). The civic world a visitor sees is
+drawn from configuration, so an empty state is still a whole city.
 
 ```
-npm run city:seed-demo -- --non-canonical
+npm run city:genesis -- --help
 ```
 
-It refuses to run without the flag, when `APP_MODE=production`, against a database stamped
-for another environment, and once a city exists (it never overwrites one). Independently of
-all code, a database stamped `production` rejects any non-canonical city row through a
-trigger.
+| Command | Installs | Requires |
+| --- | --- | --- |
+| `city:genesis -- canonical --confirm-city main --confirm-environment production` | the **canonical** empty city | `APP_MODE=production`, database stamped `production`, no city present |
+| `city:genesis -- rehearsal --confirm-city main --confirm-environment staging` | an empty **non-canonical rehearsal** city | `APP_MODE=staging`, database stamped `staging`, no city present |
+| `city:seed-demo -- --non-canonical` | the 180-resident **demo fixture** (simulated, not a rehearsal) | not production, no city present |
+
+Each is one transaction that writes the city at sequence 1 with exactly one
+`city.initialized` event, and each refuses once any city exists.
+
+### Replacing the staging fixture: `replace-staging-fixture`
+
+The one destructive command. It swaps staging's disposable demo-fixture city for an empty
+rehearsal city, and nothing else.
+
+```
+npm run city:genesis -- replace-staging-fixture --confirm-city main --confirm-environment staging \
+    --confirm-reset replace-demo-fixture --expect-instance <uuid> --expect-sequence <n>
+```
+
+It refuses unless **all** of these hold:
+
+- `APP_MODE=staging`, and the database is stamped `staging`;
+- all three confirmations are given exactly;
+- the city's `instance_id` and `sequence` are exactly the ones supplied;
+- the city is `canonical=false`, `origin=demo-fixture`, `activation_rehearsal=false` (a
+  rehearsal city is never replaced by this command);
+- there are no properties, no ownership eras and no activation intents of any status;
+- no event in its history is an activation event;
+- its events are exactly `1..sequence` starting with `city.initialized`, and its state
+  passes the authoritative invariants.
+
+It locks the city row first and checks every condition under that lock. Then, in the same
+transaction, it removes that city's events and row and installs a **new** city: new
+`instance_id`, sequence 1, genesis state, `activation_rehearsal=true`, and one
+`city.initialized` event that records what was replaced. Any failure rolls all of it back.
+It cannot run against production: the command refuses the mode and the stamp, and a
+production database refuses the removals itself.
+
+Run `npm run city:verify` before and after.
+
+### The demo fixture
+
+The familiar 180-resident demo city is **NON-CANONICAL**: simulated residents, simulated
+RF. `city:seed-demo` refuses to run without `--non-canonical`, when `APP_MODE=production`,
+against a database stamped for another environment, and once a city exists. Its buildings
+are not properties and the database refuses to give it any.
 
 ## Environment
 
@@ -531,6 +739,10 @@ npm run db:migrate         # apply pending migrations (built bundle; used on dep
 npm run db:migrate:dev     # same, straight from source, reads .env if present
 npm run city:seed-demo -- --non-canonical       # install the NON-CANONICAL demo fixture (built bundle)
 npm run city:seed-demo:dev -- --non-canonical   # same, straight from source
+npm run city:genesis -- --help                  # canonical / rehearsal / replace-staging-fixture (built bundle)
+npm run city:genesis:dev -- --help              # same, straight from source
+npm run city:verify                             # read-only check of the installed city (built bundle)
+npm run city:verify:dev                         # same, straight from source
 npm run test:server
 npm run test:e2e:server    # browser tests of the built app; needs TEST_DATABASE_URL
 ```
@@ -557,13 +769,13 @@ Railway no longer lets a new service use a `railway.json` / `railway.toml` file,
 none in this repository. The staging service's build, pre-deploy, start and health-check
 configuration lives in its **Railway service settings**:
 
-| Setting | Value on staging today (P0-C) | Value this branch needs |
+| Setting | Value on staging today (P0-D Slice 1) | Value this branch needs |
 | --- | --- | --- |
 | Build command | `npm run build:app` | unchanged |
-| Pre-deploy command | `npm run db:migrate` | unchanged (no new migration) |
+| Pre-deploy command | `npm run db:migrate` | unchanged (applies migration `0004`: structure only, the city is not touched) |
 | Start command | `npm run start:server` | unchanged |
 | Health check path | `/ready` | unchanged |
-| Variables | `APP_MODE=staging`, `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `PUBLIC_ORIGIN=https://<the staging domain>` | add `TRUSTED_PROXY=railway`; optionally `HSTS_MAX_AGE`, `FRAME_ANCESTORS`, `ROBINHOOD_RPC_URL` |
+| Variables | `APP_MODE=staging`, `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `PUBLIC_ORIGIN=https://<the staging domain>`, `TRUSTED_PROXY=railway` | unchanged; optionally `HSTS_MAX_AGE`, `FRAME_ANCESTORS`, `ROBINHOOD_RPC_URL` |
 
 Without `PUBLIC_ORIGIN` or `TRUSTED_PROXY` this build refuses to start in staging, and
 `db:migrate` refuses with it, so both have to be set before the branch is deployed. The

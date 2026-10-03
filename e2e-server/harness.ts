@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { expect, type Page } from '@playwright/test'
+import { expect, type BrowserContext, type Page } from '@playwright/test'
 import pg from 'pg'
 
 /** Written by serve.ts so the tests can reach the same throwaway schema the server uses. */
@@ -71,4 +71,16 @@ export function watchErrors(page: Page, allow: RegExp[] = []) {
     if (m.type() === 'error' && !allow.some((re) => re.test(m.text()))) problems.push(`console.error: ${m.text()}`)
   })
   return problems
+}
+
+/** Every Content-Security-Policy violation the browser reports in any page of this context, from before the app's first script. */
+export async function watchCsp(context: BrowserContext): Promise<string[]> {
+  const violations: string[] = []
+  await context.exposeFunction('__rcCspViolation', (violation: string) => violations.push(violation))
+  await context.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (e) => {
+      void (window as unknown as { __rcCspViolation(v: string): Promise<void> }).__rcCspViolation(`${e.effectiveDirective} blocked ${e.blockedURI || 'inline'} at ${e.sourceFile ?? ''}:${e.lineNumber}`)
+    })
+  })
+  return violations
 }

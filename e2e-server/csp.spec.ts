@@ -1,5 +1,5 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
-import { openSharedCity, watchErrors } from './harness.ts'
+import { expect, test, type Page } from '@playwright/test'
+import { openSharedCity, watchCsp, watchErrors } from './harness.ts'
 import { ACCOUNTS, installWallet, short } from './wallet.ts'
 
 /**
@@ -17,18 +17,6 @@ const API_CSP = "default-src 'none'; frame-ancestors 'none'"
 const ALICE = ACCOUNTS[0].address
 /** A 1x1 transparent PNG. */
 const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
-
-/** Every violation the browser reports in any page of this context, from before the app's first script. */
-async function watchCsp(context: BrowserContext): Promise<string[]> {
-  const violations: string[] = []
-  await context.exposeFunction('__rcCspViolation', (violation: string) => violations.push(violation))
-  await context.addInitScript(() => {
-    document.addEventListener('securitypolicyviolation', (e) => {
-      void (window as unknown as { __rcCspViolation(v: string): Promise<void> }).__rcCspViolation(`${e.effectiveDirective} blocked ${e.blockedURI || 'inline'} at ${e.sourceFile ?? ''}:${e.lineNumber}`)
-    })
-  })
-  return violations
-}
 
 const directives = (violations: string[]) => violations.map((v) => v.split(' ')[0])
 

@@ -2,9 +2,9 @@ import type { ArchitectureConfig } from '../config/architecture'
 import type { DistrictId } from '../config/districts'
 import type { FixtureId, LandscapeKind } from '../config/fixtures'
 import type { MonumentId } from '../config/monuments'
-import type { DemoUser } from '../config/identity'
+import type { CityUser, DemoUser } from '../config/identity'
 
-export type { DistrictId, MonumentId, FixtureId, LandscapeKind, ArchitectureConfig, DemoUser }
+export type { DistrictId, MonumentId, FixtureId, LandscapeKind, ArchitectureConfig, CityUser, DemoUser }
 
 export interface Milestone {
   tier: number
@@ -114,7 +114,8 @@ export interface SeasonState {
 export interface GameState {
   version: number
   clock: number
-  users: Record<string, DemoUser>
+  /** Presentation records. A user's `friendId` is an avatar, never ownership authority (see `CityUser`). */
+  users: Record<string, CityUser>
   buildings: Record<string, Building>
   wallets: Record<string, number>
   monuments: Record<MonumentId, Holding<DistrictId>>
