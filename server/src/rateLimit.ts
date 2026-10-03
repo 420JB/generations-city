@@ -126,4 +126,7 @@ export const LIMITS = {
   authChallenge: { client: [perMinute(10)] },
   authVerify: { client: [perMinute(10)] },
   friends: { client: [perMinute(30)], user: [perMinute(6)] },
+  // Each allowed request of either kind costs one pinned chain read. A person activates a Friend a few times, ever.
+  activationIntent: { client: [perMinute(10)], user: [perMinute(6)] },
+  activationCommit: { client: [perMinute(10)], user: [perMinute(6)] },
 } as const satisfies Record<string, { client: readonly RateRule[]; user?: readonly RateRule[] }>

@@ -38,6 +38,12 @@ export interface ServerConfig {
   frameAncestors: string[]
   /** `Strict-Transport-Security` lifetime in seconds. Not sent in local mode. */
   hstsMaxAge: number
+  /**
+   * Whether permanent Friend activation may run. false unless ACTIVATION_ENABLED says `true`
+   * in so many words. Nothing else switches it on: not the mode, and not the kind of city
+   * the database holds.
+   */
+  activationEnabled: boolean
 }
 
 export type OwnershipSource = 'robinhood' | 'fixture'
@@ -209,6 +215,18 @@ function readHstsMaxAge(env: Record<string, string | undefined>, mode: AppMode):
   return seconds
 }
 
+/**
+ * The activation switch. Exactly `true` or `false`, and off when unset. A value that merely
+ * looks affirmative (`1`, `yes`, `on`, `TRUE`) is refused rather than read either way: a
+ * permanent write is never enabled or disabled by a guess.
+ */
+function readActivationEnabled(env: Record<string, string | undefined>): boolean {
+  const raw = clean(env.ACTIVATION_ENABLED)
+  if (raw === undefined || raw === 'false') return false
+  if (raw === 'true') return true
+  throw new ConfigError('ACTIVATION_ENABLED must be true or false.')
+}
+
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
   const mode = readMode(env)
   const port = readPort(env)
@@ -226,5 +244,6 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     rateLimits: readRateLimits(env, mode),
     frameAncestors: readFrameAncestors(env),
     hstsMaxAge: readHstsMaxAge(env, mode),
+    activationEnabled: readActivationEnabled(env),
   }
 }

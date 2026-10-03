@@ -43,6 +43,7 @@ function fakeAuth() {
       if (!n) return { authenticated: false }
       return { authenticated: true, userId: userId(n), wallet: { address: ADDRESSES[0], chainId: 4663 }, session: { expiresAt: '2026-10-09T12:00:00.000Z' } }
     },
+    session: async () => null,
   }
   return { service, calls }
 }

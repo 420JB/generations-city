@@ -1,13 +1,17 @@
 import { createHmac, randomBytes } from 'node:crypto'
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http'
 import { gzipSync } from 'node:zlib'
-import { AuthError, type AuthService } from './auth/service'
+import type { PropertyReader } from './activation/properties'
+import { ActivationError, type ActivationService } from './activation/service'
+import { AuthError, type AuthService, type LiveSession } from './auth/service'
 import type { CityReader } from './city/store'
 import { clientKey, type ClientKey } from './clientKey'
 import type { ServerConfig } from './config'
 import { databaseStatus, type DatabaseStatus } from './db/migrations'
 import type { Database } from './db/pool'
 import {
+  ACTIVATION_INTENTS_ENDPOINT,
+  ACTIVATIONS_ENDPOINT,
   ANONYMOUS_VIEWER_RESPONSE,
   AUTH_CHALLENGE_ENDPOINT,
   AUTH_LOGOUT_ENDPOINT,
@@ -17,6 +21,7 @@ import {
   isCityStateShape,
   STATE_VERSION,
   VIEWER_ENDPOINT,
+  type ActivationErrorCode,
   type CityErrorCode,
   type CityMeta,
   type CityResponse,
@@ -45,6 +50,10 @@ export interface AppDeps {
   auth?: AuthService | null
   /** Owned-Friends reads for the signed-in wallet. null = not available. */
   friends?: FriendsReader | null
+  /** Permanent Friend activation. null when there is no database to write it to. It also needs `config.activationEnabled`. */
+  activation?: ActivationService | null
+  /** Which Friends already have a property, for the My Friends annotation. null = not available. */
+  properties?: PropertyReader | null
   /** The built client, served from this origin. null = API only. */
   site?: StaticSite | null
   /** How long /ready waits for the database before answering not-ready. */
@@ -145,7 +154,7 @@ interface PostRoute {
   /** Client-network limits, counted before the body is read. null = not limited. */
   limit: readonly RateRule[] | null
   /** What the client is told, and what is logged, when the handler fails unexpectedly. */
-  failure: { code: IdentityErrorCode; log: string }
+  failure: { code: IdentityErrorCode | ActivationErrorCode; log: string }
   handle(ctx: PostContext): Promise<void>
 }
 
@@ -153,12 +162,13 @@ interface PostRoute {
  * The HTTP surface of the service: diagnostics, the public city read, identity, and (when
  * a client build is present) the Rare City app itself.
  *
- * The city is shared and read-only: nothing here changes it. Reads are GET/HEAD and never
- * look at a request body. The only requests that change anything are the three sign-in
- * POSTs, and they change sessions, never the city.
+ * Reads are GET/HEAD and never look at a request body. The requests that change anything
+ * are POSTs declared in `posts`: the three sign-in routes, which change sessions and never
+ * the city, and the two activation routes, which are the only way the city itself changes
+ * and which refuse outright unless `config.activationEnabled` is set.
  */
 export function createApp(deps: AppDeps): RequestListener {
-  const { config, log, city = null, site = null, auth = null, friends = null } = deps
+  const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null } = deps
   const cookie = sessionCookie(config.mode)
   const security = buildSecurityHeaders(config)
   const limiter = deps.limiter ?? (config.rateLimits ? createRateLimiter() : unlimited)
@@ -171,7 +181,7 @@ export function createApp(deps: AppDeps): RequestListener {
   let warnedAt = Number.NEGATIVE_INFINITY
 
   const cityError = (res: ServerResponse, code: CityErrorCode) => send(res, 503, { error: code }, { 'retry-after': '5' })
-  const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
+  const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode | ActivationErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
 
   /**
    * Count this request against `rules` for `key`. Answers 429 and returns false when it is over the limit.
@@ -269,11 +279,24 @@ export function createApp(deps: AppDeps): RequestListener {
     if (!friends) return identityError(res, 503, 'ownership_unavailable', { 'retry-after': '30' })
     try {
       const owned = await friends.read(viewer.wallet.address)
+      // Which of them already have a property, from the normalized rows. A read that fails leaves the
+      // annotation out altogether: "unknown" is never reported as "none".
+      let activated: Awaited<ReturnType<PropertyReader['forFriends']>> | null = null
+      if (properties) {
+        try {
+          activated = await properties.forFriends(owned.friends.map((f) => f.tokenId))
+        } catch (err) {
+          log.warn('friend property annotation failed', errorFields(err))
+        }
+      }
       const body: FriendsResponse = {
         wallet: viewer.wallet,
         source: friends.source,
         asOfBlock: owned.blockNumber.toString(),
-        friends: owned.friends.map((f) => ({ tokenId: f.tokenId.toString(), family: f.family })),
+        friends: owned.friends.map((f) => {
+          const tokenId = f.tokenId.toString()
+          return activated ? { tokenId, family: f.family, property: activated.get(tokenId) ?? null } : { tokenId, family: f.family }
+        }),
       }
       return send(res, 200, body, PRIVATE)
     } catch (err) {
@@ -295,6 +318,28 @@ export function createApp(deps: AppDeps): RequestListener {
     },
   })
 
+  /**
+   * An activation route: the common boundary, then, in this order and before any chain read:
+   * the feature gate, the exact live session behind the cookie, and the per-user limit.
+   *
+   * The handler is given the SESSION (the database rows), not the public viewer: an
+   * activation is tied to one exact session, and a viewer does not say which one it is.
+   */
+  const activationRoute = (path: string, limits: { client: readonly RateRule[]; user: readonly RateRule[] }, handle: (service: ActivationService, session: LiveSession, body: Record<string, unknown>) => Promise<unknown>): PostRoute => ({
+    limit: limits.client,
+    failure: { code: 'activation_unavailable', log: 'activation request failed' },
+    async handle({ req, res, body }) {
+      // Off means off: no session lookup, no database read, no chain read.
+      if (!config.activationEnabled) return identityError(res, 403, 'activation_disabled')
+      if (!auth || !activation) return identityError(res, 503, 'activation_unavailable', { 'retry-after': '30' })
+      const session = await auth.session(cookie.read(req))
+      if (!session) return identityError(res, 401, 'not_authenticated')
+      // Keyed by who is asking, from the session. Before the service: a refused request costs no chain read.
+      if (!withinLimit(res, `${path}:user`, session.userId, limits.user)) return
+      send(res, 200, await handle(activation, session, body), PRIVATE)
+    },
+  })
+
   /** The requests that change something. Each handler runs only after the boundary in `servePost` has passed. */
   const posts: Record<string, PostRoute> = {
     // Limited by who is asking, never by the address being asked about: nobody can use up another wallet's sign-in.
@@ -310,6 +355,8 @@ export function createApp(deps: AppDeps): RequestListener {
       await service.logout(cookie.read(req))
       send(res, 200, ANONYMOUS_VIEWER_RESPONSE, { ...PRIVATE, 'set-cookie': cookie.clear() })
     }),
+    [ACTIVATION_INTENTS_ENDPOINT]: activationRoute(ACTIVATION_INTENTS_ENDPOINT, LIMITS.activationIntent, (service, session, body) => service.issueIntent(session, body)),
+    [ACTIVATIONS_ENDPOINT]: activationRoute(ACTIVATIONS_ENDPOINT, LIMITS.activationCommit, (service, session, body) => service.commit(session, body)),
   }
 
   /**
@@ -328,6 +375,8 @@ export function createApp(deps: AppDeps): RequestListener {
     } catch (err) {
       if (err instanceof HttpError) return send(res, err.status, { error: err.code }, err.close ? { ...PRIVATE, connection: 'close' } : PRIVATE)
       if (err instanceof AuthError) return identityError(res, err.status, err.code)
+      // A refusal the activation service decided on. A 503 among them is an authority that could not answer just now.
+      if (err instanceof ActivationError) return identityError(res, err.status, err.code, err.status === 503 ? { 'retry-after': '10' } : {})
       // Anything else is the database or a bug. The client learns only that the route is unavailable.
       log.error(route.failure.log, { path, ...errorFields(err) })
       return identityError(res, 503, route.failure.code, { 'retry-after': '5' })

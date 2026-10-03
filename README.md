@@ -298,7 +298,7 @@ src/
     stateSchema.ts   state version + structural check for untrusted state
     commands.ts      player intents + applyCityCommand (shared with the server)
     demoCommands.ts  demo-only controls (faucet, rival, simulated joins, growth)
-  protocol/      # wire contracts shared with the server: /v1/city, /v1/viewer, sign-in
+  protocol/      # wire contracts shared with the server: /v1/city, /v1/viewer, sign-in, activation
   identity/      # server mode only: wallet discovery (EIP-1193/6963) and the sign-in store
   transport/     # authority seam between the UI and whoever owns the city
     types.ts         CityTransport, CitySnapshot, Connection
@@ -310,8 +310,9 @@ src/
     panels/          Build Board, building, Architect, standings, profile, radio
 e2e/             # Playwright specs
 e2e-server/      # Playwright specs for the server-mode app against a real Postgres
-server/          # Node/TypeScript service + SQL migrations: the shared read-only city,
-                 # wallet sign-in, and Rare Friend ownership reads (see server/README.md)
+server/          # Node/TypeScript service + SQL migrations: the shared city, wallet sign-in,
+                 # Rare Friend ownership reads, and (off by default) permanent Friend
+                 # activation (see server/README.md)
 ```
 
 The UI never calls the engine directly. `src/ui/store.ts` reads a `CitySnapshot` from a

@@ -1,4 +1,5 @@
 import { familyById, type Family } from '../config/rareFriends'
+import type { FriendPropertyDto } from './activation'
 
 /**
  * Wire contract for identity: who is looking, how a wallet signs in, and which Friends the
@@ -59,6 +60,12 @@ export interface OwnedFriendDto {
   /** Decimal string: token ids are uint256 and do not fit a JSON number. */
   tokenId: string
   family: Family
+  /**
+   * This Friend's permanent Rare City property, or null when it has none. From the
+   * normalized `properties` table, never from a user's avatar. Absent when the server could
+   * not tell (it has no database, or the read failed): absent is "unknown", not "none".
+   */
+  property?: FriendPropertyDto | null
 }
 
 /** `GET /v1/viewer/friends`. */
@@ -117,7 +124,12 @@ export function parseChallengeResponse(value: unknown): ChallengeResponse | null
   return { nonce: c.nonce, message: c.message, expiresAt: c.expiresAt }
 }
 
-/** Validate a friends body. A family the client does not know is a malformed answer, not a new family. */
+/**
+ * Validate a friends body. A family the client does not know is a malformed answer, not a new family.
+ *
+ * Only the keys this client uses are returned. The optional `property` annotation is not
+ * one of them yet: it is ignored here until the activation client reads it.
+ */
 export function parseFriendsResponse(value: unknown): FriendsResponse | null {
   if (!value || typeof value !== 'object') return null
   const f = value as Partial<FriendsResponse>

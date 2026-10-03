@@ -6,14 +6,25 @@ const ORIGIN = 'https://rarecity.example'
 
 describe('server config', () => {
   it('defaults to local mode with no database, bound to loopback', () => {
-    expect(loadConfig({})).toEqual({ mode: 'local', port: 8787, host: '127.0.0.1', databaseUrl: null, commit: null, publicOrigin: 'http://127.0.0.1:8787', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'none', rateLimits: true, frameAncestors: [], hstsMaxAge: 0 })
+    expect(loadConfig({})).toEqual({ mode: 'local', port: 8787, host: '127.0.0.1', databaseUrl: null, commit: null, publicOrigin: 'http://127.0.0.1:8787', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'none', rateLimits: true, frameAncestors: [], hstsMaxAge: 0, activationEnabled: false })
   })
 
   it('reads staging and production with their database and platform values', () => {
     const cfg = loadConfig({ APP_MODE: 'staging', NODE_ENV: 'production', PORT: '3000', DATABASE_URL: DB, RAILWAY_GIT_COMMIT_SHA: 'abc123', PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' })
-    expect(cfg).toEqual({ mode: 'staging', port: 3000, host: '0.0.0.0', databaseUrl: DB, commit: 'abc123', publicOrigin: ORIGIN, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'railway', rateLimits: true, frameAncestors: [], hstsMaxAge: 31_536_000 })
+    expect(cfg).toEqual({ mode: 'staging', port: 3000, host: '0.0.0.0', databaseUrl: DB, commit: 'abc123', publicOrigin: ORIGIN, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'railway', rateLimits: true, frameAncestors: [], hstsMaxAge: 31_536_000, activationEnabled: false })
     expect(loadConfig({ APP_MODE: 'production', DATABASE_URL: DB.replace('postgres:', 'postgresql:'), PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' }).mode).toBe('production')
     expect(loadConfig({ APP_MODE: 'local', DATABASE_URL: DB, HOST: '::' })).toMatchObject({ mode: 'local', databaseUrl: DB, host: '::' })
+  })
+
+  it('leaves activation off unless ACTIVATION_ENABLED is exactly true', () => {
+    const deployed = { APP_MODE: 'staging', DATABASE_URL: DB, PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' }
+    // Off by default in every mode: neither the mode nor anything about the city switches it on.
+    for (const env of [{}, deployed, { ...deployed, APP_MODE: 'production' }]) expect(loadConfig(env).activationEnabled).toBe(false)
+    for (const ACTIVATION_ENABLED of ['false', ' false ', '']) expect(loadConfig({ ACTIVATION_ENABLED }).activationEnabled, ACTIVATION_ENABLED).toBe(false)
+    for (const env of [{}, deployed]) expect(loadConfig({ ...env, ACTIVATION_ENABLED: 'true' }).activationEnabled).toBe(true)
+    // Nothing that merely looks like yes or no is guessed at.
+    for (const ACTIVATION_ENABLED of ['1', '0', 'yes', 'no', 'on', 'off', 'TRUE', 'True', 'FALSE', 'enabled', 'truee', 't', 'y'])
+      expect(() => loadConfig({ ACTIVATION_ENABLED }), ACTIVATION_ENABLED).toThrow('ACTIVATION_ENABLED must be true or false.')
   })
 
   it('requires a database outside local mode', () => {

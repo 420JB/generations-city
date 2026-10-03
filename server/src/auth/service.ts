@@ -73,6 +73,23 @@ export interface OpenedSession {
   viewer: AuthenticatedViewer
 }
 
+/**
+ * A live session as the SERVER knows it: the exact database rows behind a presented cookie.
+ *
+ * INTERNAL. It exists for work that must be tied to one exact session (activation binds an
+ * intent to the session that asked for it). It is never serialised: the session and wallet
+ * row ids are of no use to a browser, and `viewer()` deliberately leaves them out.
+ */
+export interface LiveSession {
+  sessionId: string
+  userId: string
+  walletId: string
+  /** Lowercase, as stored. */
+  address: string
+  chainId: number
+  expiresAt: Date
+}
+
 export interface AuthService {
   issueChallenge(input: unknown): Promise<ChallengeResponse>
   /** `presented` is the session cookie the request carried, if any: that session is retired. */
@@ -81,6 +98,11 @@ export interface AuthService {
   logout(presented: string | null): Promise<void>
   /** Who this cookie value belongs to. Anything not a live session is anonymous. */
   viewer(presented: string | null): Promise<ViewerResponse>
+  /**
+   * The exact live session behind this cookie value, or null. Server-side only: see `LiveSession`.
+   * Live by this service's clock AND the database's, so a session one of them calls over is over.
+   */
+  session(presented: string | null): Promise<LiveSession | null>
 }
 
 /** A lowercase address, or null when the input is not an acceptable EVM address. */
@@ -94,7 +116,7 @@ export function normalizeAddress(input: unknown): string | null {
 export const hashSessionToken = (token: string): Buffer => createHash('sha256').update(token).digest()
 
 /** Only these keys, each present. Anything else is not the request this endpoint takes. */
-function exactKeys<K extends string>(input: unknown, keys: readonly K[]): Record<K, unknown> | null {
+export function exactKeys<K extends string>(input: unknown, keys: readonly K[]): Record<K, unknown> | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const own = Object.keys(input)
   if (own.length !== keys.length || !keys.every((k) => own.includes(k))) return null
@@ -215,6 +237,21 @@ export function createAuthService(options: AuthOptions): AuthService {
       ).rows[0]
       if (!row) return ANONYMOUS_VIEWER_RESPONSE
       return { authenticated: true, userId: row.user_id, wallet: { address: getAddress(row.address), chainId: row.chain_id }, session: { expiresAt: row.expires_at.toISOString() } }
+    },
+
+    async session(presented) {
+      const hash = liveSession(presented)
+      if (!hash) return null
+      const row = (
+        await db.query<{ id: string; user_id: string; wallet_id: string; expires_at: Date; address: string; chain_id: number }>(
+          `SELECT s.id, s.user_id, s.wallet_id, s.expires_at, w.address, w.chain_id
+             FROM sessions s JOIN wallets w ON w.id = s.wallet_id AND w.user_id = s.user_id
+            WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2 AND s.expires_at > clock_timestamp()`,
+          [hash, now()],
+        )
+      ).rows[0]
+      if (!row) return null
+      return { sessionId: row.id, userId: row.user_id, walletId: row.wallet_id, address: row.address, chainId: row.chain_id, expiresAt: row.expires_at }
     },
   }
 }

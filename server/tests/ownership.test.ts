@@ -1,4 +1,4 @@
-import { encodeErrorResult, parseAbi } from 'viem'
+import { custom, encodeErrorResult, parseAbi } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import { familyById, RARE_FRIENDS_CHAIN, RARE_FRIENDS_FAMILIES } from '../src/engine'
 import { createFixtureOwnershipProvider, DEV_FIXTURE } from '../src/ownership/fixture'
@@ -358,6 +358,172 @@ describe('verifyOwnership', () => {
   })
 })
 
+describe('verifyActivation: the pinned read behind a permanent write', () => {
+  const HEX = (n: bigint) => `0x${n.toString(16)}`
+  const calls = (chain: FakeChain) => chain.requests.filter((r) => r.method === 'eth_call').map((r) => ({ to: (r.params[0] as { to: string }).to.toLowerCase(), block: r.params[1] }))
+
+  it('reads owner and family at one freshly pinned block, in four requests and nothing else', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 812n)
+    chain.families.set(812n, 7)
+    expect(await provider(chain).verifyActivation(ME, 812n)).toEqual({ owned: true, family: { id: 7, name: 'Sparkling' }, blockNumber: chain.head })
+
+    expect(chain.requests.map((r) => r.method)).toEqual(['eth_chainId', 'eth_blockNumber', 'eth_call', 'eth_call'])
+    // The block is pinned once, and BOTH contract reads name exactly that block: never "latest", never two blocks.
+    expect(chain.requests.filter((r) => r.method === 'eth_blockNumber')).toHaveLength(1)
+    expect(calls(chain)).toEqual([
+      { to: RARE_FRIENDS_CHAIN.generations.toLowerCase(), block: HEX(chain.head) },
+      { to: RARE_FRIENDS_CHAIN.familiesRegistry.toLowerCase(), block: HEX(chain.head) },
+    ])
+    // No Transfer history, and no Multicall: two plain calls to the two contracts.
+    expect(chain.logQueries()).toEqual([])
+  })
+
+  it('says a wallet that is not the owner does not own it, and still reports the canonical family', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 812n)
+    chain.transfer(ME, OTHER, 812n)
+    chain.families.set(812n, 4)
+    const p = provider(chain)
+    expect(await p.verifyActivation(ME, 812n)).toEqual({ owned: false, family: { id: 4, name: 'Asymmetry' }, blockNumber: chain.head })
+    expect(await p.verifyActivation(OTHER, 812n)).toMatchObject({ owned: true, family: { id: 4, name: 'Asymmetry' } })
+    expect(await p.verifyActivation(OTHER.toLowerCase(), 812n)).toMatchObject({ owned: true })
+  })
+
+  it('maps every registry id to its family and refuses any other id, whoever owns the Friend', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    for (const [id, name] of RARE_FRIENDS_FAMILIES.entries()) {
+      chain.families.set(1n, id)
+      expect((await provider(chain).verifyActivation(ME, 1n)).family).toEqual({ id, name })
+    }
+    for (const bad of [9, 10, 255]) {
+      chain.families.set(1n, bad)
+      expect(await failure(provider(chain).verifyActivation(ME, 1n)), String(bad)).toBe('invalid-family')
+      expect(await failure(provider(chain).verifyActivation(OTHER, 1n)), String(bad)).toBe('invalid-family')
+    }
+  })
+
+  it('fails closed on an endpoint that is not Robinhood Chain, before any contract is read', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    chain.chainId = 1
+    expect(await failure(provider(chain).verifyActivation(ME, 1n))).toBe('wrong-chain')
+    expect(chain.requests.map((r) => r.method)).toEqual(['eth_chainId'])
+  })
+
+  it('reports a Friend that does not exist as unknown, which is not an outage', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    // The registry would happily answer for a number that was never minted; the Generations contract reverts.
+    expect(await failure(provider(chain).verifyActivation(ME, 404n))).toBe('unknown-token')
+    chain.ownerOverride.set(1n, null)
+    expect(await failure(provider(chain).verifyActivation(ME, 1n))).toBe('unknown-token')
+    for (const bad of [-1n, 1n << 256n]) expect(await failure(provider(chain).verifyActivation(ME, bad))).toBe('unknown-token')
+  })
+
+  it('reports every endpoint failure as unavailable: never as "not owned", and never as an unknown Friend', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    const errors = [
+      rpcError(-32603, 'internal error'),
+      Object.assign(rpcError(-32603, 'Internal error'), { data: '0x7e273289' }),
+      rpcError(3, 'too many requests'),
+      Object.assign(rpcError(3, 'execution reverted'), { data: 'not hex at all' }),
+      Object.assign(rpcError(3, 'execution reverted'), { data: '0x' }),
+      rpcError(-32000, 'header not found'),
+      new Error('fetch failed https://rpc.example/v2/s3cr3t-key'),
+    ]
+    for (const error of errors) {
+      for (const method of ['eth_chainId', 'eth_blockNumber', 'eth_call']) {
+        chain.fail = (m) => (m === method ? error : undefined)
+        const err = await provider(chain)
+          .verifyActivation(ME, 1n)
+          .then(
+            () => null,
+            (e: unknown) => e,
+          )
+        expect(err, `${method} ${error.message}`).toBeInstanceOf(OwnershipError)
+        expect((err as OwnershipError).reason, `${method} ${error.message}`).toBe('unavailable')
+        // The provider's own text, which can carry its endpoint, never becomes this error's message.
+        expect((err as OwnershipError).message).toBe('ownership unavailable')
+      }
+    }
+    // Only one of the two contract reads failing is still "could not tell".
+    for (const target of [RARE_FRIENDS_CHAIN.generations, RARE_FRIENDS_CHAIN.familiesRegistry]) {
+      chain.fail = (m, params) => (m === 'eth_call' && (params[0] as { to: string }).to.toLowerCase() === target.toLowerCase() ? rpcError(-32603, 'internal error') : undefined)
+      expect(await failure(provider(chain).verifyActivation(ME, 1n)), target).toBe('unavailable')
+    }
+  })
+
+  it('reuses nothing between calls: every call pins the block again and reads the contracts again', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    const p = provider(chain)
+    const first = await p.verifyActivation(ME, 1n)
+    // The world moves: a new block, a new owner, a registry change. The very next call sees all of it.
+    chain.head += 25n
+    chain.transfer(ME, OTHER, 1n)
+    chain.families.set(1n, 5)
+    const second = await p.verifyActivation(ME, 1n)
+    expect(first).toEqual({ owned: true, family: { id: 2, name: 'Family' }, blockNumber: chain.head - 25n })
+    expect(second).toEqual({ owned: false, family: { id: 5, name: 'Hoverer' }, blockNumber: chain.head })
+    expect(chain.requests.map((r) => r.method)).toEqual(['eth_chainId', 'eth_blockNumber', 'eth_call', 'eth_call', 'eth_chainId', 'eth_blockNumber', 'eth_call', 'eth_call'])
+    expect(calls(chain).map((c) => c.block)).toEqual([HEX(chain.head - 25n), HEX(chain.head - 25n), HEX(chain.head), HEX(chain.head)])
+    // And it does not borrow from the My Friends discovery either, in either direction.
+    await p.listOwnedFriends(OTHER)
+    const before = chain.requests.length
+    await p.verifyActivation(OTHER, 1n)
+    expect(chain.requests.slice(before).map((r) => r.method)).toEqual(['eth_chainId', 'eth_blockNumber', 'eth_call', 'eth_call'])
+  })
+
+  it('never fetches a URL because a contract call asked it to (CCIP-Read is off)', async () => {
+    const fetched: string[] = []
+    vi.stubGlobal('fetch', async (input: unknown) => {
+      fetched.push(String(input))
+      return new Response('0x', { status: 200 })
+    })
+    try {
+      const chain = fakeChain()
+      chain.mint(ME, 1n)
+      const lookup = encodeErrorResult({
+        abi: parseAbi(['error OffchainLookup(address sender, string[] urls, bytes callData, bytes4 callbackFunction, bytes extraData)']),
+        errorName: 'OffchainLookup',
+        args: [RARE_FRIENDS_CHAIN.generations, ['http://169.254.169.254/latest/meta-data/{sender}/{data}', 'http://postgres.internal:5432/'], '0x1234', '0x12345678', '0x'],
+      })
+      chain.fail = (m) => (m === 'eth_call' ? Object.assign(rpcError(3, 'execution reverted'), { data: lookup }) : undefined)
+      await provider(chain)
+        .verifyActivation(ME, 1n)
+        .catch(() => undefined)
+      expect(fetched).toEqual([])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('gives up at its deadline instead of waiting on a stalled endpoint', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    // An endpoint that answers the cheap requests and then never answers a contract read.
+    const answer = chain.transport({}).request
+    const stalling = custom({ request: (request: { method: string; params?: unknown[] }) => (request.method === 'eth_call' ? new Promise(() => undefined) : answer(request as never)) }, { retryCount: 0 })
+    const started = performance.now()
+    expect(await failure(createGenerationsOwnershipProvider({ transport: stalling, activationDeadlineMs: 40 }).verifyActivation(ME, 1n))).toBe('unavailable')
+    expect(performance.now() - started).toBeGreaterThanOrEqual(35)
+    expect(chain.requests.map((r) => r.method)).toEqual(['eth_chainId', 'eth_blockNumber'])
+  })
+
+  it('only ever reads: the adapter has no way to sign or send anything', async () => {
+    const chain = fakeChain()
+    chain.mint(ME, 1n)
+    const p = provider(chain)
+    await p.verifyActivation(ME, 1n)
+    await p.listOwnedFriends(ME)
+    expect(new Set(chain.requests.map((r) => r.method))).toEqual(new Set(['eth_chainId', 'eth_blockNumber', 'eth_call', 'eth_getLogs']))
+    expect(Object.keys(p).sort()).toEqual(['listOwnedFriends', 'resolveFamily', 'source', 'verifyActivation', 'verifyOwnership'])
+  })
+})
+
 describe('fixture ownership provider', () => {
   it('is deterministic, labelled, and case-insensitive about addresses', async () => {
     const p = createFixtureOwnershipProvider()
@@ -375,6 +541,12 @@ describe('fixture ownership provider', () => {
     expect(await p.verifyOwnership(addr(1), 812n)).toBe(false)
     expect(await p.resolveFamily(1204n)).toEqual({ id: 0, name: 'Skeleton' })
     expect(await failure(p.resolveFamily(5n))).toBe('unknown-token')
+    // The activation read answers from the same table: owner and family together.
+    expect(await p.verifyActivation(first, 812n)).toEqual({ owned: true, family: { id: 2, name: 'Family' }, blockNumber: 0n })
+    expect(await p.verifyActivation(first.toLowerCase(), 4471n)).toEqual({ owned: true, family: { id: 7, name: 'Sparkling' }, blockNumber: 0n })
+    expect(await p.verifyActivation(addr(1), 812n)).toEqual({ owned: false, family: { id: 2, name: 'Family' }, blockNumber: 0n })
+    expect(await failure(p.verifyActivation(first, 5n))).toBe('unknown-token')
+    expect(await failure(p.verifyActivation(DEV_FIXTURE.unavailable![0], 812n))).toBe('unavailable')
   })
 
   it('can be unavailable, and refuses a family that does not exist', async () => {
@@ -397,6 +569,7 @@ describe('owned-Friends read view', () => {
       },
       verifyOwnership: async () => false,
       resolveFamily: async () => ({ id: 2, name: 'Family' }),
+      verifyActivation: async () => ({ owned: false, family: { id: 2, name: 'Family' }, blockNumber: 1n }),
     }
     return { p, calls, setFail: (v: boolean) => (fail = v) }
   }

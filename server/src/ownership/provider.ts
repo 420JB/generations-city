@@ -22,6 +22,20 @@ export interface OwnedFriends {
   blockNumber: bigint
 }
 
+/**
+ * What the authority says about one Friend, for one wallet, at ONE block: who owns it and
+ * which family it is. Both facts were read at `blockNumber`, so they describe the same
+ * moment and cannot be stitched together from two.
+ */
+export interface ActivationOwnership {
+  /** Whether the wallet owned the Friend at `blockNumber`. */
+  owned: boolean
+  /** The registry's family for the Friend at `blockNumber`: canonical whoever owns it. */
+  family: Family
+  /** The block both reads were pinned to: the chain's latest when the call was made. */
+  blockNumber: bigint
+}
+
 export interface OwnershipProvider {
   readonly source: 'robinhood-chain' | 'fixture'
   /** Every Friend `address` owns right now. Throws OwnershipError; never answers "none" for "could not tell". */
@@ -30,6 +44,14 @@ export interface OwnershipProvider {
   verifyOwnership(address: string, tokenId: bigint): Promise<boolean>
   /** The canonical family of an existing Friend. */
   resolveFamily(tokenId: bigint): Promise<Family>
+  /**
+   * THE ACTIVATION READ. Ownership and family of one Friend at one freshly pinned block,
+   * for deciding a permanent write. Never cached, never taken from Transfer history or
+   * from the My Friends view. Throws OwnershipError when the answer cannot be established
+   * (`unknown-token` when the Friend does not exist, which is not an outage); it never
+   * answers "not owned" for "could not tell".
+   */
+  verifyActivation(address: string, tokenId: bigint): Promise<ActivationOwnership>
 }
 
 /**

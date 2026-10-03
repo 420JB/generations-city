@@ -8,14 +8,35 @@
  * server authority never applies them. The one exception is the explicit staging fixture
  * in `fixtures/demoCity.ts`.
  */
+export { activateFriend, type ActivationOutcome, type ActivationRefusal, type FriendActivation } from '../../src/game/activation'
+export { allocateSpecificPlot, type PlotAddress } from '../../src/game/allocation'
 export { applyCityCommand, type CityCommand } from '../../src/game/commands'
 export { createGenesisState, PRESEASON } from '../../src/game/genesis'
 export { checkAuthoritativeCity, checkCityState, checkPropertyParity, cityMode, isActivatable, type AuthoritativeCityCheck, type CityFlags, type CityMode, type InvariantCategory, type PropertyFacts, type Violation } from '../../src/game/invariants'
 export { isCityStateShape, STATE_VERSION } from '../../src/game/stateSchema'
-export type { ActionResult, CityUser, GameEvent, GameState } from '../../src/game/types'
+export type { ActionResult, Building, CityUser, GameEvent, GameState } from '../../src/game/types'
+export { plotId, wardCapacity } from '../../src/game/world'
+export type { DistrictId } from '../../src/config/districts'
 export { districtForFamily, FAMILY_DISTRICTS, familyForDistrict } from '../../src/config/familyDistricts'
 export { CITY_ENDPOINT, parseCityResponse, type CityErrorCode, type CityMeta, type CityOrigin, type CityResponse } from '../../src/protocol/city'
 export { familyById, RARE_FRIENDS_CHAIN, RARE_FRIENDS_FAMILIES, type Family, type HexAddress } from '../../src/config/rareFriends'
+export {
+  ACTIVATION_DOMAIN_NAME,
+  ACTIVATION_DOMAIN_VERSION,
+  ACTIVATION_INTENTS_ENDPOINT,
+  ACTIVATION_PRIMARY_TYPE,
+  ACTIVATION_STATEMENT,
+  ACTIVATION_TYPES,
+  ACTIVATIONS_ENDPOINT,
+  parseCanonicalTokenId,
+  parsePlotId,
+  type ActivationCommitResponse,
+  type ActivationErrorCode,
+  type ActivationIntentResponse,
+  type ActivationTypedData,
+  type FriendPropertyDto,
+  type ParsedPlot,
+} from '../../src/protocol/activation'
 export {
   ANONYMOUS_VIEWER_RESPONSE,
   AUTH_CHALLENGE_ENDPOINT,

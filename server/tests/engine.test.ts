@@ -29,6 +29,13 @@ describe('shared engine under Node', () => {
 
   it('gives the server player intents only, never demo controls', () => {
     expect(Object.keys(engine).sort()).toEqual([
+      'ACTIVATIONS_ENDPOINT',
+      'ACTIVATION_DOMAIN_NAME',
+      'ACTIVATION_DOMAIN_VERSION',
+      'ACTIVATION_INTENTS_ENDPOINT',
+      'ACTIVATION_PRIMARY_TYPE',
+      'ACTIVATION_STATEMENT',
+      'ACTIVATION_TYPES',
       'ANONYMOUS_VIEWER_RESPONSE',
       'AUTH_CHALLENGE_ENDPOINT',
       'AUTH_LOGOUT_ENDPOINT',
@@ -41,6 +48,8 @@ describe('shared engine under Node', () => {
       'RARE_FRIENDS_FAMILIES',
       'STATE_VERSION',
       'VIEWER_ENDPOINT',
+      'activateFriend',
+      'allocateSpecificPlot',
       'applyCityCommand',
       'checkAuthoritativeCity',
       'checkCityState',
@@ -52,7 +61,11 @@ describe('shared engine under Node', () => {
       'familyForDistrict',
       'isActivatable',
       'isCityStateShape',
+      'parseCanonicalTokenId',
       'parseCityResponse',
+      'parsePlotId',
+      'plotId',
+      'wardCapacity',
     ])
     const seed = createSeedState()
     for (const type of ['faucet', 'rival', 'join', 'join-at', 'grow', 'reset', 'nonsense']) {

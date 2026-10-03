@@ -1,6 +1,6 @@
 import { BaseError, createPublicClient, getAddress, isAddressEqual, parseAbi, parseAbiItem, type Address, type Transport } from 'viem'
 import { familyById, RARE_FRIENDS_CHAIN, type Family } from '../engine'
-import { OwnershipError, type OwnedFriend, type OwnedFriends, type OwnershipProvider } from './provider'
+import { OwnershipError, type ActivationOwnership, type OwnedFriend, type OwnedFriends, type OwnershipProvider } from './provider'
 
 /**
  * Rare Friends on Robinhood Chain: the real ownership adapter. READ-ONLY.
@@ -57,6 +57,8 @@ export interface GenerationsProviderOptions {
   concurrency?: number
   /** Whole-discovery time budget. */
   deadlineMs?: number
+  /** Time budget for one activation read (four small requests). */
+  activationDeadlineMs?: number
   now?: () => number
 }
 
@@ -108,7 +110,7 @@ async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) 
 const chunk = <T>(items: readonly T[], size: number): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size))
 
 export function createGenerationsOwnershipProvider(options: GenerationsProviderOptions): OwnershipProvider {
-  const { maxBlockSpan = 10_000_000n, minBlockSpan = 50_000n, maxLogRequests = 96, maxTransferLogs = 50_000, maxOwned = 2_000, callBatchSize = 200, concurrency = 4, deadlineMs = 25_000 } = options
+  const { maxBlockSpan = 10_000_000n, minBlockSpan = 50_000n, maxLogRequests = 96, maxTransferLogs = 50_000, maxOwned = 2_000, callBatchSize = 200, concurrency = 4, deadlineMs = 25_000, activationDeadlineMs = 15_000 } = options
   const now = options.now ?? (() => Date.now())
   const chain = RARE_FRIENDS_CHAIN
   // ccipRead off: a contract (or the endpoint, by faking a revert) must never be able to make this service fetch a URL.
@@ -219,20 +221,57 @@ export function createGenerationsOwnershipProvider(options: GenerationsProviderO
     }
   }
 
+  /** Bound the wait for `work`, whatever it is doing: past `ms` the answer is "could not tell". */
+  async function within<T>(ms: number, work: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeUp = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new OwnershipError('unavailable')), ms)
+    })
+    try {
+      return await Promise.race([work, timeUp])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Owner and family of one Friend, both read at one block pinned here and now.
+   *
+   * Four requests and nothing else: eth_chainId, eth_blockNumber, then `ownerOf` and
+   * `familyOf` as two plain eth_calls that both name that block. No Transfer history, no
+   * Multicall, nothing remembered from an earlier call, and (as for every read here) no
+   * CCIP-Read.
+   */
+  async function activation(address: string, tokenId: bigint): Promise<ActivationOwnership> {
+    try {
+      const account = getAddress(address)
+      const id = parseTokenId(tokenId)
+      await assertChain()
+      const blockNumber = await client.getBlockNumber({ cacheTime: 0 })
+      const [owner, familyId] = await Promise.all([
+        // The contract reverts for a token that does not exist. That is an answer, and a different one from an outage.
+        client.readContract({ address: chain.generations, abi: GENERATIONS_ABI, functionName: 'ownerOf', args: [id], blockNumber }).catch((err: unknown) => {
+          throw isRevert(err) ? new OwnershipError('unknown-token') : err
+        }),
+        client.readContract({ address: chain.familiesRegistry, abi: FAMILIES_ABI, functionName: 'familyOf', args: [id], blockNumber }),
+      ])
+      // The family is the registry's whoever the owner is; an id outside the nine is refused, never mapped.
+      return { owned: isAddressEqual(owner, account), family: familyOrThrow(familyId), blockNumber }
+    } catch (err) {
+      throw failed(err)
+    }
+  }
+
   return {
     source: 'robinhood-chain',
 
-    async listOwnedFriends(address): Promise<OwnedFriends> {
+    listOwnedFriends(address): Promise<OwnedFriends> {
       // Two limits: `expired` stops the work between steps, and the timer bounds the wait whatever a step is doing.
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const timeUp = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new OwnershipError('unavailable')), deadlineMs)
-      })
-      try {
-        return await Promise.race([discover(address), timeUp])
-      } finally {
-        clearTimeout(timer)
-      }
+      return within(deadlineMs, discover(address))
+    },
+
+    verifyActivation(address, tokenId) {
+      return within(activationDeadlineMs, activation(address, tokenId))
     },
 
     async verifyOwnership(address, tokenId) {

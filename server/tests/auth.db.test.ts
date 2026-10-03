@@ -609,6 +609,9 @@ describe.skipIf(NO_TEST_DATABASE)('identity against a disposable Postgres', () =
         },
         verifyOwnership: async () => false,
         resolveFamily: async () => ({ id: 0, name: 'Skeleton' }),
+        verifyActivation: async () => {
+          throw new OwnershipError(reason)
+        },
       }
       const { base, lines } = await serve('local', broken)
       const { cookie } = await httpSignIn(base)

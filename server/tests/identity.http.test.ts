@@ -28,6 +28,7 @@ function fakeAuth() {
     verify: (input, presented) => run('verify', [input, presented], { token: TOKEN, expiresAt: new Date('2026-10-09T12:00:00.000Z'), maxAgeSeconds: 604_800, viewer: VIEWER }),
     logout: (presented) => run('logout', [presented], undefined),
     viewer: (presented) => run('viewer', [presented], presented === TOKEN ? VIEWER : { authenticated: false as const }),
+    session: (presented) => run('session', [presented], null),
   }
   return { service, calls, fail: (err: Error | null) => (failWith = err) }
 }

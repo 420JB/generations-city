@@ -62,5 +62,11 @@ export function createFixtureOwnershipProvider(holdings: FixtureHoldings = DEV_F
       if (!family) throw new OwnershipError('unknown-token')
       return family
     },
+    async verifyActivation(address, tokenId) {
+      const mine = held(address)
+      const family = familyById(families.get(tokenId))
+      if (!family) throw new OwnershipError('unknown-token')
+      return { owned: mine.some((f) => f.tokenId === tokenId), family, blockNumber: 0n }
+    },
   }
 }

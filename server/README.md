@@ -1,7 +1,7 @@
 # Rare City server
 
 One Node/TypeScript service and PostgreSQL, in the same repository as the client. It holds
-the shared city and serves it read-only, and it knows who is looking. It reuses the
+the shared city, serves it to everyone, and knows who is looking. It reuses the
 deterministic rules in `src/game` and `src/config` and the wire contracts in `src/protocol`
 rather than reimplementing them.
 
@@ -13,17 +13,18 @@ What it does today:
   a server session for them;
 - reads, from Robinhood Chain, **which Rare Friends the signed-in wallet owns** and each
   one's canonical family;
-- serves the built Rare City client from the same origin, when a client build is present.
+- serves the built Rare City client from the same origin, when a client build is present;
+- when `ACTIVATION_ENABLED=true`, and only then, lets the signed-in owner of a Rare Friend
+  **activate it as a permanent property** on one exact plot, by signing a message.
 
-What it does not do: **the city cannot be changed**. There is no property activation, no
-gameplay command, no RF read or movement, and no transaction of any kind. The only requests
-that change anything are the three sign-in `POST`s, and they change sessions, never the
-city. The live demo at rarecity.world does not use this service.
+Activation is the **only way the city changes**, it is off by default, and no deployment has
+it on. There is no gameplay command, no RF read or movement, and no transaction of any
+kind: activating a Friend is a signature, and nothing here signs or sends anything to a
+chain. No screen activates anything yet (the client for it is a later slice). The live demo
+at rarecity.world does not use this service.
 
-The database is ready for permanent activation (migration `0004`: properties, ownership
-eras, activation intents, append-only events) and an empty city can be installed by an
-operator, but **no route, service or screen activates anything yet**. See "Activation
-foundation" below.
+See "Activation foundation" for the tables and guards (migration `0004`) and "Permanent
+Friend activation" for the server path that writes them.
 
 ## Layout
 
@@ -44,6 +45,10 @@ server/
     city/genesis.ts    operator-only: canonical genesis, rehearsal genesis, the guarded staging reset
     city/verify.ts     read-only check of the installed city against every invariant
     auth/service.ts    sign-in challenges, signature verification, sessions
+    activation/service.ts     permanent Friend activation: issue an intent, commit it
+    activation/typedData.ts   the EIP-712 PropertyActivation message and its hash
+    activation/propertyId.ts  deterministic property and ownership-era ids
+    activation/properties.ts  which Friends have a property (the My Friends annotation)
     ownership/provider.ts     the OwnershipProvider interface
     ownership/generations.ts  Rare Friends on Robinhood Chain (the real adapter)
     ownership/fixture.ts      deterministic stand-in for local work and tests
@@ -73,15 +78,17 @@ e2e-server/            browser tests of the built app against a real Postgres
 | `POST /v1/auth/challenge` | Ask for a sign-in message for an address. |
 | `POST /v1/auth/verify` | Present the signature; opens a session and sets the cookie. |
 | `POST /v1/auth/logout` | Revoke the session and expire the cookie. |
+| `POST /v1/activation/intents` | Ask for the message that would activate one owned Friend on one plot. `403 activation_disabled` unless `ACTIVATION_ENABLED=true`. |
+| `POST /v1/activations` | Present the wallet's signature of that message; activates the Friend. `403 activation_disabled` unless `ACTIVATION_ENABLED=true`. |
 | anything else | With a client build: the file at that path, or the app shell for a client route. Without one: `404`. |
 
 `/health`, `/ready`, `/version` and everything under `/v1` belong to the service: an unknown
 path there is a JSON `404` and is never answered with the app shell. A path whose last
 segment has an extension and matches no file is a `404`, not the app shell. The three
-`/v1/auth` routes accept only `POST` (`405`, `Allow: POST`); every other path accepts only
-`GET`/`HEAD` (`405`, `Allow: GET, HEAD`).
+`/v1/auth` routes and the two activation routes accept only `POST` (`405`, `Allow: POST`);
+every other path accepts only `GET`/`HEAD` (`405`, `Allow: GET, HEAD`).
 
-Three routes are rate limited (see "Edge" below) and answer `429 {"error":"rate_limited"}`
+Five routes are rate limited (see "Edge" below) and answer `429 {"error":"rate_limited"}`
 with `Retry-After` when a client or user is over its limit.
 
 ### `GET /v1/city`
@@ -124,8 +131,10 @@ who is looking is worked out per request from the session cookie and is never ca
 (`Cache-Control: no-store`, `Vary: Cookie`). Signing in or out changes `/v1/viewer`
 immediately and never touches the city or its sequence.
 
-A signed-in wallet is **not yet an actor in the city**. Nothing in the shared city can be
-acted on, so the client keeps treating the city as read-only for everyone.
+A signed-in wallet can do one thing in the city, and only where `ACTIVATION_ENABLED=true`:
+activate a Friend it owns (see "Permanent Friend activation"). A session alone never
+authorises that. The client has no screen for it yet and keeps treating the city as
+read-only for everyone.
 
 ### Signing in
 
@@ -237,11 +246,21 @@ database everyone is anonymous. A user's other wallets are never exposed.
 { "wallet": { "address": "0x…", "chainId": 4663 },
   "source": "robinhood-chain",                     // or "fixture" (local only, not real ownership)
   "asOfBlock": "78010453",
-  "friends": [ { "tokenId": "812", "family": { "id": 2, "name": "Family" } } ] }
+  "friends": [ { "tokenId": "812", "family": { "id": 2, "name": "Family" },
+                 "property": { "id": "29d2ac0a-1754-8500-acdd-802ba2c51575", "buildingId": "b-812",
+                               "districtId": "d4", "ward": 0, "plot": 7, "plotId": "d4-w0-p7",
+                               "activatedAt": "2026-10-03T20:11:32.123Z" } },
+               { "tokenId": "1204", "family": { "id": 0, "name": "Skeleton" }, "property": null } ] }
 ```
 
 Token ids are decimal strings (uint256). The wallet is always the session's; nothing in the
 request can name another, and no list of tokens is ever accepted from a browser.
+
+`property` says whether the Friend already has a permanent Rare City property: the public
+facts of it, or `null` for none. It is read from the normalized `properties` table and
+never from a user's avatar (`state.users[*].friendId`). The key is **absent** when the
+service could not tell (no database, or the read failed): absent means unknown, not none.
+The current client ignores the key.
 
 - `401 not_authenticated` when not signed in.
 - `503 ownership_unavailable` when ownership could not be read. This is never reported as
@@ -371,6 +390,8 @@ extend the wait. `Retry-After` is the number of seconds until a place frees up.
 | `POST /v1/auth/challenge` | 10 / minute | |
 | `POST /v1/auth/verify` | 10 / minute | |
 | `GET /v1/viewer/friends` | 30 / minute | 6 / minute |
+| `POST /v1/activation/intents` | 10 / minute | 6 / minute |
+| `POST /v1/activations` | 10 / minute | 6 / minute |
 
 - A key is always **who is asking**: the client network, or the user id from the session.
   It is never the address in a challenge request, a wallet being signed in, or a token id.
@@ -378,7 +399,9 @@ extend the wait. `Retry-After` is the number of seconds until a place frees up.
   the real owner out.
 - The client limit runs before any database or chain work: on the sign-in routes before the
   body is read, on `/v1/viewer/friends` before the session is looked up. The user limit
-  runs as soon as the session is known and before the ownership provider is asked.
+  runs as soon as the session is known and before the ownership provider is asked. The
+  activation routes do both: the client limit before the body, the user limit before the
+  activation service (and so before its chain read).
 - A request from another origin is refused (`403`) before it is counted, so a hostile page
   cannot spend a visitor's allowance.
 - A limiter takes several rules at once and counts against all of them or none, which is
@@ -478,15 +501,19 @@ Migration `0003` adds identity, and touches nothing else:
 
 Ownership of Friends is not stored anywhere: it is read from the chain when asked for.
 
-A later slice that applies commands will lock the `city` row, apply the engine, write the
-new state with `sequence + 1`, and append the matching `city_events` row, all in one
-transaction.
+Permanent Friend activation is the one thing that changes the city: it locks the `city`
+row, applies the engine's pure transition, writes the new state with `sequence + 1`, and
+appends the matching `city_events` row, all in one transaction (see "Permanent Friend
+activation"). Gameplay commands will follow the same shape in a later slice.
 
 ## Activation foundation (migration 0004)
 
-Structure, guards and operator tools. **Nothing here activates a Friend**: no route, no
-service and no screen writes a property. Migration `0004` adds columns, tables and
-triggers only; it does not touch an existing city's state, sequence, instance or events.
+Structure, guards and operator tools: what an activation is written into. Migration `0004`
+adds columns, tables and triggers only; it does not touch an existing city's state,
+sequence, instance or events. The service that writes these tables is described in
+"Permanent Friend activation" below, and it is off unless `ACTIVATION_ENABLED=true`.
+Migration `0004` is applied on staging and is never edited: any schema change is a new
+migration.
 
 ### Three kinds of city
 
@@ -622,9 +649,11 @@ ever disagree, the property rows win.
 
 `state.users[*]` is a `CityUser`: an id, a handle and an avatar. Its `friendId` picks which
 Friend is drawn as the avatar and **is never authority**: it does not prove ownership, does
-not limit a user to one Friend, and grants no control over a property. Who may act will
-come from the session, a fresh ownership read from the chain, and `properties` /
-`ownership_eras`. (`DemoUser` remains as an alias of the same shape for the demo code; the
+not limit a user to one Friend, and grants no control over a property. Who may act comes
+from the session, a fresh ownership read from the chain, and `properties` /
+`ownership_eras`. Activation creates a user's display record the first time they activate a
+Friend (a neutral handle and hue derived from the wallet address, that Friend as avatar)
+and never changes it afterwards: a second Friend does not replace the avatar. (`DemoUser` remains as an alias of the same shape for the demo code; the
 serialised shape and `STATE_VERSION` are unchanged.)
 
 ### Authoritative invariants
@@ -727,6 +756,306 @@ RF. `city:seed-demo` refuses to run without `--non-canonical`, when `APP_MODE=pr
 against a database stamped for another environment, and once a city exists. Its buildings
 are not properties and the database refuses to give it any.
 
+## Permanent Friend activation
+
+`activation/service.ts`. The signed-in owner of a Rare Friend turns it into a permanent
+Rare City property on one exact plot. **Server only**: no screen uses it yet. **No RF and
+no NFT moves**: the wallet signs a message, and nothing here signs or sends a transaction.
+
+### The switch: `ACTIVATION_ENABLED`
+
+Off unless the variable is exactly `true`. `false` and unset are off; anything else
+(`1`, `yes`, `on`, `TRUE`) stops the process at start-up rather than being guessed at.
+Nothing else switches it on: not `APP_MODE`, and not the kind of city in the database.
+
+While it is off both routes answer `403 {"error":"activation_disabled"}` before the session
+is looked up, so before any database read, chain read or write. Sign-in, `/v1/viewer`,
+`/v1/viewer/friends` and `/v1/city` are unaffected. The start-up log line reports
+`activationEnabled: true|false` and nothing else about it.
+
+### What authorises an activation
+
+Not a session. A session says which wallet signed in; an activation needs all of:
+
+1. the **exact session** the intent was issued in (resolved server-side from the cookie to
+   its database row; the session and wallet row ids are never sent to a browser),
+2. the wallet's **EIP-712 signature** over the message the server wrote and stored,
+3. the **chain** saying, at issue and again immediately before the write, that the
+   session's wallet owns the Friend, and which family it is.
+
+Family, district and city are never taken from the request. A user's avatar is never read.
+
+### `POST /v1/activation/intents`
+
+Request, exactly these two keys:
+
+```
+{ "tokenId": "812", "plotId": "d4-w0-p7" }
+```
+
+`tokenId` is **canonical base-10 text**: `0`, or digits with no leading zero, from 0 to
+9007199254740991 (the city state holds a Friend id as a JavaScript number). `+1`, `-1`,
+`01`, `0812`, `1.0`, `1e3`, `0x10`, anything with whitespace, and a JSON number are all
+refused, never repaired (`parseCanonicalTokenId` in `src/protocol/activation.ts`). `plotId`
+is `<district>-w<ward>-p<plot>` in its one canonical spelling.
+
+In order, the service: checks the switch; requires the session to be on chain 4663; parses
+the request; reads the city and its properties in one read-only snapshot; requires a city
+that may hold properties (canonical, or an activation rehearsal) and runs the deep
+invariant check on it; requires the plot to be one the engine's `allocateSpecificPlot`
+offers right now; makes the **pinned chain read**; requires the wallet to own the Friend;
+derives the district from the registry family and requires the plot to be in it; then, in
+one short transaction, requires that the Friend has no property and the plot belongs to
+none, and stores the intent.
+
+```
+200
+{ "intentId": "<64 lowercase hex>",
+  "expiresAt": "2026-10-03T20:21:32.123Z",
+  "typedData": { "domain": …, "types": …, "primaryType": "PropertyActivation", "message": … },
+  "digest": "0x…" }
+```
+
+`typedData` is exactly what a wallet's `eth_signTypedData_v4` takes. `digest` is its
+EIP-712 hash, returned for diagnostics: it is public (anyone holding the typed data can
+compute it) and the server never trusts a digest sent back.
+
+**Issuing changes nothing in the city and reserves no plot.** Two people can hold intents
+for the same plot; the first commit gets it.
+
+### The message: `PropertyActivation` (V1, frozen)
+
+```
+domain   { name: "Rare City", version: "1", chainId: 4663 }
+
+PropertyActivation(
+  bytes32 intentId, string site, string statement, address wallet, address collection,
+  uint256 tokenId, uint8 familyId, string familyName, string cityId, string cityInstance,
+  string districtId, uint32 ward, uint32 plot, string plotId, uint64 issuedAt, uint64 expiresAt )
+```
+
+- There is **no `verifyingContract`**. No contract verifies these signatures (this server
+  does), and the Generations NFT contract is not an EIP-712 verifier. `collection` is in
+  the message as the thing being activated, not as a verifier.
+- `statement` is always `Activate this Rare Friend as a permanent Rare City property.`
+- `site` is `PUBLIC_ORIGIN`. `cityInstance` is the exact installation of the city: a
+  signature for one installation means nothing in another.
+- `issuedAt` and `expiresAt` are **Unix milliseconds**, by the database clock.
+- The **city sequence is deliberately not signed**: unrelated activity in the city does
+  not invalidate an intent whose own plot is still free.
+- Hashing and recovery are viem's (`hashTypedData`, `recoverAddress`). Nothing here
+  implements a hash or a curve. EOA signatures only; EIP-1271 is deferred.
+
+The format is frozen. A test pins the exact typed data, its digest and a signature, and
+recomputes the digest by hand from the EIP-712 specification. Any change to the domain, the
+field list, a type, the order or the statement is a new version, never an edit.
+
+### Intent lifetime and the one-live-intent rule
+
+`issuedAt` is the **database's** wall clock, truncated to the millisecond.
+`expiresAt = min(issuedAt + 10 minutes, the session's expiry)` and must be after `issuedAt`.
+The intent id is 32 random bytes (`crypto.randomBytes`), as 64 lowercase hex characters.
+The row stores the session, user, wallet, address, chain, collection, token, family, city
+instance, plot, origin, digest, both times and the block the ownership read was pinned to.
+
+There is at most one `issued` intent per wallet and Friend. Issuance for one wallet and
+Friend is serialised by a transaction-scoped advisory lock (it gives up after 5 seconds
+with `409 activation_conflict`), so the outcome of any race is deterministic:
+
+- the same request again (same session, Friend, city instance, plot, family and origin)
+  while the intent has **at least a minute left** returns that same intent, byte for byte;
+- anything else (another plot, another session of the same wallet, a changed registry
+  family, or less than a minute left) marks the old intent `superseded` and issues a new
+  one, in the same transaction.
+
+### `POST /v1/activations`
+
+Request, exactly these two keys. The typed data is **not** accepted back:
+
+```
+{ "intentId": "<64 lowercase hex>", "signature": "0x<130 hex>" }
+```
+
+The service reads the stored intent and takes everything from it. An intent of another
+user is `404 intent_not_found`, exactly as if it did not exist. For an issued intent:
+
+1. the session must be the exact session it was issued in, through the same wallet;
+2. it must not have expired (database clock);
+3. the stored fields must hash to the stored digest, and the signer recovered from that
+   digest and the signature must be the intent's owner address and the session's wallet;
+4. **the second chain read**: a new pinned read. The wallet must still own the Friend, the
+   family must be the signed family, and the block must not be older than the block the
+   intent was issued on. This happens outside any database transaction;
+5. one short transaction (below).
+
+A wrong signature never reaches the chain or the transaction.
+
+### The pinned chain read: `OwnershipProvider.verifyActivation`
+
+Used at issue and again before commit. It is never `verifyOwnership()` followed by
+`resolveFamily()`, which would be two "latest" reads that can straddle a transfer.
+
+```
+eth_chainId                                   must be 4663, or it fails closed
+eth_blockNumber                               pins ONE block (never cached)
+eth_call  Generations.ownerOf(tokenId)        at exactly that block
+eth_call  FamiliesRegistry.familyOf(tokenId)  at exactly that same block
+→ { owned, family, blockNumber }
+```
+
+Four requests and nothing else: no Transfer history, no Multicall, no CCIP-Read, nothing
+reused from an earlier call or from the My Friends cache, and a 15-second deadline. A
+Friend that does not exist is `unknown-token`, which is an answer; an endpoint that fails
+is `unavailable`, which is not, and is never reported as "not owned". A registry family
+outside the nine is `invalid-family`. The adapter has no method that signs or sends.
+
+The district is the registry family's, by the permanent table (also a database constraint):
+`0 Skeleton d8 · 1 Mask d6 · 2 Family d4 · 3 Cellular d5 · 4 Asymmetry d7 · 5 Hoverer d9 ·
+6 Colossus d3 · 7 Sparkling d2 · 8 Hollow d1`.
+
+### The transaction
+
+After the second chain read, and never holding a transaction across it:
+
+```
+BEGIN                                  (lock waits give up after 5 s → 409 activation_conflict)
+  lock the intent            FOR UPDATE   re-read it: still issued, same session, not expired
+  the session                FOR SHARE    live by the database clock; it cannot be revoked underneath
+  lock the city              FOR UPDATE   same id and installation as the intent
+  deep invariant check of the locked state against its property rows
+  the Friend has no property; the plot belongs to none
+  activateFriend(state, …)                the pure engine transition; allocates the exact plot again
+  UPDATE city        state, sequence + 1  only from the sequence that was locked
+  INSERT city_events 'property.activated' at the new sequence
+  INSERT properties                       the deterministic id; activated_at and verified_block
+  INSERT ownership_eras                   era 1, the activating wallet, same moment and block
+  UPDATE activation_intents               issued → committed: committed_at, the 65-byte signature, property_id
+  deep invariant check of what is now STORED, which must also be exactly the transition's result
+COMMIT
+```
+
+Inside the transaction the database itself bounds the work: `lock_timeout` 5 s,
+`statement_timeout` 8 s and `idle_in_transaction_session_timeout` 15 s, all `SET LOCAL`. The
+statement limit is below the pool's 10-second client-side limit on purpose, so the database
+cancels a stalled statement and says so before the service gives up on it.
+
+**A connection goes back to the pool only when it is known to be outside a transaction.**
+After a refusal the service decided on, or an error the database reported, `ROLLBACK` is
+sent. After anything else (a statement that timed out on the service's side, a dropped
+connection), or if the `ROLLBACK` itself fails, the connection is closed instead, which
+makes the database abandon the transaction. A connection that might still hold half an
+activation is never handed to another request to commit.
+
+The guards of migration `0004` check expiry again with their own reading of the clock as
+each row is written. If an intent (or its session) runs out in the instant between the
+service's check and the guard's, the guard refuses the write, everything rolls back, and
+the answer is `410 intent_expired` (or `401 not_authenticated`), not a `503`.
+
+Either all of it is written or none of it. The order satisfies the guards of migration
+`0004` (the event before the property, the property before its era and before the intent
+is committed, completion checked at commit). Every activation of a city queues on the city
+row, so each sees the result of the one before; two commits of one intent queue on the
+intent row, and the second finds it committed.
+
+**The pure transition** is `activateFriend` in `src/game/activation.ts`, not the demo's
+join. It adds one building `b-<tokenId>` owned by the user (nothing built, no patrons,
+default architecture, no fixtures or landscaping, a blank billboard), opens exactly the
+next ward when the chosen plot lies in it, advances the clock by one, and creates the
+user's display record on their first activation only. It does not touch `residentSeq`,
+simulated wallets, Representatives, badges, counters, season activity or the Radio.
+
+**The event** carries durable, public facts only: `propertyId`, `tokenId`, `userId`,
+`ownerAddress`, `familyId`, `districtId`, `ward`, `plot`, `plotId`, `verifiedBlock`. Never
+a session id, a cookie, a signature, a digest, an RPC endpoint or a key.
+
+```
+200
+{ "status": "committed",
+  "property": { "id": "29d2ac0a-1754-8500-acdd-802ba2c51575", "tokenId": "812", "buildingId": "b-812",
+                "districtId": "d4", "ward": 0, "plot": 7, "plotId": "d4-w0-p7",
+                "activatedAt": "2026-10-03T20:11:32.123Z", "sequence": 2 },
+  "city": { "id": "main", "instance": "…" } }
+```
+
+### Retrying after a lost answer
+
+If the intent is already `committed`, nothing is run again: the service returns the
+property that intent created, read from its row, to the **user whose intent it is** and to
+nobody else. No chain read, no write. It works from any live session of that user, whatever
+the chain says now, so a client that never saw the first answer can simply send the same
+request again and get the same property id and sequence. It is not a property lookup:
+another user gets `404 intent_not_found`.
+
+### Deterministic property ids
+
+`activation/propertyId.ts`. A property id is never random. V1, frozen:
+
+```
+preimage  rare-city:property:v1|world=rare-city|chain=4663|collection=0x14c49e6118f46525de9ab41a51cbaa3c6ebf181d|token=<canonical-decimal-token-id>
+hash      SHA-256 of the UTF-8 preimage
+uuid      its first 16 bytes; version nibble set to 8, variant bits set to 10; lowercase 8-4-4-4-12
+
+Rare Friend 812  →  29d2ac0a-1754-8500-acdd-802ba2c51575
+```
+
+The city instance is deliberately not in the preimage: a Rare City database that is
+restored or rebuilt gives the same Friend the same property id. A different world would
+use a different `world=` key. Ownership-era ids are derived the same way from
+`rare-city:ownership-era:v1|property=<property-uuid>|era=<n>`.
+
+### Errors
+
+`{ "error": <code> }`, with these statuses. `503` carries `Retry-After`. No answer and no
+log line contains a provider's or the database's own error text.
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `activation_disabled` | 403 | `ACTIVATION_ENABLED` is not `true`. |
+| `not_authenticated` | 401 | No live session behind the cookie. |
+| `invalid_request` | 400 | Not exactly the request shape; a non-canonical token id or plot id. |
+| `unsupported_chain` | 400 | The session's wallet is not on chain 4663. |
+| `city_not_activatable` | 409 | No city, or a city that may not hold properties. One is never created. |
+| `city_inconsistent` | 503 | The city failed its invariants, before or after the write. Nothing was written. |
+| `friend_not_owned` | 403 | The session's wallet does not own the Friend, or it does not exist. |
+| `friend_already_activated` | 409 | The Friend already has a property. |
+| `ownership_unavailable` | 503 | The chain could not be read, answered for the wrong chain, or from a stale block. |
+| `ownership_inconsistent` | 503 | The registry returned a family that is not one of the nine. |
+| `family_mismatch` | 409 | The family at commit is not the family that was signed. |
+| `plot_invalid` | 422 | Not a plot this Friend may take: not real, beyond the next ward, or another family's district. |
+| `plot_unavailable` | 409 | The plot is taken. |
+| `intent_not_found` | 404 | No such intent for this user. |
+| `intent_expired` | 410 | The intent's time is up. |
+| `intent_superseded` | 409 | A newer intent replaced it. |
+| `intent_session_mismatch` | 403 | Not the session the intent was issued in. |
+| `signature_invalid` | 403 | Not a signature of the stored message by the intent's wallet. |
+| `activation_conflict` | 409 | Another activation got there first, or held a lock too long. Safe to retry. |
+| `activation_unavailable` | 503 | No database, or an unexpected failure. |
+
+### Accepted limits of V1
+
+- **A residual race between the chain read and the write.** The second read is pinned
+  moments before the transaction, and a Friend can be transferred in between. The database
+  still allows one property per Friend and per plot; what can happen is an activation by
+  the wallet that owned the Friend a moment earlier. No transaction is held open across
+  RPC work to narrow it.
+- **EOA signatures only.** A smart-contract wallet (EIP-1271) cannot activate.
+- **Clock agreement.** Intents are timed by the database clock and sessions by the
+  service's. If the database clock is behind a session's start, issuing in that session is
+  refused (`503`) until it catches up.
+- **The chain read trusts the endpoint's latest block.** There is no confirmation depth. A
+  provider that is consistently behind is only caught when it falls below the block the
+  intent was issued on.
+- **Dead intents are kept.** Superseded and expired intents are never pruned yet; a user
+  can add at most six a minute.
+- **Each request reads the whole city.** Issue and commit load the city state and its
+  property rows and run the deep check (commit does it twice, under the city lock), so the
+  cost grows with the city. It is bounded by the per-user and per-client limits.
+- **The My Friends annotation does not depend on the switch.** It is a read of
+  `properties`, and with activation off it simply reports `null` for every Friend.
+- **Rate limits are per process**, as for every other route.
+- **A canonical production city still needs a non-owner database role**: the guards hold
+  against ordinary writes, not against the table owner.
+
 ## Environment
 
 | Variable | Used by | Notes |
@@ -740,6 +1069,7 @@ are not properties and the database refuses to give it any.
 | `FRAME_ANCESTORS` | server | Exact `https://` origins allowed to frame the app, separated by spaces or commas. Empty (default) = same-origin only. A malformed value stops start-up. |
 | `HSTS_MAX_AGE` | server | `Strict-Transport-Security` lifetime in seconds, 0 to 63072000. Defaults: one day in `production`, one year in `staging`. Not sent in `local`. |
 | `RATE_LIMITS` | server | `on` (default) or `off`. `off` is refused unless `APP_MODE=local`. |
+| `ACTIVATION_ENABLED` | server | Exactly `true` or `false`; unset is `false`. Anything else stops start-up. Only `true` lets the two activation routes run. Not set on any deployment. |
 | `PORT` | server | Default `8787`. |
 | `HOST` | server | Default `127.0.0.1` in `local`, `0.0.0.0` otherwise. |
 | `RAILWAY_GIT_COMMIT_SHA` / `GIT_SHA` | server | Reported by `/version`. |
@@ -798,6 +1128,9 @@ configuration lives in its **Railway service settings**:
 | Start command | `npm run start:server` | unchanged |
 | Health check path | `/ready` | unchanged |
 | Variables | `APP_MODE=staging`, `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `PUBLIC_ORIGIN=https://<the staging domain>`, `TRUSTED_PROXY=railway` | unchanged; optionally `HSTS_MAX_AGE`, `FRAME_ANCESTORS`, `ROBINHOOD_RPC_URL` |
+
+`ACTIVATION_ENABLED` is not set anywhere. Deploying this build without it changes nothing a
+visitor can do: both activation routes answer `403 activation_disabled`.
 
 Without `PUBLIC_ORIGIN` or `TRUSTED_PROXY` this build refuses to start in staging, and
 `db:migrate` refuses with it, so both have to be set before the branch is deployed. The

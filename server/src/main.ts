@@ -1,6 +1,8 @@
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { http } from 'viem'
+import { createPropertyReader } from './activation/properties'
+import { createActivationService } from './activation/service'
 import { createApp, SERVICE_NAME } from './app'
 import { createAuthService } from './auth/service'
 import { createCityReader } from './city/store'
@@ -44,6 +46,9 @@ async function main() {
       city: db ? createCityReader(db) : null,
       auth: db ? createAuthService({ db, publicOrigin: config.publicOrigin }) : null,
       friends: createFriendsReader(ownership),
+      // Built whenever there is a database, and inert unless ACTIVATION_ENABLED=true: the routes and the service both refuse first.
+      activation: db ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
+      properties: db ? createPropertyReader(db) : null,
       site,
     }),
   )
@@ -56,7 +61,7 @@ async function main() {
 
   server.listen(config.port, config.host, () => {
     // The RPC endpoint is deliberately absent: it may carry provider credentials.
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, commit: config.commit })
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, commit: config.commit })
   })
 
   let stopping = false
