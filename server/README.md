@@ -59,6 +59,7 @@ server/
     genesis-cli.ts     `npm run city:genesis -- <command>`
     verify-cli.ts      `npm run city:verify`
     db/pool.ts         pg pool
+    db/transaction.ts  one transaction on one pooled connection, and when that connection may be reused
     db/migrations.ts   migration loader, runner and readiness probe
   migrations/          plain SQL, NNNN_snake_case_name.sql
   tests/
@@ -199,6 +200,40 @@ attacker has to issue 20,000 in those few seconds. Asking is limited per client 
   can also be revoked directly in the database.
 - A missing, malformed, expired or revoked cookie is simply an anonymous visitor (and
   `/v1/viewer` clears it). It is never an error, and it never affects `/v1/city`.
+
+### Transactions and pooled connections
+
+Sign-in and activation share one pool, and a pooled connection carries its transaction
+with it. So the rule is the same for both: **a connection goes back to the pool only when
+it is known to be outside a transaction**. A connection whose transaction state is
+uncertain is closed, which makes the database abandon the transaction; it is never handed
+to another request, whose `COMMIT` would make somebody else's half-finished work permanent.
+
+`verify` runs its transaction through `withTransaction` (`db/transaction.ts`):
+
+| What failed | What happens to the connection |
+| --- | --- |
+| Nothing: `COMMIT` answered | Returned to the pool. |
+| An `AuthError` the service raised (for example a challenge consumed by a racing request) | `ROLLBACK`, then returned to the pool. |
+| An error the database reported (`pg.DatabaseError`), including a `COMMIT` it refused | `ROLLBACK`, then returned to the pool. |
+| A `ROLLBACK` that fails, after either of those | Closed. |
+| Anything else: a statement that timed out on the service's side, a dropped connection, a transport failure, a `COMMIT` that did not come back | Closed. No `ROLLBACK` is sent. |
+| The connection dropped between statements (`pg` reports this as an `error` event) | Closed. No `ROLLBACK` is sent. |
+
+The pool's `query_timeout` only stops the service waiting: the statement may still be
+running on the server, and a `ROLLBACK` queued behind it may never be sent. That is why a
+client-side timeout is never followed by a best-effort `ROLLBACK` and a release.
+
+A `COMMIT` that does not come back may or may not have happened. Nothing is assumed: the
+caller gets `503 auth_unavailable` and no cookie. If it did commit, the session exists but
+its credential was never returned to anyone, and the challenge is spent.
+
+What the visitor sees is unchanged: the same answers, the same statuses, the same cookie.
+The activation service applies the same rule in its own transaction helper (see "The
+transaction" under "Permanent Friend activation"). Statements sent straight to the pool
+(`pool.query`) run outside any transaction, and `pg` closes the connection itself if one
+fails. Operator commands (`db:migrate`, `city:genesis`, `city:seed-demo`, `city:verify`)
+run in their own short-lived processes with their own pools.
 
 ### CSRF: the rule for every request that changes anything
 

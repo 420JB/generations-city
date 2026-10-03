@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { getAddress, isAddress, recoverMessageAddress, zeroAddress, type Hex } from 'viem'
 import { createSiweMessage, parseSiweMessage, validateSiweMessage } from 'viem/siwe'
 import type { Database } from '../db/pool'
+import { withTransaction } from '../db/transaction'
 import { ANONYMOUS_VIEWER_RESPONSE, RARE_FRIENDS_CHAIN, type AuthenticatedViewer, type ChallengeResponse, type IdentityErrorCode, type ViewerResponse } from '../engine'
 
 /**
@@ -192,31 +193,31 @@ export function createAuthService(options: AuthOptions): AuthService {
       const token = random(32).toString('base64url')
       const expiresAt = new Date(at.getTime() + SESSION_TTL_MS)
       const retiring = liveSession(presented)
-      const client = await db.connect()
-      try {
-        await client.query('BEGIN')
-        // The one statement that decides a race: of any number of verifications of this nonce, exactly one updates the row.
-        const consumed = await client.query('UPDATE auth_challenges SET consumed_at = $2 WHERE nonce = $1 AND consumed_at IS NULL AND expires_at > $2', [nonce, at])
-        if (consumed.rowCount !== 1) throw new AuthError(401, 'challenge_invalid')
+      // One transaction, and a connection that is only pooled again when it is known to be out of it (`withTransaction`).
+      // The only refusal raised in here is this service's own AuthError; anything else that is not the database's
+      // own answer leaves the connection in an unknown state, and it is closed rather than reused.
+      return withTransaction(
+        db,
+        (err) => err instanceof AuthError,
+        async (client) => {
+          // The one statement that decides a race: of any number of verifications of this nonce, exactly one updates the row.
+          const consumed = await client.query('UPDATE auth_challenges SET consumed_at = $2 WHERE nonce = $1 AND consumed_at IS NULL AND expires_at > $2', [nonce, at])
+          if (consumed.rowCount !== 1) throw new AuthError(401, 'challenge_invalid')
 
-        // Serialises first sign-ins of one address, so it can never become two users.
-        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`wallet:${chainId}:${challenge.address}`])
-        let wallet = (await client.query<{ id: string; user_id: string }>('UPDATE wallets SET last_verified_at = $3 WHERE chain_id = $1 AND address = $2 RETURNING id, user_id', [chainId, challenge.address, at])).rows[0]
-        if (!wallet) {
-          const user = (await client.query<{ id: string }>('INSERT INTO users (created_at, updated_at) VALUES ($1, $1) RETURNING id', [at])).rows[0]
-          wallet = (await client.query<{ id: string; user_id: string }>('INSERT INTO wallets (user_id, chain_id, address, created_at, last_verified_at) VALUES ($1, $2, $3, $4, $4) RETURNING id, user_id', [user.id, chainId, challenge.address, at])).rows[0]
-        }
-        // A browser holds one session: the one it arrived with ends as the new one begins.
-        if (retiring) await client.query('UPDATE sessions SET revoked_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL', [retiring, at])
-        await client.query('INSERT INTO sessions (token_hash, user_id, wallet_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)', [hashSessionToken(token), wallet.user_id, wallet.id, at, expiresAt])
-        await client.query('COMMIT')
-        return { token, expiresAt, maxAgeSeconds: SESSION_TTL_MS / 1000, viewer: { authenticated: true, userId: wallet.user_id, wallet: { address: getAddress(challenge.address), chainId }, session: { expiresAt: expiresAt.toISOString() } } }
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => undefined)
-        throw err
-      } finally {
-        client.release()
-      }
+          // Serialises first sign-ins of one address, so it can never become two users.
+          await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`wallet:${chainId}:${challenge.address}`])
+          let wallet = (await client.query<{ id: string; user_id: string }>('UPDATE wallets SET last_verified_at = $3 WHERE chain_id = $1 AND address = $2 RETURNING id, user_id', [chainId, challenge.address, at])).rows[0]
+          if (!wallet) {
+            const user = (await client.query<{ id: string }>('INSERT INTO users (created_at, updated_at) VALUES ($1, $1) RETURNING id', [at])).rows[0]
+            wallet = (await client.query<{ id: string; user_id: string }>('INSERT INTO wallets (user_id, chain_id, address, created_at, last_verified_at) VALUES ($1, $2, $3, $4, $4) RETURNING id, user_id', [user.id, chainId, challenge.address, at])).rows[0]
+          }
+          // A browser holds one session: the one it arrived with ends as the new one begins.
+          if (retiring) await client.query('UPDATE sessions SET revoked_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL', [retiring, at])
+          await client.query('INSERT INTO sessions (token_hash, user_id, wallet_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)', [hashSessionToken(token), wallet.user_id, wallet.id, at, expiresAt])
+          // The session exists only once the transaction has committed: nothing is returned, and no cookie set, before then.
+          return { token, expiresAt, maxAgeSeconds: SESSION_TTL_MS / 1000, viewer: { authenticated: true as const, userId: wallet.user_id, wallet: { address: getAddress(challenge.address), chainId }, session: { expiresAt: expiresAt.toISOString() } } }
+        },
+      )
     },
 
     async logout(presented) {
