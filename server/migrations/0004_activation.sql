@@ -133,8 +133,12 @@ DECLARE
 BEGIN
   IF TG_OP = 'INSERT' THEN
     SELECT c.sequence INTO current_sequence FROM city c WHERE c.id = NEW.city_id;
-    -- An event for a city that does not exist is left to the foreign key to refuse.
-    IF FOUND AND NEW.sequence <> current_sequence THEN
+    -- Refused here rather than left to the foreign key, which is only checked when the statement
+    -- ends: by then a row added later in the same statement would make any event look valid.
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'a city event needs its city to exist first (foreign key city_events -> city)' USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    IF NEW.sequence <> current_sequence THEN
       RAISE EXCEPTION 'a city event is appended at the sequence its city has just reached';
     END IF;
     RETURN NEW;
@@ -164,13 +168,16 @@ CREATE TABLE activation_intents (
   id               text          PRIMARY KEY,
   user_id          uuid          NOT NULL REFERENCES users (id),
   wallet_id        uuid          NOT NULL REFERENCES wallets (id),
-  -- The session that asked. Sessions are deleted some time after they end, and the intent outlives them.
+  -- The session that asked. Required when the intent is issued and when it is committed (see
+  -- activation_intents_guard). Nullable only because sessions are deleted some time after they
+  -- end and the intent outlives them: the foreign key then sets this to NULL.
   session_id       uuid          REFERENCES sessions (id) ON DELETE SET NULL,
   owner_address    text          NOT NULL,
   chain_id         integer       NOT NULL,
   collection       text          NOT NULL,
-  -- uint256 fits. The supported range is narrower: see ai_token_supported.
-  token_id         numeric(78,0) NOT NULL,
+  -- Deliberately an unscaled numeric: a numeric(78,0) column would round 1.5 to 2 before any
+  -- check ran, and a malformed id must be refused, never become another Friend. See ai_token_supported.
+  token_id         numeric       NOT NULL,
   family_id        smallint      NOT NULL,
   city_id          text          NOT NULL,
   city_instance_id uuid          NOT NULL,
@@ -193,14 +200,19 @@ CREATE TABLE activation_intents (
   CONSTRAINT ai_id_shape          CHECK (id ~ '^[0-9a-f]{64}$'),
   CONSTRAINT ai_owner_normalized  CHECK (owner_address ~ '^0x[0-9a-f]{40}$'),
   CONSTRAINT ai_canonical_chain   CHECK (chain_id = 4663 AND collection = '0x14c49e6118f46525de9ab41a51cbaa3c6ebf181d'),
-  -- The city state holds a Friend id as a JavaScript number: nothing above 2^53 - 1 can be activated.
-  CONSTRAINT ai_token_supported   CHECK (token_id >= 0 AND token_id <= 9007199254740991),
+  -- A whole number, written as one (scale 0, so 812.0 is refused too), within what the city state
+  -- can hold: it keeps a Friend id as a JavaScript number, so nothing above 2^53 - 1 can be activated.
+  CONSTRAINT ai_token_supported   CHECK ((token_id = trunc(token_id) AND scale(token_id) = 0 AND token_id >= 0 AND token_id <= 9007199254740991) IS TRUE),
   CONSTRAINT ai_family_district   CHECK ((family_id, district_id) IN
     ((0, 'd8'), (1, 'd6'), (2, 'd4'), (3, 'd5'), (4, 'd7'), (5, 'd9'), (6, 'd3'), (7, 'd2'), (8, 'd1'))),
   CONSTRAINT ai_plot_shape        CHECK (ward >= 0 AND plot >= 0 AND plot_id = district_id || '-w' || ward || '-p' || plot),
-  CONSTRAINT ai_origin_shape      CHECK (origin ~ '^https?://[^/[:space:]]+$'),
+  -- A bare lowercase origin: scheme, host (a name, or a bracketed IPv6 address) and optional port.
+  -- Outside a local database it must also be https (see activation_intents_guard).
+  CONSTRAINT ai_origin_shape      CHECK (origin ~ '^https?://([a-z0-9]([a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:]+\])(:[0-9]{1,5})?$'),
   CONSTRAINT ai_digest_is_32      CHECK (octet_length(digest) = 32),
   CONSTRAINT ai_expiry_after_issue CHECK (expires_at > issued_at),
+  -- A signing request is short-lived.
+  CONSTRAINT ai_lifetime_bounded  CHECK (expires_at <= issued_at + interval '10 minutes'),
   CONSTRAINT ai_block_nonnegative CHECK (issued_block >= 0),
   CONSTRAINT ai_status_known      CHECK (status IN ('issued', 'committed', 'superseded')),
   -- Committed means exactly: a time, the signature that authorised it, and the property it created.
@@ -223,10 +235,23 @@ CREATE INDEX activation_intents_session_id ON activation_intents (session_id);
 
 COMMENT ON TABLE activation_intents IS 'Signed-intent records for permanent activation. Signed fields are immutable; status moves issued -> committed or issued -> superseded, once.';
 
--- An intent begins as issued, by one user through their own wallet and session, for a city
--- that may hold properties. The only changes it may ever undergo:
---   issued -> committed, issued -> superseded (each once), and
---   session_id becoming NULL, which is the sessions foreign key doing its normal cleanup.
+-- An intent begins as issued, now, by one user through their own wallet, inside a live session
+-- of that user and wallet, for a city that may hold properties. It never outlives that session.
+--
+-- Every rule below requires the row it depends on to be there. None is "left to the foreign
+-- key": a foreign key is only checked when the statement ends, so a rule that merely skipped a
+-- missing row could be dodged by adding that row later in the same statement.
+--
+-- Time is this database's wall clock (clock_timestamp), not the time a transaction began and
+-- not the time a writer claims.
+--
+-- The only changes an intent may ever undergo:
+--   issued -> committed, once, and only while that same session is still live and the intent
+--     has not expired;
+--   issued -> superseded, once (allowed even after the session is gone);
+--   session_id becoming NULL, and only because the session row has been deleted: that is the
+--     sessions foreign key doing its normal clean-up. A session that still exists cannot be
+--     detached by hand.
 CREATE FUNCTION activation_intents_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -241,17 +266,33 @@ BEGIN
     IF NEW.status <> 'issued' THEN
       RAISE EXCEPTION 'an activation intent begins as issued';
     END IF;
-    -- A wallet that does not exist is left to the foreign key to refuse.
-    IF EXISTS (SELECT 1 FROM wallets w WHERE w.id = NEW.wallet_id)
-       AND NOT EXISTS (SELECT 1 FROM wallets w WHERE w.id = NEW.wallet_id AND w.user_id = NEW.user_id AND w.chain_id = NEW.chain_id AND w.address = NEW.owner_address) THEN
+    IF NOT EXISTS (SELECT 1 FROM wallets w WHERE w.id = NEW.wallet_id AND w.user_id = NEW.user_id AND w.chain_id = NEW.chain_id AND w.address = NEW.owner_address) THEN
       RAISE EXCEPTION 'an activation intent is issued to one user through their own wallet';
     END IF;
-    IF NEW.session_id IS NOT NULL AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = NEW.session_id)
-       AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = NEW.session_id AND s.user_id = NEW.user_id AND s.wallet_id = NEW.wallet_id) THEN
+    IF NEW.session_id IS NULL THEN
+      RAISE EXCEPTION 'an activation intent is issued in a session: it cannot begin without one';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = NEW.session_id AND s.user_id = NEW.user_id AND s.wallet_id = NEW.wallet_id) THEN
       RAISE EXCEPTION 'an activation intent is issued in a session of the same user and wallet';
     END IF;
-    IF EXISTS (SELECT 1 FROM city c WHERE c.id = NEW.city_id AND c.instance_id = NEW.city_instance_id AND NOT (c.canonical OR c.activation_rehearsal)) THEN
+    -- Live: not revoked, not expired, and the intent was issued inside the session's lifetime.
+    IF NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = NEW.session_id AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp()
+                     AND NEW.issued_at >= s.created_at AND NEW.issued_at < s.expires_at) THEN
+      RAISE EXCEPTION 'an activation intent is issued in a live session';
+    END IF;
+    -- Issued now. Without this the ten-minute lifetime would start whenever the writer said it did.
+    IF NEW.issued_at > clock_timestamp() + interval '1 minute' OR NEW.issued_at < clock_timestamp() - interval '1 minute' THEN
+      RAISE EXCEPTION 'an activation intent is issued now: its issue time must agree with this database''s clock';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = NEW.session_id AND NEW.expires_at <= s.expires_at) THEN
+      RAISE EXCEPTION 'an activation intent cannot outlive the session it was issued in';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM city c WHERE c.id = NEW.city_id AND c.instance_id = NEW.city_instance_id AND (c.canonical OR c.activation_rehearsal)) THEN
       RAISE EXCEPTION 'an activation intent can only be issued for a canonical or rehearsal city';
+    END IF;
+    -- Plain http is for a developer machine only. A staging, production or unstamped database takes https alone.
+    IF NEW.origin !~ '^https://' AND NOT EXISTS (SELECT 1 FROM app_meta m WHERE m.key = 'environment' AND m.value = 'local') THEN
+      RAISE EXCEPTION 'an activation intent is issued for an https origin';
     END IF;
     RETURN NEW;
   END IF;
@@ -266,8 +307,15 @@ BEGIN
     RAISE EXCEPTION 'the signed fields of an activation intent cannot be changed';
   END IF;
 
-  IF NEW.session_id IS DISTINCT FROM OLD.session_id AND NEW.session_id IS NOT NULL THEN
-    RAISE EXCEPTION 'an activation intent cannot be moved to another session';
+  IF NEW.session_id IS DISTINCT FROM OLD.session_id THEN
+    IF NEW.session_id IS NOT NULL THEN
+      RAISE EXCEPTION 'an activation intent cannot be moved to another session';
+    END IF;
+    -- When the foreign key clears this column the session row is already gone. If it is still
+    -- there, this is somebody detaching a session by hand.
+    IF EXISTS (SELECT 1 FROM sessions s WHERE s.id = OLD.session_id) THEN
+      RAISE EXCEPTION 'an activation intent keeps its session for as long as that session exists';
+    END IF;
   END IF;
 
   IF NEW.status = OLD.status THEN
@@ -279,6 +327,26 @@ BEGIN
 
   IF OLD.status <> 'issued' OR NEW.status NOT IN ('committed', 'superseded') THEN
     RAISE EXCEPTION 'an activation intent can only move from issued to committed or superseded';
+  END IF;
+
+  IF NEW.status = 'committed' THEN
+    -- The permanent step. The session that asked for it must still be there, still this user's and
+    -- wallet's, not revoked and not expired; and the intent itself must not have expired. The
+    -- session row is locked until this transaction ends, so it cannot be revoked in between: a
+    -- revocation either came first and is seen here, or waits and comes after.
+    IF NEW.session_id IS NULL THEN
+      RAISE EXCEPTION 'an activation intent is committed only while the session that requested it is live';
+    END IF;
+    PERFORM 1 FROM sessions s
+      WHERE s.id = NEW.session_id AND s.user_id = NEW.user_id AND s.wallet_id = NEW.wallet_id
+        AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp()
+      FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'an activation intent is committed only while the session that requested it is live';
+    END IF;
+    IF clock_timestamp() > OLD.expires_at THEN
+      RAISE EXCEPTION 'an expired activation intent cannot be committed';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -300,7 +368,8 @@ CREATE TABLE properties (
   city_instance_id       uuid          NOT NULL,
   chain_id               integer       NOT NULL,
   collection             text          NOT NULL,
-  token_id               numeric(78,0) NOT NULL,
+  -- Unscaled on purpose, as in activation_intents: a fraction is refused, never rounded.
+  token_id               numeric       NOT NULL,
   family_id              smallint      NOT NULL,
   district_id            text          NOT NULL,
   ward                   integer       NOT NULL,
@@ -325,7 +394,7 @@ CREATE TABLE properties (
   CONSTRAINT p_one_per_sequence UNIQUE (city_id, activated_sequence),
   CONSTRAINT p_id_intent        UNIQUE (id, activation_intent_id),
   CONSTRAINT p_canonical_chain  CHECK (chain_id = 4663 AND collection = '0x14c49e6118f46525de9ab41a51cbaa3c6ebf181d'),
-  CONSTRAINT p_token_supported  CHECK (token_id >= 0 AND token_id <= 9007199254740991),
+  CONSTRAINT p_token_supported  CHECK ((token_id = trunc(token_id) AND scale(token_id) = 0 AND token_id >= 0 AND token_id <= 9007199254740991) IS TRUE),
   -- Family geography is permanent: registry family id -> district.
   --   0 Skeleton d8, 1 Mask d6, 2 Family d4, 3 Cellular d5, 4 Asymmetry d7, 5 Hoverer d9, 6 Colossus d3, 7 Sparkling d2, 8 Hollow d1
   CONSTRAINT p_family_district  CHECK ((family_id, district_id) IN
@@ -373,6 +442,9 @@ BEGIN
        AND NEW.verified_block >= i.issued_block
   ) THEN
     RAISE EXCEPTION 'a property must be exactly what its issued intent authorised';
+  END IF;
+  IF EXISTS (SELECT 1 FROM activation_intents i WHERE i.id = NEW.activation_intent_id AND clock_timestamp() > i.expires_at) THEN
+    RAISE EXCEPTION 'an expired activation intent authorises nothing';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM city c WHERE c.id = NEW.city_id AND c.instance_id = NEW.city_instance_id AND c.sequence = NEW.activated_sequence)
      OR NOT EXISTS (SELECT 1 FROM city_events e WHERE e.city_id = NEW.city_id AND e.sequence = NEW.activated_sequence AND e.type = 'property.activated') THEN
@@ -473,12 +545,14 @@ BEGIN
     IF previous.era_number IS NOT NULL AND (previous.ended_at IS NULL OR NEW.started_at < previous.ended_at OR NEW.start_block < previous.end_block) THEN
       RAISE EXCEPTION 'an ownership era opens only after the one before it has closed';
     END IF;
-    -- A wallet that does not exist is left to the foreign key to refuse.
-    IF NEW.owner_wallet_id IS NOT NULL AND EXISTS (SELECT 1 FROM wallets w WHERE w.id = NEW.owner_wallet_id)
+    IF NEW.owner_wallet_id IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM wallets w WHERE w.id = NEW.owner_wallet_id AND w.user_id = NEW.owner_user_id AND w.address = NEW.owner_address) THEN
       RAISE EXCEPTION 'an ownership era names one owner: the address, its wallet and that wallet''s user';
     END IF;
-    IF NEW.era_number = 1 AND EXISTS (SELECT 1 FROM properties p WHERE p.id = NEW.property_id)
+    IF NOT EXISTS (SELECT 1 FROM properties p WHERE p.id = NEW.property_id) THEN
+      RAISE EXCEPTION 'an ownership era needs its property to exist first (foreign key ownership_eras -> properties)' USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    IF NEW.era_number = 1
        AND NOT EXISTS (SELECT 1 FROM properties p WHERE p.id = NEW.property_id AND p.activated_by_wallet_id = NEW.owner_wallet_id AND p.activated_by_user_id = NEW.owner_user_id
                          AND p.activated_at = NEW.started_at AND p.verified_block = NEW.start_block) THEN
       RAISE EXCEPTION 'the first ownership era belongs to the wallet that activated the property, from the moment and block of the activation';
@@ -532,12 +606,21 @@ CREATE TRIGGER wallets_guard
   BEFORE UPDATE ON wallets
   FOR EACH ROW EXECUTE FUNCTION wallets_guard();
 
--- A session belongs to the user and wallet that opened it. It can end; it cannot be handed on.
+-- A session belongs to the user and wallet that opened it, lasts exactly as long as it was
+-- given, and once revoked stays revoked. It can end; it cannot be handed on, extended or
+-- revived. Committing an intent depends on its session being live, so "live" must not be
+-- something an UPDATE can restore. (The service only ever revokes: 0003, "Never cleared".)
 CREATE FUNCTION sessions_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF ROW(NEW.id, NEW.user_id, NEW.wallet_id) IS DISTINCT FROM ROW(OLD.id, OLD.user_id, OLD.wallet_id) THEN
     RAISE EXCEPTION 'a session belongs to the user and wallet that opened it';
+  END IF;
+  IF ROW(NEW.token_hash, NEW.created_at, NEW.expires_at) IS DISTINCT FROM ROW(OLD.token_hash, OLD.created_at, OLD.expires_at) THEN
+    RAISE EXCEPTION 'a session keeps the credential and the lifetime it was opened with';
+  END IF;
+  IF OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at THEN
+    RAISE EXCEPTION 'a revoked session stays revoked';
   END IF;
   RETURN NEW;
 END;

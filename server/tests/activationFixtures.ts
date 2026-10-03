@@ -12,7 +12,8 @@ import { districtForFamily, RARE_FRIENDS_CHAIN, type GameState } from '../src/en
 export const CHAIN_ID = RARE_FRIENDS_CHAIN.chainId
 export const COLLECTION = RARE_FRIENDS_CHAIN.generations.toLowerCase()
 export const ORIGIN = 'https://rarecity.example'
-const T0 = new Date('2026-10-02T12:00:00.000Z')
+/** How long an intent lives. The database refuses anything longer. */
+export const INTENT_TTL_MS = 10 * 60_000
 
 export interface Identity {
   userId: string
@@ -21,12 +22,19 @@ export interface Identity {
   address: string
 }
 
-/** A signed-in user: one user, one wallet, one live session. */
-export async function addIdentity(db: pg.Pool): Promise<Identity> {
+/**
+ * A signed-in user: one user, one wallet, one session. By default the session opened just
+ * now and lasts seven days; a test that needs an expired or short-lived one says when it
+ * opened and for how long (a session's lifetime cannot be changed afterwards).
+ */
+export async function addIdentity(db: pg.Pool, session: { opened?: Date; lifetimeMs?: number } = {}): Promise<Identity> {
   const address = `0x${randomBytes(20).toString('hex')}`
   const userId = (await db.query<{ id: string }>('INSERT INTO users DEFAULT VALUES RETURNING id')).rows[0].id
   const walletId = (await db.query<{ id: string }>('INSERT INTO wallets (user_id, chain_id, address) VALUES ($1, $2, $3) RETURNING id', [userId, CHAIN_ID, address])).rows[0].id
-  const sessionId = (await db.query<{ id: string }>(`INSERT INTO sessions (token_hash, user_id, wallet_id, expires_at) VALUES ($1, $2, $3, now() + interval '7 days') RETURNING id`, [randomBytes(32), userId, walletId])).rows[0].id
+  // Timed by the application clock, as the sign-in service does: an intent issued a moment later is then never
+  // "before" its session by a fraction of a millisecond.
+  const opened = session.opened ?? new Date()
+  const sessionId = (await db.query<{ id: string }>('INSERT INTO sessions (token_hash, user_id, wallet_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5) RETURNING id', [randomBytes(32), userId, walletId, opened, new Date(opened.getTime() + (session.lifetimeMs ?? 7 * 86_400_000))])).rows[0].id
   return { userId, walletId, sessionId, address }
 }
 
@@ -42,9 +50,13 @@ export interface IntentInput {
   override?: Record<string, unknown>
 }
 
-/** The column values of an issued intent for this Friend and plot. */
+/**
+ * The column values of an intent issued now, for this Friend and plot. The times are real:
+ * the database checks them against the session's lifetime and its own clock.
+ */
 export function intentColumns(input: IntentInput): Record<string, unknown> {
   const districtId = districtForFamily(input.familyId) ?? 'd4'
+  const issuedAt = new Date()
   return {
     id: input.id ?? randomBytes(32).toString('hex'),
     user_id: input.identity.userId,
@@ -63,8 +75,8 @@ export function intentColumns(input: IntentInput): Record<string, unknown> {
     plot_id: `${districtId}-w${input.ward}-p${input.plot}`,
     origin: ORIGIN,
     digest: randomBytes(32),
-    issued_at: T0,
-    expires_at: new Date(T0.getTime() + 600_000),
+    issued_at: issuedAt,
+    expires_at: new Date(issuedAt.getTime() + INTENT_TTL_MS),
     issued_block: 79_000_000,
     ...input.override,
   }
@@ -88,9 +100,11 @@ export interface Activation {
   eraId: string
   sequence: number
   buildingId: string
+  /** The moment of the activation: the property's `activated_at` and its first era's `started_at`. */
+  at: Date
 }
 
-/** The column values of the property an intent authorises, at `sequence`. */
+/** The column values of the property an intent authorises, at `sequence`, activated the moment the intent was issued. */
 export function propertyColumns(intent: Record<string, unknown>, sequence: number, propertyId: string = randomUUID()): Record<string, unknown> {
   return {
     id: propertyId,
@@ -105,7 +119,7 @@ export function propertyColumns(intent: Record<string, unknown>, sequence: numbe
     plot: intent.plot,
     plot_id: intent.plot_id,
     building_id: `b-${String(intent.token_id)}`,
-    activated_at: new Date(T0.getTime() + 60_000),
+    activated_at: intent.issued_at,
     activated_sequence: sequence,
     activated_by_user_id: intent.user_id,
     activated_by_wallet_id: intent.wallet_id,
@@ -119,12 +133,13 @@ export function propertyColumns(intent: Record<string, unknown>, sequence: numbe
  * building to its state, advance the sequence, append the event, insert the property and
  * its first ownership era, then commit the intent. One transaction.
  */
-export async function activate(db: pg.Pool, input: IntentInput, options: { failAt?: 'property' | 'era' | 'commit'; eraOwner?: Identity; era?: Record<string, unknown>; skip?: 'era' | 'commit' } = {}): Promise<Activation> {
+export async function activate(db: pg.Pool, input: IntentInput, options: { failAt?: 'property' | 'era' | 'commit'; eraOwner?: Identity; era?: Record<string, unknown>; skip?: 'era' | 'commit'; beforeCommit?: (client: pg.PoolClient) => Promise<unknown>; beforeTransactionEnds?: () => Promise<unknown>; issued?: Record<string, unknown>; committedAt?: Date } = {}): Promise<Activation> {
   const client = await db.connect()
   try {
     await client.query('BEGIN')
-    const intent = intentColumns(input)
-    await insertRow(client, 'activation_intents', intent)
+    // `issued`: an intent that was issued earlier, in its own transaction, as the service will do.
+    const intent = options.issued ?? intentColumns(input)
+    if (!options.issued) await insertRow(client, 'activation_intents', intent)
     const city = (await client.query<{ sequence: string; state: GameState }>('SELECT sequence, state FROM city WHERE id = $1 FOR UPDATE', [CITY_ID])).rows[0]
     const sequence = Number(city.sequence) + 1
     const friendId = Number(input.tokenId)
@@ -145,12 +160,14 @@ export async function activate(db: pg.Pool, input: IntentInput, options: { failA
     if (options.failAt === 'era') throw new Error('injected failure before the era')
     const owner = options.eraOwner ?? input.identity
     if (options.skip !== 'era')
-      await insertRow(client, 'ownership_eras', { id: eraId, property_id: propertyId, era_number: 1, owner_address: owner.address, owner_wallet_id: owner.walletId, owner_user_id: owner.userId, started_at: new Date(T0.getTime() + 60_000), start_reason: 'activation', start_block: 79_000_100, ...options.era })
+      await insertRow(client, 'ownership_eras', { id: eraId, property_id: propertyId, era_number: 1, owner_address: owner.address, owner_wallet_id: owner.walletId, owner_user_id: owner.userId, started_at: intent.issued_at, start_reason: 'activation', start_block: 79_000_100, ...options.era })
     if (options.failAt === 'commit') throw new Error('injected failure before the intent is committed')
+    await options.beforeCommit?.(client)
     if (options.skip !== 'commit')
-      await client.query(`UPDATE activation_intents SET status = 'committed', committed_at = $2, signature = $3, property_id = $4 WHERE id = $1`, [intent.id, new Date(T0.getTime() + 60_000), randomBytes(65), propertyId])
+      await client.query(`UPDATE activation_intents SET status = 'committed', committed_at = $2, signature = $3, property_id = $4 WHERE id = $1`, [intent.id, options.committedAt ?? intent.issued_at, randomBytes(65), propertyId])
+    await options.beforeTransactionEnds?.()
     await client.query('COMMIT')
-    return { intentId: intent.id as string, propertyId, eraId, sequence, buildingId: building.id }
+    return { intentId: intent.id as string, propertyId, eraId, sequence, buildingId: building.id, at: intent.issued_at as Date }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined)
     throw err

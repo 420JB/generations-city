@@ -513,7 +513,9 @@ constraint forbids it on a canonical city. The `city` row is guarded by triggers
 The environment stamp those guards rely on is guarded too: once `app_meta` says
 `production` the row cannot be changed or removed, and a database holding a non-canonical
 city cannot be re-stamped `production`. So is the identity that intents and eras name: a
-`wallets` row keeps its address and chain, and a `sessions` row keeps its user and wallet.
+`wallets` row keeps its address and chain, and a `sessions` row keeps its user, wallet,
+credential and lifetime, and once revoked stays revoked (a session can end; it cannot be
+handed on, extended or revived).
 Which user a wallet belongs to is deliberately not frozen (a wallet is not assumed to be
 one person forever), so the "this wallet is this user's" check on an intent or era is true
 at the moment of the write; `city:verify` reports an era whose wallet no longer belongs to
@@ -536,8 +538,9 @@ something a migration can do.
   id, when and at which city sequence it was activated, by whom, through which intent, and
   the chain block at which ownership was verified. Unique per `(chain, collection, token)`,
   per `(city, plot)`, per `(city, building)`, per intent and per sequence. Checks pin the
-  chain to `4663` and the collection to Generations, the token id to `0 ..
-  9007199254740991` (the city state holds a Friend id as a JavaScript number), the family
+  chain to `4663` and the collection to Generations, the token id to a whole number `0 ..
+  9007199254740991` (the city state holds a Friend id as a JavaScript number; the column is
+  an unscaled `numeric`, so `1.5` or `812.0` is refused rather than rounded), the family
   to its district (`0 Skeleton d8 · 1 Mask d6 · 2 Family d4 · 3 Cellular d5 · 4 Asymmetry
   d7 · 5 Hoverer d9 · 6 Colossus d3 · 7 Sparkling d2 · 8 Hollow d1`), `plot_id` to
   `<district>-w<ward>-p<plot>` and `building_id` to `b-<token id>`. Composite foreign keys
@@ -557,11 +560,29 @@ something a migration can do.
 - **`activation_intents`**: what a wallet was asked to sign: a 32-byte id, user, wallet,
   session, owner address, chain, collection, token id, family, city installation, plot,
   origin, the 32-byte EIP-712 digest, issue and expiry times, the block at issue, and a
-  status of `issued`, `committed` or `superseded`. An intent begins as `issued`, for a city
-  that may hold properties, by one user through their own wallet and a session of theirs.
-  At most one `issued` intent per wallet and Friend. `committed` requires a time before
-  the intent expires, a 65-byte signature and the property, and the property must be the
-  one that names this intent. **Signed fields can never change.** The
+  status of `issued`, `committed` or `superseded`. At most one `issued` intent per wallet
+  and Friend.
+  - **Issuing.** An intent begins as `issued`, for a city that may hold properties, by one
+    user through their own wallet, **inside a live session of that user and wallet**: the
+    session is required, must not be revoked, must not have expired, and must contain
+    `issued_at`. `issued_at` must be **now** (within a minute of the database's clock), the
+    intent lives **at most ten minutes**, and never past its session's expiry: the service
+    must clamp the expiry of an intent issued in a session's last ten minutes. Its origin
+    is a bare lowercase origin, and `https://` unless the database is stamped `local`.
+  - **Committing.** `issued -> committed` requires a time inside the intent's lifetime, a
+    65-byte signature and the property that names this intent. It is refused unless the
+    **same session still exists, is still that user's and wallet's, is not revoked and has
+    not expired**, and unless the intent itself has not expired. The session row is locked
+    until the transaction ends, so it cannot be revoked in between.
+  - **Time** in these rules is the database's wall clock at the moment of the write
+    (`clock_timestamp()`), not when the transaction began and not the time a writer claims.
+    The service's and the database's clocks must agree within a minute.
+  - **Nothing is left to a foreign key.** Each rule requires the row it depends on to be
+    there, so a row added later in the same statement cannot dodge it.
+  - **Superseding** needs no session.
+  - **`session_id`** is nullable only so the intent can outlive its session. It becomes
+    `NULL` when the session row is deleted (the foreign key's `ON DELETE SET NULL`), in any
+    status, and only then: detaching a session that still exists is refused. **Signed fields can never change.** The
   only transitions are `issued -> committed` and `issued -> superseded`. The one other
   change allowed is `session_id` becoming `NULL`: that is the `sessions` foreign key
   (`ON DELETE SET NULL`) doing its normal clean-up, so session retention keeps working.
@@ -574,9 +595,10 @@ Not enforced by the database:
 
 - ward capacity and which plots are candidates: the engine's rules, checked by the
   invariants below;
-- that a token id arrives as a whole number: Postgres rounds `1.5` on its way into a
-  `numeric(78,0)`, so the service must refuse anything that is not a canonical decimal
-  before it reaches the database;
+- the spelling of a token id: the database refuses anything that is not a whole number in
+  range (`1.5`, `812.0`, `NaN`), but Postgres reads `'0x10'`, `'1e3'`, `'0812'` and `' 812 '`
+  as the integers they denote. No value is changed, but the service must accept only a
+  canonical decimal string;
 - that every sequence has an event: a sequence can be advanced without one, and
   `city:verify` reports it;
 - outside production, anything: a non-production database is disposable, and one statement
