@@ -1,6 +1,5 @@
 import { memo } from 'react'
 import { getDistrict, type DistrictId } from '../../config/districts'
-import { friendLabel } from '../../config/identity'
 import { MONUMENTS, type MonumentId } from '../../config/monuments'
 import { iso, isoEllipse, leftFace, PLAZA_R, polar, RING_OUTER, rightFace } from './geometry'
 import { IsoBox } from './parts'
@@ -110,7 +109,8 @@ export const CapitalSign = memo(function CapitalSign({
   detail,
 }: {
   capital: DistrictId | null
-  featuredFriend: number | null
+  /** The Capital's leading builder, already named: a real Friend by its id, a demo Friend labelled as one. */
+  featuredFriend: string | null
   detail: 'far' | 'mid' | 'near'
 }) {
   const d = capital ? getDistrict(capital) : null
@@ -130,7 +130,7 @@ export const CapitalSign = memo(function CapitalSign({
         </text>
         {featuredFriend && detail !== 'far' && (
           <text x={0} y={26} textAnchor="middle" fontSize={7.5} fill={glow} letterSpacing={1}>
-            FEATURED BUILDER · {friendLabel(featuredFriend).toUpperCase()}
+            FEATURED BUILDER · {featuredFriend.toUpperCase()}
           </text>
         )}
       </g>

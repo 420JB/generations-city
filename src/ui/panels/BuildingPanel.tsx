@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { getDistrict } from '../../config/districts'
 import { PATRON_LEVELS, QUICK_AMOUNTS, STAGES_PER_TIER } from '../../config/economy'
-import { friendLabel } from '../../config/identity'
+import { buildingFriendLabel } from '../../config/identity'
 import {
   architectLevel,
   buildSplit,
@@ -69,7 +69,7 @@ export function BuildingPanel({ game, viewerId, buildingId, act, onClose, onBack
   const customAmt = Math.floor(Number(custom))
 
   return (
-    <section className="panel building-panel" aria-label={`${friendLabel(b.friendId)} details`} data-testid="building-panel" data-building={b.friendId}>
+    <section className="panel building-panel" aria-label={`${buildingFriendLabel(b)} details`} data-testid="building-panel" data-building={b.friendId}>
       <PanelHeader
         kicker={
           <>
@@ -77,7 +77,7 @@ export function BuildingPanel({ game, viewerId, buildingId, act, onClose, onBack
             {isCrown && <span className="crown-tag">♔ CITY CROWN</span>}
           </>
         }
-        title={friendLabel(b.friendId)}
+        title={buildingFriendLabel(b)}
         onClose={onClose}
         onBack={onBack}
       />

@@ -203,6 +203,18 @@ describe('local transport parity with the direct engine', () => {
 })
 
 describe('local transport reads', () => {
+  it('a refresh has nowhere else to read from: it resolves and changes nothing', async () => {
+    const mem = memoryStorage()
+    const transport = createLocalTransport(mem.storage)
+    let notified = 0
+    transport.subscribe(() => notified++)
+    const before = transport.getSnapshot()
+    const writes = mem.writes.length
+    await transport.refresh()
+    expect(transport.getSnapshot()).toBe(before)
+    expect([notified, mem.writes.length]).toEqual([0, writes])
+  })
+
   it('previewing or cancelling a placement never touches the city', () => {
     const mem = memoryStorage()
     const transport = createLocalTransport(mem.storage)

@@ -4,7 +4,7 @@ import { CAPITAL_WEIGHTS, MAX_TIER } from '../../config/economy'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
 import { districtGrowth, wardName } from '../../game/allocation'
 import { seasonSignals } from '../../game/season'
-import { friendLabel } from '../../config/identity'
+import { buildingFriendLabel } from '../../config/identity'
 import { MONUMENTS } from '../../config/monuments'
 import { districtStandings } from '../../game/competition'
 import { formatRF, heightMeters, totalBuilt } from '../../game/economy'
@@ -160,7 +160,7 @@ export function StandingsPanel({
           <li key={b.id} className={game.crown.holder === b.id ? 'is-crown' : ''}>
             <span className="rank">{game.crown.holder === b.id ? '♔' : i + 1}</span>
             <span className="grow">
-              {friendLabel(b.friendId)} <span className="muted small">· {handleOf(game, b.ownerId)} · {getDistrict(b.districtId).name}</span>
+              {buildingFriendLabel(b)} <span className="muted small">· {handleOf(game, b.ownerId)} · {getDistrict(b.districtId).name}</span>
             </span>
             <span className="small">
               <b>{heightMeters(totalBuilt(b))} m</b> <span className="muted">({formatRF(totalBuilt(b))})</span>

@@ -53,4 +53,6 @@ export interface CityTransport {
   getSnapshot(): CitySnapshot
   subscribe(listener: () => void): () => void
   send(command: ClientCommand): void
+  /** Read the city from its authority now. Resolves when the snapshot reflects the outcome. Never changes the city. */
+  refresh(): Promise<void>
 }

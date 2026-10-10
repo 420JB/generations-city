@@ -18,8 +18,6 @@ export interface ServerTransportOptions {
 }
 
 export interface ServerTransport extends CityTransport {
-  /** Read the city now. Resolves when the snapshot reflects the outcome. */
-  refresh(): Promise<void>
   stop(): void
 }
 

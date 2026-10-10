@@ -74,6 +74,8 @@ export interface IdentityStore {
   signIn(): Promise<void>
   signOut(): Promise<void>
   loadFriends(): Promise<void>
+  /** The wallet in use, for a caller that needs it to sign. null = none chosen. It is a way to sign, never an identity. */
+  provider(): Eip1193Provider | null
   dismissError(): void
   stop(): void
 }
@@ -353,6 +355,7 @@ export function createIdentityStore(options: IdentityStoreOptions): IdentityStor
     signIn,
     signOut,
     loadFriends,
+    provider: () => active?.option.provider ?? null,
     dismissError: () => set({ error: null }),
     stop() {
       unsubscribeWallets()

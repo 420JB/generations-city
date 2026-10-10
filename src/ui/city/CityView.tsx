@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
+import { buildingFriendLabel } from '../../config/identity'
 import { MONUMENTS } from '../../config/monuments'
 import { WORLD } from '../../config/world'
 import { tierFor, totalBuilt } from '../../game/economy'
@@ -550,7 +551,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
     const best = Object.values(game.buildings)
       .filter((b) => b.districtId === game.capital.holder)
       .sort((a, b) => totalBuilt(b) - totalBuilt(a))[0]
-    return best?.friendId ?? null
+    return best ? buildingFriendLabel(best) : null
   }, [game.buildings, game.capital.holder])
 
   const occupied = useMemo(() => {

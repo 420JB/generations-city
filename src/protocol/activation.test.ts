@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseFriendsResponse } from './identity'
-import { ACTIVATION_DOMAIN_NAME, ACTIVATION_DOMAIN_VERSION, ACTIVATION_INTENTS_ENDPOINT, ACTIVATION_PRIMARY_TYPE, ACTIVATION_STATEMENT, ACTIVATION_TYPES, ACTIVATIONS_ENDPOINT, MAX_ACTIVATION_TOKEN_ID, parseCanonicalTokenId, parsePlotId } from './activation'
+import { ACTIVATION_DOMAIN_NAME, ACTIVATION_DOMAIN_VERSION, ACTIVATION_INTENTS_ENDPOINT, ACTIVATION_PRIMARY_TYPE, ACTIVATION_STATEMENT, ACTIVATION_TYPES, ACTIVATIONS_ENDPOINT, MAX_ACTIVATION_TOKEN_ID, parseActivationCommitResponse, parseActivationIntentResponse, parseCanonicalTokenId, parsePlotId } from './activation'
 
 describe('canonical token id', () => {
   it('accepts zero and decimals with no leading zero, up to 2^53 - 1', () => {
@@ -93,13 +93,78 @@ describe('the frozen V1 PropertyActivation format', () => {
   })
 })
 
-describe('My Friends with the optional property annotation', () => {
+describe('My Friends with the property annotation', () => {
   const wallet = { address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', chainId: 4663 }
   const property = { id: '29d2ac0a-1754-8500-acdd-802ba2c51575', buildingId: 'b-812', districtId: 'd4', ward: 0, plot: 7, plotId: 'd4-w0-p7', activatedAt: '2026-10-03T12:00:00.000Z' }
+  const body = (friends: unknown[]) => ({ wallet, source: 'robinhood-chain', asOfBlock: '79000000', friends })
+  const family = { id: 2, name: 'Family' }
 
-  it('is still read by the client that does not know the annotation yet', () => {
-    const body = { wallet, source: 'robinhood-chain', asOfBlock: '79000000', friends: [{ tokenId: '812', family: { id: 2, name: 'Family' }, property }, { tokenId: '1204', family: { id: 0, name: 'Skeleton' }, property: null }] }
-    // Exactly what it returned before the annotation existed: the extra key changes nothing.
-    expect(parseFriendsResponse(body)).toEqual({ wallet, source: 'robinhood-chain', asOfBlock: '79000000', friends: [{ tokenId: '812', family: { id: 2, name: 'Family' } }, { tokenId: '1204', family: { id: 0, name: 'Skeleton' } }] })
+  it('keeps all three answers apart: a property, none, and could-not-tell', () => {
+    const parsed = parseFriendsResponse(body([{ tokenId: '812', family, property }, { tokenId: '1204', family: { id: 0, name: 'Skeleton' }, property: null }, { tokenId: '4471', family: { id: 7, name: 'Sparkling' } }]))
+    expect(parsed?.friends).toEqual([{ tokenId: '812', family, property }, { tokenId: '1204', family: { id: 0, name: 'Skeleton' }, property: null }, { tokenId: '4471', family: { id: 7, name: 'Sparkling' } }])
+    // Absent stays absent: "the server could not tell" is never turned into "has none".
+    expect(Object.hasOwn(parsed!.friends[2], 'property')).toBe(false)
+  })
+
+  it('keeps only the contract of a property', () => {
+    expect(parseFriendsResponse(body([{ tokenId: '812', family, property: { ...property, ownerId: 'u', secret: 1 } }]))?.friends[0].property).toEqual(property)
+  })
+
+  it('reads the rehearsed Friend as already activated', () => {
+    const rehearsed = { id: '5f29bf55-6d76-8365-9581-0327fbc0fa22', buildingId: 'b-345260', districtId: 'd8', ward: 0, plot: 0, plotId: 'd8-w0-p0', activatedAt: '2026-10-05T12:00:00.000Z' }
+    expect(parseFriendsResponse(body([{ tokenId: '345260', family: { id: 0, name: 'Skeleton' }, property: rehearsed }]))?.friends[0].property).toEqual(rehearsed)
+  })
+
+  it('refuses a property that does not hang together, rather than showing part of one', () => {
+    const bad: unknown[] = ['d4-w0-p7', 7, [], {}, { ...property, id: '' }, { ...property, buildingId: null }, { ...property, activatedAt: 'recently' }]
+    // The plot id must be canonical and must say what the separate fields say.
+    for (const patch of [{ plotId: 'd4-w0-p8' }, { plotId: 'd4-w00-p7' }, { plotId: 'D4-W0-P7' }, { ward: 1 }, { plot: 6 }, { districtId: 'd5' }, { ward: '0' }]) bad.push({ ...property, ...patch })
+    // Family geography is permanent: a Family Friend's property is in Family's district or it is not a property.
+    bad.push({ ...property, districtId: 'd8', plotId: 'd8-w0-p7' })
+    for (const value of bad) expect(parseFriendsResponse(body([{ tokenId: '812', family, property: value }])), JSON.stringify(value)).toBeNull()
+  })
+})
+
+describe('reading an intent', () => {
+  const typedData = () => ({
+    domain: { name: ACTIVATION_DOMAIN_NAME, version: ACTIVATION_DOMAIN_VERSION, chainId: 4663 },
+    types: ACTIVATION_TYPES,
+    primaryType: ACTIVATION_PRIMARY_TYPE,
+    message: { intentId: `0x${'a'.repeat(64)}`, site: 'https://rarecity.example', statement: ACTIVATION_STATEMENT, wallet: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', collection: '0x14C49e6118F46525dE9ab41a51cBAA3c6EBF181D', tokenId: '812', familyId: 2, familyName: 'Family', cityId: 'main', cityInstance: 'inst-1', districtId: 'd4', ward: 0, plot: 7, plotId: 'd4-w0-p7', issuedAt: '1791547200000', expiresAt: '1791547800000' },
+  })
+  const intent = () => ({ intentId: 'a'.repeat(64), expiresAt: '2026-10-09T12:10:00.000Z', typedData: typedData(), digest: `0x${'b'.repeat(64)}` })
+
+  it('hands back the very typed data object it was given, untouched', () => {
+    const body = intent()
+    const frozen = JSON.stringify(body.typedData)
+    const parsed = parseActivationIntentResponse(body)
+    expect(parsed).toEqual(intent())
+    // The same object, not a copy: what the wallet signs is what the server sent.
+    expect(parsed!.typedData).toBe(body.typedData)
+    expect(JSON.stringify(parsed!.typedData)).toBe(frozen)
+  })
+
+  it('refuses anything that is not an intent', () => {
+    const bad: unknown[] = [null, [], 'intent', {}, { ...intent(), intentId: 'A'.repeat(64) }, { ...intent(), intentId: 'a'.repeat(63) }, { ...intent(), expiresAt: 'soon' }, { ...intent(), digest: 'b'.repeat(64) }, { ...intent(), typedData: null }, { ...intent(), typedData: JSON.stringify(typedData()) }]
+    bad.push({ ...intent(), typedData: { ...typedData(), primaryType: 'Permit' } })
+    bad.push({ ...intent(), typedData: { ...typedData(), domain: { name: 'Rare City', version: '1', chainId: '4663' } } })
+    bad.push({ ...intent(), typedData: { ...typedData(), types: [] } })
+    for (const patch of [{ tokenId: 812 }, { ward: '0' }, { plot: -1 }, { familyId: 1.5 }, { plotId: undefined }, { expiresAt: 1791547800000 }, { wallet: null }]) bad.push({ ...intent(), typedData: { ...typedData(), message: { ...typedData().message, ...patch } } })
+    for (const value of bad) expect(parseActivationIntentResponse(value), JSON.stringify(value)).toBeNull()
+  })
+})
+
+describe('reading a commit', () => {
+  const committed = () => ({ status: 'committed', property: { id: '5f29bf55-6d76-8365-9581-0327fbc0fa22', tokenId: '345260', buildingId: 'b-345260', districtId: 'd8', ward: 0, plot: 0, plotId: 'd8-w0-p0', activatedAt: '2026-10-05T12:00:00.000Z', sequence: 2 }, city: { id: 'main', instance: 'd8fae2d7' } })
+
+  it('accepts a committed property and keeps only the contract', () => {
+    expect(parseActivationCommitResponse(committed())).toEqual(committed())
+    expect(parseActivationCommitResponse({ ...committed(), debug: 'x', property: { ...committed().property, ownerId: 'u' } })).toEqual(committed())
+  })
+
+  it('refuses anything that is not a committed property', () => {
+    const bad: unknown[] = [null, {}, 'committed', { ...committed(), status: 'pending' }, { ...committed(), city: null }, { ...committed(), city: { id: 'main' } }, { ...committed(), property: null }]
+    for (const patch of [{ tokenId: 345260 }, { tokenId: '0345260' }, { buildingId: '' }, { plotId: 'd8-w0-p1' }, { districtId: 'd7' }, { ward: 1 }, { sequence: '2' }, { sequence: -1 }, { activatedAt: null }, { id: undefined }]) bad.push({ ...committed(), property: { ...committed().property, ...patch } })
+    for (const value of bad) expect(parseActivationCommitResponse(value), JSON.stringify(value)).toBeNull()
   })
 })

@@ -1,6 +1,6 @@
 import { getBadge } from '../config/badges'
 import { getDistrict } from '../config/districts'
-import { friendLabel } from '../config/identity'
+import { buildingFriendLabel } from '../config/identity'
 import { getMonument } from '../config/monuments'
 import { badgeLabel, districtName, districtTitle } from '../game/narration'
 import { wardName } from '../game/allocation'
@@ -38,10 +38,10 @@ export function announcementsFor(game: GameState, events: GameEvent[], seq: numb
       banners.push({ key, kind: 'capital', title: 'NEW CAPITAL', body: `The ${districtTitle(e.to)} takes City Hall from ${districtName(e.from)}`, color: e.to ? getDistrict(e.to).color : '#999' })
     } else if (e.type === 'crown-transfer') {
       const b = e.to ? game.buildings[e.to] : null
-      banners.push({ key, kind: 'crown', title: 'CITY CROWN TRANSFERRED', body: b ? `${friendLabel(b.friendId)} is now the tallest building` : 'Crown vacant', color: '#ffd45a' })
+      banners.push({ key, kind: 'crown', title: 'CITY CROWN TRANSFERRED', body: b ? `${buildingFriendLabel(b)} is now the tallest building` : 'Crown vacant', color: '#ffd45a' })
     } else if (e.type === 'tier-up' && e.byUserId === viewerId) {
       const b = game.buildings[e.buildingId]
-      banners.push({ key, kind: 'tier', title: `TIER ${e.toTier} REACHED`, body: `${friendLabel(b.friendId)} · ${districtName(b.districtId)}`, color: getDistrict(b.districtId).color })
+      banners.push({ key, kind: 'tier', title: `TIER ${e.toTier} REACHED`, body: `${buildingFriendLabel(b)} · ${districtName(b.districtId)}`, color: getDistrict(b.districtId).color })
     } else if (e.type === 'ward-opened' && e.simulatedResidents) {
       const n = e.simulatedResidents
       banners.push({ key, kind: 'growth', title: `${districtTitle(e.districtId).toUpperCase()} EXPANDS`, body: `${wardName(e.ward)} opened · ${n} simulated Friend${n === 1 ? '' : 's'} activated (demo)`, color: getDistrict(e.districtId).color })

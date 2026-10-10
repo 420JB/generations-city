@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
-import { friendLabel } from '../../config/identity'
+import { buildingFriendLabel } from '../../config/identity'
 import { getMonument } from '../../config/monuments'
 import { buildBoard, cityHotlist, type Opportunity } from '../../game/buildBoard'
 import { formatRF } from '../../game/economy'
@@ -23,7 +23,7 @@ function OppCard({ game, o, tag, onWarp, testId }: { game: GameState; o: Opportu
     <li className={`opp-card${o.score >= 100 ? ' hot' : ''}`} style={{ ['--dc' as string]: d.color }} data-testid={testId} data-building={b.friendId}>
       <div className="opp-main">
         <div className="opp-tag">{tag}</div>
-        <div className="opp-title">{friendLabel(b.friendId)}</div>
+        <div className="opp-title">{buildingFriendLabel(b)}</div>
         <div className="opp-need">
           <b>{formatRF(o.rfNeeded)} RF</b> until Tier {o.nextTier}
         </div>
@@ -33,7 +33,7 @@ function OppCard({ game, o, tag, onWarp, testId }: { game: GameState; o: Opportu
           </div>
         ))}
       </div>
-      <button type="button" className="warp-btn" onClick={() => onWarp(o.buildingId)} aria-label={`Warp to ${friendLabel(b.friendId)}`} data-testid={testId ? `${testId}-warp` : undefined}>
+      <button type="button" className="warp-btn" onClick={() => onWarp(o.buildingId)} aria-label={`Warp to ${buildingFriendLabel(b)}`} data-testid={testId ? `${testId}-warp` : undefined}>
         WARP
       </button>
     </li>
@@ -137,7 +137,7 @@ export function BuildBoardPanel({ game, districtId, onDistrict, onWarp, onClose 
                   </div>
                   {m.candidate && m.status !== 'held' && (
                     <div className="small muted">
-                      Best candidate {friendLabel(game.buildings[m.candidate.buildingId].friendId)} · {formatRF(m.candidate.rfNeeded)} RF to T{def.tier}
+                      Best candidate {buildingFriendLabel(game.buildings[m.candidate.buildingId])} · {formatRF(m.candidate.rfNeeded)} RF to T{def.tier}
                     </div>
                   )}
                 </div>
@@ -168,7 +168,7 @@ export function BuildBoardPanel({ game, districtId, onDistrict, onWarp, onClose 
             {cap.candidates.map((c) => (
               <li key={c.buildingId}>
                 <span className="grow">
-                  {friendLabel(game.buildings[c.buildingId].friendId)} · {formatRF(c.rfNeeded)} RF → <b>+{c.points} pts</b>
+                  {buildingFriendLabel(game.buildings[c.buildingId])} · {formatRF(c.rfNeeded)} RF → <b>+{c.points} pts</b>
                 </span>
                 <button type="button" className="warp-btn sm" onClick={() => onWarp(c.buildingId)}>
                   WARP

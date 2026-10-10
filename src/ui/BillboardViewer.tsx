@@ -1,4 +1,4 @@
-import { friendLabel } from '../config/identity'
+import { buildingFriendLabel } from '../config/identity'
 import { getDistrict } from '../config/districts'
 import { handleOf } from '../game/narration'
 import type { GameState } from '../game/types'
@@ -21,8 +21,8 @@ export function BillboardViewer({ game, buildingId, onClose }: { game: GameState
             ✕
           </button>
         </div>
-        <img className="media-viewer-image" src={b.billboard.image} alt={`Billboard on ${friendLabel(b.friendId)}`} draggable={false} />
-        <h2 id="media-viewer-title">{friendLabel(b.friendId)}</h2>
+        <img className="media-viewer-image" src={b.billboard.image} alt={`Billboard on ${buildingFriendLabel(b)}`} draggable={false} />
+        <h2 id="media-viewer-title">{buildingFriendLabel(b)}</h2>
         <div className="media-viewer-meta">
           <span>
             Owner <b data-testid="billboard-viewer-owner">{handleOf(game, b.ownerId)}</b>

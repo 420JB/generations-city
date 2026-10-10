@@ -1,3 +1,4 @@
+import { plotLabel } from '../../activation'
 import { RARE_FRIENDS_CHAIN } from '../../config/rareFriends'
 import { hasAccountMismatch, shortAddress } from '../../identity'
 import { PanelHeader } from '../common'
@@ -5,22 +6,35 @@ import type { Identity } from '../identity'
 
 const BUSY_LABEL = { connecting: 'Check your wallet…', switching: 'Check your wallet…', signing: 'Check your wallet…', 'signing-out': 'Signing out…' } as const
 
+export interface FriendActions {
+  /** Whether the city on screen could take an activation at all. false hides "Activate". */
+  available: boolean
+  /** The server has said activation is switched off. */
+  gateClosed: boolean
+  /** Begin choosing a plot for a Friend that has no property. Sends nothing by itself. */
+  onActivate: (tokenId: string) => void
+  onViewProperty: (buildingId: string) => void
+}
+
 /**
  * Wallet sign-in and "My Friends".
  *
- * Read-only by design: it shows who the server says is signed in and which Rare Friends
- * the server found that wallet to own. It offers nothing that spends, builds or activates.
+ * It shows who the server says is signed in and which Rare Friends the server found that
+ * wallet to own, each with the property the server says it has. A Friend with a property
+ * leads to that property; a Friend the server says has none can be activated, where the
+ * city takes activations. Nothing here spends or builds.
  */
-export function AccountPanel({ identity, onClose }: { identity: Identity; onClose: () => void }) {
+export function AccountPanel({ identity, onClose, actions = null }: { identity: Identity; onClose: () => void; actions?: FriendActions | null }) {
   const { snapshot, store } = identity
   const { viewer, wallet, friends, busy, error } = snapshot
   const signedIn = viewer.status === 'authenticated'
   const mismatch = hasAccountMismatch(snapshot)
   const onChain = wallet.chainId === RARE_FRIENDS_CHAIN.chainId
+  const canActivate = !!actions?.available
 
   return (
     <section className="panel" aria-label="Wallet and Friends" data-testid="account-panel" data-viewer={viewer.status}>
-      <PanelHeader kicker={signedIn ? 'SIGNED IN · READ-ONLY' : 'WALLET SIGN-IN'} title={signedIn ? shortAddress(viewer.address) : 'Connect Wallet'} onClose={onClose} />
+      <PanelHeader kicker={signedIn ? (canActivate ? 'SIGNED IN' : 'SIGNED IN · READ-ONLY') : 'WALLET SIGN-IN'} title={signedIn ? shortAddress(viewer.address) : 'Connect Wallet'} onClose={onClose} />
 
       <div className="fund-box" data-testid="session-box">
         {signedIn ? (
@@ -52,7 +66,7 @@ export function AccountPanel({ identity, onClose }: { identity: Identity; onClos
           <>
             <h3>Browsing as a visitor</h3>
             <p className="muted small" style={{ marginBottom: 0 }}>
-              Sign in with a wallet to see the Rare Friends it owns. Signing in is a free signature, not a transaction. The city stays read-only.
+              Sign in with a wallet to see the Rare Friends it owns. Signing in is a free signature, not a transaction.{canActivate ? '' : ' The city stays read-only.'}
             </p>
           </>
         )}
@@ -125,9 +139,26 @@ export function AccountPanel({ identity, onClose }: { identity: Identity; onClos
               ) : (
                 <ul className="season-friends" data-testid="friends-list">
                   {friends.data.friends.map((friend) => (
-                    <li key={friend.tokenId} data-testid="owned-friend" data-token={friend.tokenId} data-family={friend.family.id}>
+                    <li key={friend.tokenId} data-testid="owned-friend" data-token={friend.tokenId} data-family={friend.family.id} data-property={friend.property ? friend.property.plotId : friend.property === null ? 'none' : 'unknown'}>
                       <span className="grow strong">Friend #{friend.tokenId}</span>
                       <span className="rep-tag">{friend.family.name}</span>
+                      {friend.property ? (
+                        // This Friend already has its one property: the way on is to it, never to another activation.
+                        <>
+                          <span className="muted friend-plot" data-testid="friend-property">
+                            {plotLabel(friend.property)}
+                          </span>
+                          {actions && (
+                            <button type="button" className="warp-btn sm" onClick={() => actions.onViewProperty(friend.property!.buildingId)} aria-label={`View the property of Friend #${friend.tokenId}`} data-testid="friend-view-property">
+                              VIEW
+                            </button>
+                          )}
+                        </>
+                      ) : friend.property === null && actions && canActivate ? (
+                        <button type="button" className="btn sm primary" onClick={() => actions.onActivate(friend.tokenId)} aria-label={`Activate Friend #${friend.tokenId}`} data-testid="friend-activate">
+                          Activate
+                        </button>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -154,9 +185,19 @@ export function AccountPanel({ identity, onClose }: { identity: Identity; onClos
               Reading your Friends…
             </p>
           )}
-          <p className="muted small" style={{ marginBottom: 0 }}>
-            Owning a Friend does not change the city yet: properties cannot be activated here.
-          </p>
+          {!canActivate ? (
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              Owning a Friend does not change the city yet: properties cannot be activated here.
+            </p>
+          ) : actions?.gateClosed ? (
+            <p className="small" role="status" style={{ marginBottom: 0 }} data-testid="activation-closed">
+              Activation is not open in this city yet.
+            </p>
+          ) : (
+            <p className="muted small" style={{ marginBottom: 0 }} data-testid="activation-help">
+              Activating a Friend gives it one permanent Rare City property in its family&apos;s district, on a plot you choose. It takes a signature only: no transaction and no gas.
+            </p>
+          )}
         </div>
       )}
     </section>

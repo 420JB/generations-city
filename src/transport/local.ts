@@ -59,5 +59,7 @@ export function createLocalTransport(storage: LocalStorageLike | null, viewer: L
       saveState(storage, r.state)
       publish({ ...snapshot, seq, game: r.state, last: { seq, events: r.events, action: command.type }, error: null })
     },
+    // The city lives here: there is nothing to read from anywhere else.
+    refresh: () => Promise.resolve(),
   }
 }

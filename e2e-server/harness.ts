@@ -9,11 +9,14 @@ export const E2E_STATE_FILE = 'test-artifacts/e2e-server.json'
 export interface E2EState {
   databaseUrl: string
   schema: string
+  /** The throwaway schema of the server that has activation switched on. */
+  activationDatabaseUrl: string
 }
 
-export async function withDatabase<T>(work: (db: pg.Client) => Promise<T>): Promise<T> {
+/** Run `work` against a test server's database: the demo-fixture city's, or the activation-enabled city's. */
+export async function withDatabase<T>(work: (db: pg.Client) => Promise<T>, which: 'fixture' | 'activation' = 'fixture'): Promise<T> {
   const state = JSON.parse(readFileSync(E2E_STATE_FILE, 'utf8')) as E2EState
-  const db = new pg.Client({ connectionString: state.databaseUrl })
+  const db = new pg.Client({ connectionString: which === 'activation' ? state.activationDatabaseUrl : state.databaseUrl })
   await db.connect()
   try {
     return await work(db)

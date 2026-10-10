@@ -2,8 +2,8 @@ import { DISTRICT_IDS, type DistrictId } from '../config/districts'
 
 /**
  * Wire contract for permanent Friend activation: turning a Rare Friend the signed-in wallet
- * owns into a permanent Rare City property on one exact plot. Used by the server and, later,
- * the client. Portable: no browser or Node dependency.
+ * owns into a permanent Rare City property on one exact plot. Used by the server and the
+ * client. Portable: no browser or Node dependency.
  *
  * Two requests, both `POST`:
  *
@@ -209,4 +209,43 @@ export function parsePlotId(input: unknown): ParsedPlot | null {
   const match = PLOT_ID.exec(input)
   if (!match || !(DISTRICT_IDS as readonly string[]).includes(match[1])) return null
   return { districtId: match[1] as DistrictId, ward: Number(match[2]), plot: Number(match[3]), plotId: input }
+}
+
+const INTENT_ID = /^[0-9a-f]{64}$/
+const HASH = /^0x[0-9a-fA-F]{64}$/
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+const isIndex = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const isInstant = (value: unknown): value is string => typeof value === 'string' && !Number.isNaN(Date.parse(value))
+
+/**
+ * Validate an intent body that arrived as untyped JSON. null = not the contract.
+ *
+ * `typedData` is checked for shape and then handed back AS THE SAME OBJECT, never rebuilt:
+ * what the wallet is asked to sign is exactly what the server sent.
+ */
+export function parseActivationIntentResponse(value: unknown): ActivationIntentResponse | null {
+  if (!isObject(value)) return null
+  const { intentId, expiresAt, typedData, digest } = value
+  if (typeof intentId !== 'string' || !INTENT_ID.test(intentId) || !isInstant(expiresAt) || typeof digest !== 'string' || !HASH.test(digest)) return null
+  if (!isObject(typedData) || !isObject(typedData.domain) || !isObject(typedData.types) || !isObject(typedData.message) || typedData.primaryType !== ACTIVATION_PRIMARY_TYPE) return null
+  const { domain, message } = typedData
+  if (typeof domain.name !== 'string' || typeof domain.version !== 'string' || !isIndex(domain.chainId)) return null
+  for (const key of ['intentId', 'site', 'statement', 'wallet', 'collection', 'tokenId', 'familyName', 'cityId', 'cityInstance', 'districtId', 'plotId', 'issuedAt', 'expiresAt']) if (typeof message[key] !== 'string') return null
+  for (const key of ['familyId', 'ward', 'plot']) if (!isIndex(message[key])) return null
+  return { intentId, expiresAt, typedData: typedData as unknown as ActivationTypedData, digest }
+}
+
+/** Validate a commit body that arrived as untyped JSON. null = not the contract. */
+export function parseActivationCommitResponse(value: unknown): ActivationCommitResponse | null {
+  if (!isObject(value) || value.status !== 'committed' || !isObject(value.property) || !isObject(value.city)) return null
+  const p = value.property
+  const plot = parsePlotId(p.plotId)
+  if (!plot || plot.districtId !== p.districtId || plot.ward !== p.ward || plot.plot !== p.plot) return null
+  if (typeof p.id !== 'string' || !p.id || typeof p.buildingId !== 'string' || !p.buildingId || parseCanonicalTokenId(p.tokenId) === null || !isInstant(p.activatedAt) || !isIndex(p.sequence)) return null
+  if (typeof value.city.id !== 'string' || typeof value.city.instance !== 'string') return null
+  return {
+    status: 'committed',
+    property: { id: p.id, tokenId: p.tokenId as string, buildingId: p.buildingId, districtId: plot.districtId, ward: plot.ward, plot: plot.plot, plotId: plot.plotId, activatedAt: p.activatedAt, sequence: p.sequence },
+    city: { id: value.city.id, instance: value.city.instance },
+  }
 }

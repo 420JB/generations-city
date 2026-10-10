@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { DistrictId } from '../config/districts'
+import { cityAcceptsActivation, plotLabel, type ActivationResult } from '../activation'
+import { getDistrict, type DistrictId } from '../config/districts'
 import { buildingIdFor, SCENARIO } from '../game/seed'
 import { announcementsFor } from './announce'
 import { Announcements } from './Announcements'
 import { BillboardViewer } from './BillboardViewer'
+import { ActivationSurface } from './ActivationSurface'
+import { useActivation } from './activation'
 import { PlacementBar } from './PlacementBar'
 import { availablePlots, wardName, type PlotCandidate } from '../game/allocation'
 import { plotWorld, type WorldPoint } from '../game/world'
@@ -71,6 +74,14 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
   const isDemo = store.viewer.source === 'demo'
   // WHO IS SIGNED IN (server-backed city only). A session is not a city actor: `viewerId` stays as it is.
   const identity = useIdentity()
+  // ACTIVATING A FRIEND (server-backed city only). The flow owns its own state; this component only shows it.
+  const activation = useActivation()
+  const activationFlow = activation?.flow ?? null
+  const activating = activation && activation.snapshot.phase !== 'idle' ? activation.snapshot : null
+  /** Going somewhere else on the map ends plot choice. Past plot choice the flow has its own buttons, and is left alone. */
+  const leavePlotChoice = useCallback(() => {
+    if (activationFlow?.getSnapshot().phase === 'choosing') activationFlow.cancel()
+  }, [activationFlow])
   const playerBuilding = useMemo(
     () => (viewerId ? (Object.values(game.buildings).find((b) => b.ownerId === viewerId) ?? null) : null),
     [game.buildings, viewerId],
@@ -102,6 +113,28 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
   }, [notice])
   const [boardOpened, setBoardOpened] = useState(false)
   const [warpedKing, setWarpedKing] = useState(false)
+  // A Friend that has just become a property (or turned out to have one): shown once the flow has left.
+  const [arrived, setArrived] = useState<ActivationResult | null>(null)
+  useEffect(() => {
+    if (!activationFlow) return
+    let seen = activationFlow.getSnapshot().result?.seq ?? 0
+    return activationFlow.subscribe(() => {
+      const result = activationFlow.getSnapshot().result
+      if (!result || result.seq === seen) return
+      seen = result.seq
+      // Go to the property the server reported, not to a guess at where it would be.
+      setSelectedId(result.buildingId)
+      setBackTo(null)
+      setPanel('building')
+      setFocus((f) => ({ buildingId: result.buildingId, seq: (f?.seq ?? 0) + 1 }))
+      setArrived(result)
+    })
+  }, [activationFlow])
+  useEffect(() => {
+    if (!arrived) return
+    const t = window.setTimeout(() => setArrived(null), 9000)
+    return () => window.clearTimeout(t)
+  }, [arrived])
   const [billboardDraft, setBillboardDraft] = useState<{ buildingId: string; image: string | null } | null>(null)
   const onBillboardDraft = useCallback(
     (image: string | null) => setBillboardDraft(image && selectedId ? { buildingId: selectedId, image } : null),
@@ -158,7 +191,12 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (mediaView) setMediaView(null)
-      else if (placement) cancelPlacement()
+      else if (activating) {
+        // Escape steps back one layer and sends nothing: the review closes to the map, the map closes the flow.
+        // While the wallet or the server is being waited on it does nothing; those have their own buttons.
+        if (activating.phase === 'review') activationFlow?.back()
+        else if (activating.phase === 'choosing' || activating.phase === 'stopped') activationFlow?.cancel()
+      } else if (placement) cancelPlacement()
       else if (confirmReset) setConfirmReset(false)
       else if (panel) {
         setPanel(null)
@@ -169,25 +207,30 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirmReset, panel, mediaView, placement])
+  }, [confirmReset, panel, mediaView, placement, activating, activationFlow])
 
-  const openPanel = useCallback((p: PanelKind) => {
-    setPlacement(null)
-    if (p === 'board') setBoardOpened(true)
-    setPanel((cur) => (cur === p ? null : p))
-    setBackTo(null)
-  }, [])
+  const openPanel = useCallback(
+    (p: PanelKind) => {
+      setPlacement(null)
+      leavePlotChoice()
+      if (p === 'board') setBoardOpened(true)
+      setPanel((cur) => (cur === p ? null : p))
+      setBackTo(null)
+    },
+    [leavePlotChoice],
+  )
 
   const warp = useCallback(
     (buildingId: string) => {
       if (buildingId === buildingIdFor(SCENARIO.kingmakerFriend)) setWarpedKing(true)
       setPlacement(null)
+      leavePlotChoice()
       setSelectedId(buildingId)
       setBackTo(panel && panel !== 'building' && panel !== 'architect' ? panel : backTo)
       setPanel('building')
       setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
     },
-    [panel, backTo],
+    [panel, backTo, leavePlotChoice],
   )
 
   const select = useCallback(
@@ -206,10 +249,31 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
   const search = (friendId: number) => {
     const b = findBuildingByFriend(game, friendId)
     if (b) warp(b.id)
-    else showNotice(`Demo Friend #${friendId} hasn't joined Rare City yet.`)
+    else showNotice(isDemo ? `Demo Friend #${friendId} hasn't joined Rare City yet.` : `Friend #${friendId} has no property in Rare City yet.`)
   }
 
   const candidates = useMemo(() => (placement ? availablePlots(game, placement.districtId) : []), [game, placement])
+  // The plots on offer to the Friend being activated: the same list the demo's placement uses, from the city on screen.
+  const activationDistrict = activating?.districtId ?? null
+  const activationSites = useMemo(() => (activationDistrict ? availablePlots(game, activationDistrict) : []), [game, activationDistrict])
+
+  /** "Activate" on an owned Friend: enter plot choice for its family's district. Asks the server for nothing. */
+  const startActivation = (tokenId: string) => {
+    if (!activationFlow?.start(tokenId)) return showNotice(`Friend #${tokenId} cannot be activated right now.`)
+    const districtId = activationFlow.getSnapshot().districtId
+    // The last activation's announcement belongs to the last activation.
+    setArrived(null)
+    setPlacement(null)
+    setPanel(null)
+    setBackTo(null)
+    setSelectedId(null)
+    if (districtId) setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: availablePlots(game, districtId).map((c) => plotWorld(c.districtId, c.ward, c.plot)) }))
+  }
+
+  const viewProperty = (buildingId: string) => {
+    if (game.buildings[buildingId]) warp(buildingId)
+    else showNotice('That property is not on the map yet. It will appear shortly.')
+  }
 
   /** "+ Add Friend": enter placement mode for a family district and frame its sites. */
   const startPlacement = (districtId: DistrictId) => {
@@ -330,7 +394,11 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
     ) : panel === 'architect' && viewerId && selectedId && game.buildings[selectedId] ? (
       <ArchitectPanel game={game} viewerId={viewerId} buildingId={selectedId} act={act} onClose={() => select(null)} onBack={() => setPanel('building')} onBillboardDraft={onBillboardDraft} />
     ) : panel === 'account' && identity ? (
-      <AccountPanel identity={identity} onClose={closePanel} />
+      <AccountPanel
+        identity={identity}
+        onClose={closePanel}
+        actions={activation ? { available: cityAcceptsActivation(game), gateClosed: activation.snapshot.gateClosed, onActivate: startActivation, onViewProperty: viewProperty } : null}
+      />
     ) : null
 
   const revealing =
@@ -340,7 +408,7 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
     !!last?.events.some((e) => e.type === 'build' && e.buildingId === selectedId)
 
   return (
-    <div className={`app${placement ? ' has-placement' : ''}${drawer ? ' has-drawer' : ''}${showGuide ? ' has-intro' : isDemo && !progress.primaryComplete ? ' has-reminder' : ''}`}>
+    <div className={`app${placement || activating ? ' has-placement' : ''}${drawer ? ' has-drawer' : ''}${showGuide ? ' has-intro' : isDemo && !progress.primaryComplete ? ' has-reminder' : ''}`}>
       <div className="sky" aria-hidden="true">
         <div className="stars" />
         <div className="stars stars-2" />
@@ -364,8 +432,15 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
         billboardDraft={billboardDraft}
         objectiveId={objectiveId}
         onViewMedia={setMediaView}
-        placement={placement ? { candidates, selected: placement.selected } : null}
-        onPickPlot={(c) => setPlacement((p) => (p ? { ...p, selected: c } : p))}
+        placement={
+          placement
+            ? { candidates, selected: placement.selected }
+            : activating
+              ? // Every free plot while choosing; afterwards only the picked one, so it stays marked behind the review.
+                { candidates: activating.phase === 'choosing' ? activationSites : activating.selected ? [activating.selected] : [], selected: activating.selected }
+              : null
+        }
+        onPickPlot={(c) => (placement ? setPlacement((p) => (p ? { ...p, selected: c } : p)) : void activationFlow?.select(c))}
         frame={frame}
       />
       {placement && (
@@ -379,6 +454,7 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
           onCancel={cancelPlacement}
         />
       )}
+      {activation && activating && <ActivationSurface activation={activation} candidates={activationSites} />}
       <Hud
         game={game}
         viewerId={viewerId}
@@ -435,6 +511,15 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
       {notice && (
         <div className="error-toast notice" role="status" key={notice.id} data-testid="notice">
           {notice.text}
+        </div>
+      )}
+      {arrived && (
+        <div className="error-toast notice" role="status" key={`activated-${arrived.seq}`} data-testid="activation-success" data-building={arrived.buildingId} data-plot-id={arrived.plotId} data-existing={arrived.existing ? 'true' : 'false'} data-pending={arrived.pending ? 'true' : 'false'}>
+          {arrived.existing
+            ? `Friend #${arrived.tokenId} already has its permanent Rare City property: ${getDistrict(arrived.districtId).title} · ${plotLabel(arrived)}.`
+            : `Friend #${arrived.tokenId} is activated. ${getDistrict(arrived.districtId).title} · ${plotLabel(arrived)} is now its permanent Rare City property.`}
+          {/* The activation is certain; only reading it back was not possible yet. The city and My Friends catch up on their own. */}
+          {arrived.pending && ' The map and My Friends may take a moment to show it.'}
         </div>
       )}
       {store.error && (

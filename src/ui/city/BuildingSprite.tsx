@@ -2,7 +2,7 @@ import { memo, type KeyboardEvent, type MouseEvent } from 'react'
 import { FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
 import { getDistrict } from '../../config/districts'
 import { MAX_VISIBLE_PATRONS } from '../../config/economy'
-import { friendLabel } from '../../config/identity'
+import { buildingFriendLabel } from '../../config/identity'
 import { patronLevelIndex, rankedPatrons, stageFor, tierFor } from '../../game/economy'
 import type { Building, DemoUser, LandscapeKind } from '../../game/types'
 import { useTween } from '../motion'
@@ -258,7 +258,7 @@ function mediaHit(b: Building, onViewMedia?: (id: string) => void) {
     className: 'billboard-hit',
     role: 'button',
     tabIndex: 0,
-    'aria-label': `View property media on ${friendLabel(b.friendId)}`,
+    'aria-label': `View property media on ${buildingFriendLabel(b)}`,
     onClick: open,
     onKeyDown: (e: KeyboardEvent) => {
       if (e.key !== 'Enter' && e.key !== ' ') return
@@ -300,7 +300,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
     : null
   const crownAt = crown ? `translate(0 ${-topSec.z1 - crown.base}) scale(${crownK})` : undefined
   const topY = -topSec.z1 - (crown ? crown.base + (detail === 'far' ? 92 : 64) : roofH)
-  const label = `${friendLabel(b.friendId)}, Tier ${tierFor(target)}, ${district.name}${isPlayer ? ', your building' : ''}`
+  const label = `${buildingFriendLabel(b)}, Tier ${tierFor(target)}, ${district.name}${isPlayer ? ', your building' : ''}`
 
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {

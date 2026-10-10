@@ -17,6 +17,10 @@ export const ROBINHOOD_CHAIN_ID = 4663
 export interface WalletControls {
   /** Everything the page asked the wallet to sign, as text. */
   signed: string[]
+  /** Every typed-data message the page asked the wallet to sign (`eth_signTypedData_v4`), as the JSON it was handed, with the signature given. */
+  typed: { json: string; signature: string }[]
+  /** Make the wallet answer the next typed-data request with `answer` instead of a signature. */
+  answerNextTypedWith(page: Page, answer: string): Promise<void>
   /** The user picks another account in the wallet. */
   selectAccount(page: Page, index: number): Promise<void>
   selectChain(page: Page, chainId: number): Promise<void>
@@ -33,9 +37,18 @@ export async function installWallet(context: BrowserContext, options: { chainId?
     signed.push(hexToString(hex))
     return account.signMessage({ message: { raw: hex } })
   })
+  const typed: WalletControls['typed'] = []
+  await context.exposeFunction('__rcSignTyped', async (index: number, address: string, json: string) => {
+    const account = ACCOUNTS[index]
+    if (address.toLowerCase() !== account.address.toLowerCase()) throw new Error('asked to sign with an account that is not selected')
+    // Signed from the JSON exactly as handed over, the way a wallet signs `eth_signTypedData_v4`.
+    const signature = await account.signTypedData(JSON.parse(json))
+    typed.push({ json, signature })
+    return signature
+  })
   await context.addInitScript(
     ({ accounts, chainId, selected }) => {
-      const state = { accounts, selected, chainId, connected: false, decline: new Set<string>() }
+      const state = { accounts, selected, chainId, connected: false, decline: new Set<string>(), typedAnswer: null as string | null }
       const calls: string[] = []
       const listeners = new Map<string, Set<(payload: unknown) => void>>()
       const emit = (event: string, payload: unknown) => listeners.get(event)?.forEach((fn) => fn(payload))
@@ -57,6 +70,11 @@ export async function installWallet(context: BrowserContext, options: { chainId?
               return null
             case 'personal_sign':
               return (window as unknown as { __rcSign: (i: number, hex: unknown, address: unknown) => Promise<string> }).__rcSign(state.selected, params![0], params![1])
+            case 'eth_signTypedData_v4': {
+              const answer = state.typedAnswer
+              state.typedAnswer = null
+              return answer ?? (window as unknown as { __rcSignTyped: (i: number, address: unknown, json: unknown) => Promise<string> }).__rcSignTyped(state.selected, params![0], params![1])
+            }
           }
           throw Object.assign(new Error(`unsupported method ${method}`), { code: 4200 })
         },
@@ -80,6 +98,7 @@ export async function installWallet(context: BrowserContext, options: { chainId?
             emit('chainChanged', `0x${id.toString(16)}`)
           },
           declineNext: (method: string) => state.decline.add(method),
+          answerNextTypedWith: (answer: string) => void (state.typedAnswer = answer),
         },
       })
       const announce = () => window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: Object.freeze({ info: { uuid: 'rc-test-wallet', name: 'Test Wallet', icon: 'data:,', rdns: 'world.rarecity.test' }, provider }) }))
@@ -88,9 +107,11 @@ export async function installWallet(context: BrowserContext, options: { chainId?
     },
     { accounts: ACCOUNTS.map((a) => a.address.toLowerCase()), chainId: options.chainId ?? ROBINHOOD_CHAIN_ID, selected: options.account ?? 0 },
   )
-  type Injected = { __wallet: { calls: string[]; selectAccount(i: number): void; selectChain(id: number): void; declineNext(method: string): void } }
+  type Injected = { __wallet: { calls: string[]; selectAccount(i: number): void; selectChain(id: number): void; declineNext(method: string): void; answerNextTypedWith(answer: string): void } }
   return {
     signed,
+    typed,
+    answerNextTypedWith: (page, answer) => page.evaluate((a) => (window as unknown as Injected).__wallet.answerNextTypedWith(a), answer),
     selectAccount: (page, index) => page.evaluate((i) => (window as unknown as Injected).__wallet.selectAccount(i), index),
     selectChain: (page, chainId) => page.evaluate((id) => (window as unknown as Injected).__wallet.selectChain(id), chainId),
     declineNext: (page, method) => page.evaluate((m) => (window as unknown as Injected).__wallet.declineNext(m), method),

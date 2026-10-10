@@ -1,5 +1,6 @@
+import { districtForFamily } from '../config/familyDistricts'
 import { familyById, type Family } from '../config/rareFriends'
-import type { FriendPropertyDto } from './activation'
+import { parsePlotId, type FriendPropertyDto } from './activation'
 
 /**
  * Wire contract for identity: who is looking, how a wallet signs in, and which Friends the
@@ -125,10 +126,26 @@ export function parseChallengeResponse(value: unknown): ChallengeResponse | null
 }
 
 /**
+ * Validate one property annotation. null = not the contract. A property outside the district
+ * of the Friend's family is not a property this client knows how to show: family geography
+ * is permanent.
+ */
+function parseFriendProperty(value: unknown, familyId: number): FriendPropertyDto | null {
+  if (!value || typeof value !== 'object') return null
+  const p = value as Partial<FriendPropertyDto>
+  if (typeof p.id !== 'string' || !p.id || typeof p.buildingId !== 'string' || !p.buildingId) return null
+  const plot = parsePlotId(p.plotId)
+  if (!plot || plot.districtId !== p.districtId || plot.ward !== p.ward || plot.plot !== p.plot || plot.districtId !== districtForFamily(familyId)) return null
+  if (typeof p.activatedAt !== 'string' || Number.isNaN(Date.parse(p.activatedAt))) return null
+  return { id: p.id, buildingId: p.buildingId, districtId: plot.districtId, ward: plot.ward, plot: plot.plot, plotId: plot.plotId, activatedAt: p.activatedAt }
+}
+
+/**
  * Validate a friends body. A family the client does not know is a malformed answer, not a new family.
  *
- * Only the keys this client uses are returned. The optional `property` annotation is not
- * one of them yet: it is ignored here until the activation client reads it.
+ * Only the keys this client uses are returned. The `property` annotation keeps its three
+ * meanings: an object is the Friend's property, null is "has none", and an absent key is
+ * "the server could not tell" and stays absent.
  */
 export function parseFriendsResponse(value: unknown): FriendsResponse | null {
   if (!value || typeof value !== 'object') return null
@@ -138,11 +155,17 @@ export function parseFriendsResponse(value: unknown): FriendsResponse | null {
   const friends: OwnedFriendDto[] = []
   for (const item of f.friends as unknown[]) {
     if (!item || typeof item !== 'object') return null
-    const { tokenId, family } = item as { tokenId?: unknown; family?: { id?: unknown; name?: unknown } }
+    const { tokenId, family, property } = item as { tokenId?: unknown; family?: { id?: unknown; name?: unknown }; property?: unknown }
     if (typeof tokenId !== 'string' || !DECIMAL.test(tokenId)) return null
     const known = familyById(family?.id)
     if (!known || known.name !== family?.name) return null
-    friends.push({ tokenId, family: known })
+    if (property === undefined) {
+      friends.push({ tokenId, family: known })
+      continue
+    }
+    const parsed = property === null ? null : parseFriendProperty(property, known.id)
+    if (property !== null && !parsed) return null
+    friends.push({ tokenId, family: known, property: parsed })
   }
   return { wallet: { address: f.wallet.address, chainId: f.wallet.chainId }, source: f.source, asOfBlock: f.asOfBlock, friends }
 }

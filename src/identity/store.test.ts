@@ -423,6 +423,27 @@ describe('identity store: the wallet account is not the session', () => {
   })
 })
 
+describe('identity store: the wallet in use, for a caller that signs with it', () => {
+  it('is the one wallet there is, and nothing once the store has stopped', () => {
+    const wallet = fakeWallet()
+    const store = createIdentityStore({ fetch: fakeServer({}).fetch, wallets: source({ id: 'w', name: 'Test Wallet', provider: wallet.provider }), host: HOST, autoStart: false })
+    expect(store.provider()).toBe(wallet.provider)
+    store.stop()
+    expect(store.provider()).toBeNull()
+  })
+
+  it('is nothing until one of several wallets has been chosen, and asking never prompts', async () => {
+    const first = fakeWallet()
+    const second = fakeWallet({ accounts: [B] })
+    const store = createIdentityStore({ fetch: fakeServer({}).fetch, wallets: source({ id: 'one', name: 'One', provider: first.provider }, { id: 'two', name: 'Two', provider: second.provider }), host: HOST, autoStart: false })
+    expect(store.provider()).toBeNull()
+    expect([first.methods(), second.methods()]).toEqual([[], []])
+    await store.connect('two')
+    expect(store.provider()).toBe(second.provider)
+    expect(first.methods()).toEqual([])
+  })
+})
+
 describe('identity store: owned Friends', () => {
   async function withFriends(reply: () => Reply) {
     const ctx = signInServer({ '/v1/viewer/friends': reply })
