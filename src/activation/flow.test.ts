@@ -1000,6 +1000,102 @@ describe('finishing never leaves the page waiting', () => {
   })
 })
 
+describe('an answer whose headers arrive and whose body never finishes', () => {
+  /** Every state the page showed once the signature had gone, and none of them was a notice. */
+  const noticesAfterSending = (w: World) => w.published.slice(w.published.findIndex((snap) => snap.step === 'committing')).filter((snap) => snap.notice !== null)
+
+  it('a commit that landed and answered 200 with a body that stalls: unknown, My Friends is read, and it is the success it was', async () => {
+    const w = await createWorld({ timeoutMs: 30 })
+    w.reviewPlot('1204', 0, 2)
+    w.server.script.commits.push({ workThen: { status: 200, stalled: true } })
+    const reads = w.friendReads()
+    await w.flow.confirm()
+    expect(w.flow.getSnapshot()).toMatchObject({ phase: 'idle', step: null, notice: null, result: { tokenId: '1204', buildingId: 'b-1204', plotId: 'd8-w0-p2', existing: false, pending: false } })
+    // One intent, one signature, one commit and one change: My Friends answered what the lost body could not.
+    expect([w.intentPosts().length, w.wallet.signRequests().length, w.commitPosts().length, w.server.mutations, w.server.intents.size]).toEqual([1, 1, 1, 1, 1])
+    expect(w.friendReads()).toBeGreaterThan(reads)
+    expect(noticesAfterSending(w)).toEqual([])
+    expectSignatureKeptNowhere(w)
+  })
+
+  const stalledAs: [string, number][] = [
+    ['a success', 200],
+    ["one of Rare City's refusals", 403],
+    ['an outage', 503],
+  ]
+  it.each(stalledAs)('a commit answered as %s whose body stalls, with nothing committed: never a failure, and the same signature is sent again', async (_name, status) => {
+    const w = await createWorld({ timeoutMs: 30 })
+    w.reviewPlot('1204')
+    w.server.script.commits.push({ status, stalled: true }, { status, stalled: true }, { status, stalled: true })
+    const reads = w.friendReads()
+    await w.flow.confirm()
+    // Out of the wait by the flow's own deadline, three times over, and still the same try.
+    expect(w.flow.getSnapshot()).toMatchObject({ phase: 'unresolved', step: null, result: null, selected: { ward: 0, plot: 0 }, notice: { kind: 'commit-unknown', text: MESSAGES.commitUnknown } })
+    expect(w.flow.holdsSignature()).toBe(true)
+    expectNoFalseClaim(w)
+    expect([w.commitPosts().length, w.friendReads() - reads, w.waits]).toEqual([3, 3, [10, 20]])
+    expect([w.intentPosts().length, w.wallet.signRequests().length, w.server.mutations, w.server.intents.size]).toEqual([1, 1, 0, 1])
+
+    await w.flow.retryCommit()
+    expect(w.flow.getSnapshot()).toMatchObject({ phase: 'idle', result: { tokenId: '1204', buildingId: 'b-1204', existing: false } })
+    expect(new Set(w.commitPosts().map((c) => c.raw))).toEqual(new Set([JSON.stringify({ intentId: [...w.server.intents.keys()][0], signature: SIGNATURE })]))
+    expect([w.commitPosts().length, w.intentPosts().length, w.wallet.signRequests().length, w.server.mutations, w.server.intents.size]).toEqual([4, 1, 1, 1, 1])
+    expectSignatureKeptNowhere(w)
+  })
+
+  it('a commit succeeds and the city answer stalls while it is read back: the flow ends, with the property and an honest "not shown yet"', async () => {
+    const w = await createWorld({ timeoutMs: 30 })
+    w.reviewPlot('1204', 0, 4)
+    w.server.script.commits.push(() => {
+      w.server.cityStalls = true
+      return 'ok'
+    })
+    const reads = w.cityReads()
+    await w.flow.confirm()
+    // Not left on "Checking with Rare City…": each read of the city was given up on in its turn.
+    expect(w.flow.getSnapshot()).toMatchObject({ phase: 'idle', step: null, notice: null, friend: null, result: { seq: 1, tokenId: '1204', buildingId: 'b-1204', plotId: 'd8-w0-p4', existing: false, pending: true } })
+    expect(w.cityReads() - reads).toBe(3)
+    expect(w.transport.getSnapshot().connection).toMatchObject({ status: 'stale', message: 'Cannot reach Rare City. Retrying…' })
+    expect(w.flow.holdsSignature()).toBe(false)
+    expect([w.commitPosts().length, w.server.mutations, w.wallet.signRequests().length, w.intentPosts().length]).toEqual([1, 1, 1, 1])
+    expectSignatureKeptNowhere(w)
+
+    // The person is free, and the next read that gets through shows what the server already had.
+    expect(w.flow.cancel()).toBe(true)
+    w.server.cityStalls = false
+    await w.transport.refresh()
+    expect(w.game().buildings['b-1204']).toMatchObject({ friendId: 1204, districtId: 'd8', ward: 0, plot: 4 })
+    expect(w.flow.start('1204')).toBe(false)
+  })
+
+  it('a refusal whose re-read of the city stalls still lands where the refusal says, and drops the signature', async () => {
+    const w = await createWorld({ timeoutMs: 30 })
+    w.reviewPlot('1204')
+    w.server.script.commits.push(() => {
+      w.server.cityStalls = true
+      return refusal(409, 'plot_unavailable')
+    })
+    await w.flow.confirm()
+    expect(w.flow.getSnapshot()).toMatchObject({ phase: 'choosing', step: null, selected: null, notice: { kind: 'plot_unavailable', text: COMMIT_REFUSAL_TEXT.plot_unavailable } })
+    expect(w.flow.holdsSignature()).toBe(false)
+    expect([w.commitPosts().length, w.server.mutations, w.wallet.signRequests().length]).toEqual([1, 0, 1])
+    expect(w.flow.cancel()).toBe(true)
+  })
+
+  it('an existing property found while the city answer stalls: ends on that property, not on "Checking"', async () => {
+    const w = await createWorld({ timeoutMs: 30 })
+    w.reviewPlot('1204')
+    w.server.script.intents.push(() => {
+      w.server.properties.set('1204', { id: 'prop-1204', buildingId: 'b-1204', districtId: 'd8', ward: 0, plot: 0, plotId: 'd8-w0-p0', activatedAt: '2026-10-09T11:00:00.000Z' })
+      w.server.cityStalls = true
+      return 'ok'
+    })
+    await w.flow.confirm()
+    expect(w.flow.getSnapshot()).toMatchObject({ phase: 'idle', result: { buildingId: 'b-1204', existing: true, pending: true } })
+    expect([w.wallet.signRequests(), w.commitPosts()]).toEqual([[], []])
+  })
+})
+
 describe('a commit turned away by a rate limit', () => {
   it('reads Retry-After as seconds or a date, and as nothing when it is neither', () => {
     const at = Date.parse('2026-10-09T12:00:00.000Z')

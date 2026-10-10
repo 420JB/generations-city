@@ -193,6 +193,97 @@ describe('server transport: failures never invent a city', () => {
   })
 })
 
+describe('server transport: one deadline for the whole answer, headers and body', () => {
+  /**
+   * An answer whose headers arrive and whose body begins and never finishes. As a real fetch
+   * does, aborting the request ends the body with an error; nothing else ever ends it.
+   */
+  const stalledAnswer = (status: number, init: RequestInit | undefined, etag?: string) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"city":'))
+          init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+        },
+      }),
+      { status, headers: etag ? { etag } : {} },
+    )
+  /** Answers taken in order: a stalled one by its status, anything else as the fake server would send it. */
+  function serverThatStalls(replies: (Reply | { stalled: number })[]) {
+    const real = fakeServer([])
+    const signals: AbortSignal[] = []
+    const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal) signals.push(init.signal)
+      const reply = replies.shift()
+      if (reply && typeof reply === 'object' && 'stalled' in reply) return Promise.resolve(stalledAnswer(reply.stalled, init))
+      real.replies.push(reply!)
+      return real.fetch(input, init)
+    }) as typeof globalThis.fetch
+    return { fetch, signals }
+  }
+
+  it('gives up on an answer whose headers arrive and whose body never finishes', async () => {
+    const transport = createServerTransport({ fetch: serverThatStalls([{ stalled: 200 }]).fetch, autoStart: false, timeoutMs: 20 })
+    await transport.refresh()
+    expect(transport.getSnapshot()).toMatchObject({ game: null, connection: { status: 'unavailable', message: 'Cannot reach Rare City. Retrying…' } })
+  })
+
+  it('keeps the last good city, marked stale, when a later body stalls, and reads the next one normally', async () => {
+    const transport = createServerTransport({ fetch: serverThatStalls([ok(1), { stalled: 200 }, { stalled: 503 }, ok(2, { ...createSeedState(), clock: 7 })]).fetch, autoStart: false, timeoutMs: 20 })
+    await transport.refresh()
+    expect(transport.getSnapshot().connection).toMatchObject({ status: 'live', sequence: 1 })
+
+    await transport.refresh()
+    expect(transport.getSnapshot().game).toEqual(createSeedState())
+    expect(transport.getSnapshot().connection).toMatchObject({ status: 'stale', sequence: 1, message: 'Cannot reach Rare City. Retrying…' })
+    // An error answer whose body stalls is still the error its status said it was.
+    await transport.refresh()
+    expect(transport.getSnapshot().connection).toMatchObject({ status: 'stale', sequence: 1, message: 'Rare City is unavailable right now. Retrying…' })
+
+    await transport.refresh()
+    expect(transport.getSnapshot().game?.clock).toBe(7)
+    expect(transport.getSnapshot().connection).toEqual({ status: 'live', sequence: 2, canonical: false, message: null })
+  })
+
+  it('reads a normal answer whole, and its deadline ends with it', async () => {
+    const server = serverThatStalls([ok(3)])
+    const transport = createServerTransport({ fetch: server.fetch, autoStart: false, timeoutMs: 20 })
+    await transport.refresh()
+    expect(transport.getSnapshot().game).toEqual(createSeedState())
+    expect(transport.getSnapshot().connection).toEqual({ status: 'live', sequence: 3, canonical: false, message: null })
+    // Long past the deadline, the finished read was never aborted.
+    await new Promise((done) => setTimeout(done, 60))
+    expect(server.signals.map((signal) => signal.aborted)).toEqual([false])
+  })
+
+  it('reads a body that arrives in pieces, as long as all of it arrives in time', async () => {
+    const text = JSON.stringify(body(5))
+    const slow = (() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(new TextEncoder().encode(text.slice(0, 40)))
+              await new Promise((done) => setTimeout(done, 15))
+              controller.enqueue(new TextEncoder().encode(text.slice(40)))
+              controller.close()
+            },
+          }),
+          { status: 200 },
+        ),
+      )) as typeof globalThis.fetch
+    const transport = createServerTransport({ fetch: slow, autoStart: false, timeoutMs: 2_000 })
+    await transport.refresh()
+    expect(transport.getSnapshot().connection).toMatchObject({ status: 'live', sequence: 5 })
+  })
+
+  it('a body that is simply wrong is still called unreadable, not unreachable', async () => {
+    const transport = createServerTransport({ fetch: serverThatStalls([{ status: 200, text: '{"city":' }]).fetch, autoStart: false, timeoutMs: 2_000 })
+    await transport.refresh()
+    expect(transport.getSnapshot().connection).toMatchObject({ status: 'unavailable', message: 'Rare City sent something this page could not read. Retrying…' })
+  })
+})
+
 describe('server transport: commands cannot change the city', () => {
   it('refuses every command without touching the state, the sequence or the network', async () => {
     const server = fakeServer([ok(7)])

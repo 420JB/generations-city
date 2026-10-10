@@ -82,18 +82,29 @@ export function createServerTransport(options: ServerTransportOptions): ServerTr
     setConnection({ status: snapshot.game ? 'stale' : 'unavailable', message })
   }
 
+  /**
+   * One read, given `timeoutMs` from the request to the end of the answer's body. The
+   * deadline stays on until the whole answer has been read: aborting ends a body that has
+   * stalled just as it ends a request that never answers, so a read always finishes.
+   */
   async function read(): Promise<void> {
     const abort = new AbortController()
     const deadline = setTimeout(() => abort.abort(), timeoutMs)
+    try {
+      await readWithin(abort.signal)
+    } finally {
+      clearTimeout(deadline)
+    }
+  }
+
+  async function readWithin(signal: AbortSignal): Promise<void> {
     let res: Response
     try {
       const headers: Record<string, string> = { accept: 'application/json' }
       if (current?.etag) headers['if-none-match'] = current.etag
-      res = await doFetch(`${baseUrl}${CITY_ENDPOINT}`, { headers, cache: 'no-store', credentials: 'same-origin', signal: abort.signal })
+      res = await doFetch(`${baseUrl}${CITY_ENDPOINT}`, { headers, cache: 'no-store', credentials: 'same-origin', signal })
     } catch {
       return failed(MESSAGES.unreachable)
-    } finally {
-      clearTimeout(deadline)
     }
 
     if (res.status === 304 && current) {
@@ -114,7 +125,8 @@ export function createServerTransport(options: ServerTransportOptions): ServerTr
     try {
       body = await res.json()
     } catch {
-      return failed(MESSAGES.malformed)
+      // Out of time with the body still arriving is a read that did not get through, not a body that was wrong.
+      return failed(signal.aborted ? MESSAGES.unreachable : MESSAGES.malformed)
     }
     const parsed = parseCityResponse(body)
     if (!parsed.ok) return failed(parsed.reason === 'unsupported-version' ? MESSAGES.outdated : MESSAGES.malformed)

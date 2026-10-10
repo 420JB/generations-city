@@ -35,8 +35,11 @@ export const COLLECTION = '0x14C49e6118F46525dE9ab41a51cBAA3c6EBF181D'
 /** 65 bytes of nothing in particular. The pretend server does not verify it; the real one would. */
 export const SIGNATURE = `0x${'ab'.repeat(65)}`
 
-/** An answer. No `json` = a page that is not JSON; `text` = that exact body instead. */
-export type Reply = { status: number; json?: unknown; text?: string; headers?: Record<string, string> } | 'network-error'
+/**
+ * An answer. No `json` = a page that is not JSON; `text` = that exact body instead;
+ * `stalled` = the headers arrive and the body begins and never finishes.
+ */
+export type Reply = { status: number; json?: unknown; text?: string; headers?: Record<string, string>; stalled?: true } | 'network-error'
 /**
  * How the server treats one activation request, taken in order from a script:
  * - a `Reply`           answer with it and do nothing else;
@@ -54,6 +57,15 @@ export type Scripted = Step | (() => Promise<Step> | Step)
 
 const error = (status: number, code: string): Reply => ({ status, json: { error: code } })
 export const refusal = error
+
+/** A body that begins and never finishes. As a real fetch does, aborting the request ends it with an error; nothing else does. */
+const stalledBody = (signal: AbortSignal | null | undefined) =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"'))
+      signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')))
+    },
+  })
 
 export function fakeWallet(initial: { accounts?: string[]; chainId?: number; signature?: unknown } = {}) {
   const state = { accounts: initial.accounts ?? [ALICE.toLowerCase()], chainId: initial.chainId ?? 4663, signature: 'signature' in initial ? initial.signature : (SIGNATURE as unknown) }
@@ -116,6 +128,8 @@ export interface WorldOptions {
   /** Friends whose property annotation the server leaves out ("could not tell"). */
   unknownProperty?: string[]
   retryDelaysMs?: number[]
+  /** How long the flow and the city transport each give one whole answer. Default: theirs. */
+  timeoutMs?: number
 }
 
 export async function createWorld(options: WorldOptions = {}) {
@@ -137,6 +151,8 @@ export async function createWorld(options: WorldOptions = {}) {
     issued: 0,
     /** My Friends answers `503 ownership_unavailable`: the chain cannot be read. */
     friendsUnavailable: false,
+    /** The city answers 200 and its body never finishes. */
+    cityStalls: false,
   }
   /** Reads the flow makes that fail outright, as a rejected promise, while set. */
   const faults = { loadFriends: false, cityRefresh: false }
@@ -238,6 +254,7 @@ export async function createWorld(options: WorldOptions = {}) {
     },
     'GET /v1/city': () => ({
       status: 200,
+      ...(server.cityStalls ? { stalled: true as const } : {}),
       json: { city: { id: 'main', instance: 'inst-1', sequence: server.sequence, stateVersion: STATE_VERSION, canonical: false, origin: 'demo-fixture', updatedAt: '2026-10-09T12:00:00.000Z' }, server: { mode: 'staging' }, state: server.game },
     }),
     'POST /v1/activation/intents': (body) => scripted(server.script.intents.shift(), () => issueIntent(body)),
@@ -254,14 +271,14 @@ export async function createWorld(options: WorldOptions = {}) {
     if (!route) throw new Error(`unexpected request ${method} ${path}`)
     const reply = await route(body)
     if (reply === 'network-error') throw new TypeError('Failed to fetch')
-    return new Response(reply.text ?? (reply.json === undefined ? '<html>bad gateway</html>' : JSON.stringify(reply.json)), { status: reply.status, headers: reply.headers })
+    return new Response(reply.stalled ? stalledBody(init.signal) : (reply.text ?? (reply.json === undefined ? '<html>bad gateway</html>' : JSON.stringify(reply.json))), { status: reply.status, headers: reply.headers })
   }) as typeof globalThis.fetch
 
   const wallet = fakeWallet(options.wallet)
   const option: WalletOption = { id: 'w', name: 'Test Wallet', provider: wallet.provider }
   const wallets: WalletSource = { list: () => [option], subscribe: () => () => {} }
   const identity = createIdentityStore({ fetch, wallets, host: new URL(ORIGIN).host, autoStart: false })
-  const transport = createServerTransport({ fetch, autoStart: false })
+  const transport = createServerTransport({ fetch, autoStart: false, timeoutMs: options.timeoutMs })
   await identity.refresh()
   await identity.loadFriends()
   await transport.refresh()
@@ -284,6 +301,7 @@ export async function createWorld(options: WorldOptions = {}) {
     },
     origin: ORIGIN,
     retryDelaysMs: options.retryDelaysMs ?? [10, 20],
+    timeoutMs: options.timeoutMs,
     wait: async (ms) => {
       waits.push(ms)
     },
