@@ -21,10 +21,10 @@ export default defineConfig([
   },
   {
     // The deterministic engine is shared with the server: it must stay free of browser and UI code.
-    files: ['src/game/**/*.ts', 'src/config/**/*.ts', 'src/protocol/**/*.ts'],
+    files: ['src/game/**/*.ts', 'src/config/**/*.ts', 'src/protocol/**/*.ts', 'src/world/**/*.ts'],
     ignores: ['**/*.test.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ group: ['react', 'react-dom', 'react-dom/*', '**/ui/**', '**/transport/**', 'node:*', 'pg'], message: 'src/game, src/config and src/protocol are shared with the server and must stay portable.' }] }],
+      'no-restricted-imports': ['error', { patterns: [{ group: ['react', 'react-dom', 'react-dom/*', '**/ui/**', '**/transport/**', 'node:*', 'pg'], message: 'src/game, src/config, src/protocol and src/world are shared with the server and must stay portable.' }] }],
       'no-restricted-globals': ['error', 'window', 'document', 'localStorage', 'sessionStorage', 'navigator', 'fetch'],
     },
   },
