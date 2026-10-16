@@ -47,11 +47,13 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0004: activation schema against a d
 
   describe('applying the migration', () => {
     it('builds a fresh database 0001 -> 0004 with the activation tables and no rows', async () => {
-      const result = await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })
+      // Scoped to 0001-0004: later migrations have their own suites.
+      const through4 = await migrationsThrough(4)
+      const result = await migrate(t.db, { dir: through4, environment: 'staging' })
       expect(result).toEqual({ applied: [1, 2, 3, 4], current: 4 })
       expect(await t.tables()).toEqual(['activation_intents', 'app_meta', 'auth_challenges', 'city', 'city_events', 'ownership_eras', 'properties', 'schema_migrations', 'sessions', 'users', 'wallets'])
       for (const table of ['city', 'city_events', 'activation_intents', 'properties', 'ownership_eras']) expect(await count(table), table).toBe(0)
-      expect((await loadMigrations(MIGRATIONS_DIR)).map((m) => `${m.version}:${m.name}`)).toEqual(['1:foundation', '2:city', '3:identity', '4:activation'])
+      expect((await loadMigrations(through4)).map((m) => `${m.version}:${m.name}`)).toEqual(['1:foundation', '2:city', '3:identity', '4:activation'])
     })
 
     it('upgrades a populated P0-C database and leaves its city and identity rows exactly as they were', async () => {
@@ -74,7 +76,8 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0004: activation schema against a d
         challenges: await snapshot(t.db, 'auth_challenges', 'nonce'),
       }
 
-      const result = await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })
+      const through4 = await migrationsThrough(4)
+      const result = await migrate(t.db, { dir: through4, environment: 'staging' })
       expect(result).toEqual({ applied: [4], current: 4 })
       expect(JSON.stringify((await t.db.query(`SELECT ${columns} FROM city`)).rows)).toBe(before.city)
       expect(await snapshot(t.db, 'app_meta', 'key')).toBe(before.meta)
@@ -88,7 +91,7 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0004: activation schema against a d
       expect(city).toEqual({ activation_rehearsal: false, state })
       for (const table of ['activation_intents', 'properties', 'ownership_eras']) expect(await count(table), table).toBe(0)
       // Running it again changes nothing.
-      expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })).applied).toEqual([])
+      expect((await migrate(t.db, { dir: through4, environment: 'staging' })).applied).toEqual([])
       // What is already live keeps working on the upgraded database: a wallet signs in again, a session is
       // revoked and later deleted, and the city still changes.
       expect((await t.db.query('UPDATE wallets SET last_verified_at = now() WHERE id = $1', [identity.walletId])).rowCount).toBe(1)
@@ -111,7 +114,7 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0004: activation schema against a d
       // Only the guard that 0002 created exists, and the failed run did not leave it altered.
       expect(await functions()).toEqual([{ proname: 'city_guard_canonical', config: null }])
       // The real migration then applies cleanly on the same database.
-      expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })).applied).toEqual([4])
+      expect((await migrate(t.db, { dir: await migrationsThrough(4), environment: 'staging' })).applied).toEqual([4])
       expect((await functions()).map((f) => f.proname)).toEqual([...GUARDS].sort())
     })
   })
