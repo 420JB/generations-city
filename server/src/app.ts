@@ -27,11 +27,15 @@ import {
   type CityResponse,
   type FriendsResponse,
   type IdentityErrorCode,
+  PLAY_SESSION_ENDPOINT,
+  type PlayErrorBody,
+  type PlayErrorCode,
 } from './engine'
 import { assertSameOrigin, HttpError, readJsonBody, sessionCookie } from './http'
 import { errorFields, type Logger } from './log'
 import { OwnershipError } from './ownership/provider'
 import type { FriendsReader } from './ownership/reader'
+import { PlayLaunchError, type PlayLaunchService } from './play/launch'
 import { createRateLimiter, LIMITS, unlimited, type RateLimiter, type RateRule } from './rateLimit'
 import { buildSecurityHeaders } from './securityHeaders'
 import type { StaticFile, StaticSite } from './static'
@@ -52,6 +56,8 @@ export interface AppDeps {
   friends?: FriendsReader | null
   /** Permanent Friend activation. null when there is no database to write it to. It also needs `config.activationEnabled`. */
   activation?: ActivationService | null
+  /** Opening brand cities from Proofy Play launches. null = not connected to Play (`play_disabled`). */
+  playLaunch?: PlayLaunchService | null
   /** Which Friends already have a property, for the My Friends annotation. null = not available. */
   properties?: PropertyReader | null
   /** The built client, served from this origin. null = API only. */
@@ -154,7 +160,7 @@ interface PostRoute {
   /** Client-network limits, counted before the body is read. null = not limited. */
   limit: readonly RateRule[] | null
   /** What the client is told, and what is logged, when the handler fails unexpectedly. */
-  failure: { code: IdentityErrorCode | ActivationErrorCode; log: string }
+  failure: { code: IdentityErrorCode | ActivationErrorCode | PlayErrorCode; log: string }
   handle(ctx: PostContext): Promise<void>
 }
 
@@ -168,7 +174,7 @@ interface PostRoute {
  * and which refuse outright unless `config.activationEnabled` is set.
  */
 export function createApp(deps: AppDeps): RequestListener {
-  const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null } = deps
+  const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null, playLaunch = null } = deps
   const cookie = sessionCookie(config.mode)
   const security = buildSecurityHeaders(config)
   const limiter = deps.limiter ?? (config.rateLimits ? createRateLimiter() : unlimited)
@@ -181,7 +187,7 @@ export function createApp(deps: AppDeps): RequestListener {
   let warnedAt = Number.NEGATIVE_INFINITY
 
   const cityError = (res: ServerResponse, code: CityErrorCode) => send(res, 503, { error: code }, { 'retry-after': '5' })
-  const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode | ActivationErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
+  const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode | ActivationErrorCode | PlayErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
 
   /**
    * Count this request against `rules` for `key`. Answers 429 and returns false when it is over the limit.
@@ -357,6 +363,15 @@ export function createApp(deps: AppDeps): RequestListener {
     }),
     [ACTIVATION_INTENTS_ENDPOINT]: activationRoute(ACTIVATION_INTENTS_ENDPOINT, LIMITS.activationIntent, (service, session, body) => service.issueIntent(session, body)),
     [ACTIVATIONS_ENDPOINT]: activationRoute(ACTIVATIONS_ENDPOINT, LIMITS.activationCommit, (service, session, body) => service.commit(session, body)),
+    // A Proofy Play launch: the run token in, the validated brand city out. No session, no database: Play is the authority.
+    [PLAY_SESSION_ENDPOINT]: {
+      limit: LIMITS.playSession.client,
+      failure: { code: 'play_unavailable', log: 'play launch failed' },
+      async handle({ res, body }) {
+        if (!playLaunch) return identityError(res, 403, 'play_disabled')
+        send(res, 200, await playLaunch.open(body), PRIVATE)
+      },
+    },
   }
 
   /**
@@ -377,6 +392,12 @@ export function createApp(deps: AppDeps): RequestListener {
       if (err instanceof AuthError) return identityError(res, err.status, err.code)
       // A refusal the activation service decided on. A 503 among them is an authority that could not answer just now.
       if (err instanceof ActivationError) return identityError(res, err.status, err.code, err.status === 503 ? { 'retry-after': '10' } : {})
+      // A launch the Play path refused. Problems are only ever the configuration's, never Play's internals.
+      if (err instanceof PlayLaunchError) {
+        if (err.status >= 500) log.warn('play launch refused', { code: err.code, reason: err.message })
+        const refusal: PlayErrorBody = err.problems ? { error: err.code, problems: err.problems } : { error: err.code }
+        return send(res, err.status, refusal, err.status === 503 ? { ...PRIVATE, 'retry-after': '10' } : PRIVATE)
+      }
       // Anything else is the database or a bug. The client learns only that the route is unavailable.
       log.error(route.failure.log, { path, ...errorFields(err) })
       return identityError(res, 503, route.failure.code, { 'retry-after': '5' })

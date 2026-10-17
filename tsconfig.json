@@ -4,6 +4,7 @@
     { "path": "./tsconfig.app.json" },
     { "path": "./tsconfig.node.json" },
     { "path": "./e2e-activation/tsconfig.json" },
-    { "path": "./e2e-city-preview/tsconfig.json" }
+    { "path": "./e2e-city-preview/tsconfig.json" },
+    { "path": "./e2e-city-play/tsconfig.json" }
   ]
 }

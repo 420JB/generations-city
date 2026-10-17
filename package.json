@@ -26,12 +26,17 @@
     "city:genesis:dev": "tsx --env-file-if-exists=.env server/src/genesis-cli.ts",
     "city:verify": "node dist-server/verify.js",
     "city:verify:dev": "tsx --env-file-if-exists=.env server/src/verify-cli.ts",
+    "play:register-schema": "node dist-server/play-schema.js",
+    "play:register-schema:dev": "tsx --env-file-if-exists=.env server/src/play-schema-cli.ts",
     "test:server": "vitest run --config server/vitest.config.ts",
     "test:e2e:server": "playwright test --config e2e-server/playwright.config.ts",
     "test:e2e:activation": "playwright test --config e2e-activation/playwright.config.ts",
     "dev:city-preview": "vite --config proofy-city-preview/vite.config.ts",
     "build:city-preview": "tsc -b && vite build --config proofy-city-preview/vite.config.ts",
-    "test:e2e:city-preview": "playwright test --config e2e-city-preview/playwright.config.ts"
+    "test:e2e:city-preview": "playwright test --config e2e-city-preview/playwright.config.ts",
+    "dev:city-play": "vite --config proofy-city-play/vite.config.ts",
+    "build:city-play": "tsc -b && vite build --config proofy-city-play/vite.config.ts",
+    "test:e2e:city-play": "playwright test --config e2e-city-play/playwright.config.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",

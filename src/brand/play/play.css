@@ -1,0 +1,45 @@
+/* Proofy Play launch page additions only. The city itself uses Rare City's and the preview's styles unchanged. */
+
+.play-flag {
+  background: #7cc4ff;
+}
+.play-facts {
+  flex-basis: 100%;
+  color: var(--muted);
+}
+.play-facts code {
+  color: var(--ink);
+}
+
+.play-gate {
+  display: grid;
+  place-items: center;
+}
+.play-gate-panel {
+  position: relative;
+  z-index: 2;
+  max-width: 520px;
+  margin: 16px;
+  padding: 22px 24px;
+  border-radius: 18px;
+  background: var(--glass);
+  border: 1px solid var(--line);
+}
+.play-gate-panel .kicker {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+.play-gate-panel h2 {
+  margin: 8px 0 10px;
+}
+.play-problems {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+/* Carries the launch facts as data attributes only; the city inside lays itself out as on the preview page. */
+.play-city {
+  display: contents;
+}

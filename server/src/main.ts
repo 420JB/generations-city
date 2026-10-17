@@ -13,6 +13,8 @@ import { createLogger, errorFields } from './log'
 import { createFixtureOwnershipProvider } from './ownership/fixture'
 import { createGenerationsOwnershipProvider } from './ownership/generations'
 import { createFriendsReader } from './ownership/reader'
+import { createPlayClient } from './play/client'
+import { createPlayLaunchService } from './play/launch'
 import { loadStaticSite } from './static'
 
 const SHUTDOWN_GRACE_MS = 10_000
@@ -49,6 +51,7 @@ async function main() {
       // Built whenever there is a database, and inert unless ACTIVATION_ENABLED=true: the routes and the service both refuse first.
       activation: db ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
       properties: db ? createPropertyReader(db) : null,
+      playLaunch: config.play ? createPlayLaunchService({ play: createPlayClient({ baseUrl: config.play.apiUrl, credential: config.play.credential }), environment: config.play.environment, gameKey: config.play.gameKey }) : null,
       site,
     }),
   )
@@ -61,7 +64,7 @@ async function main() {
 
   server.listen(config.port, config.host, () => {
     // The RPC endpoint is deliberately absent: it may carry provider credentials.
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, commit: config.commit })
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, play: config.play ? `${config.play.environment}/${config.play.gameKey}` : 'not-connected', commit: config.commit })
   })
 
   let stopping = false

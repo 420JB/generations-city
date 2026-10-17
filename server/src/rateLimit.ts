@@ -129,4 +129,6 @@ export const LIMITS = {
   // Each allowed request of either kind costs one pinned chain read. A person activates a Friend a few times, ever.
   activationIntent: { client: [perMinute(10)], user: [perMinute(6)] },
   activationCommit: { client: [perMinute(10)], user: [perMinute(6)] },
+  // Each allowed request costs up to three Play reads. A player opens a city once per launch.
+  playSession: { client: [perMinute(20)] },
 } as const satisfies Record<string, { client: readonly RateRule[]; user?: readonly RateRule[] }>

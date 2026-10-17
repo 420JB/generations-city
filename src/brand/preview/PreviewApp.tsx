@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { heightMeters, totalBuilt } from '../../game/economy'
 import { CityView } from '../../ui/city/CityView'
 import { plotWorldIn } from '../../ui/city/districtGeometry'
@@ -43,24 +43,40 @@ export function PreviewApp({ brands }: { brands: readonly SampleBrand[] }) {
   )
   const [brandIndex, setBrandIndex] = useState(0)
   const current = loaded[brandIndex]
+  const chips = loaded.map((l) => ({ key: l.city.scene.key, name: l.city.config.cityName, districts: l.city.config.districts.length }))
   // Everything below belongs to one brand. Keying by the city remounts it on a switch, so no
   // selection, placement, camera or viewer can leak from one brand into another.
   return (
     <BrandCityPreview
       key={current.city.scene.key}
-      loaded={current}
-      brands={loaded.map((l) => ({ key: l.city.scene.key, name: l.city.config.cityName, districts: l.city.config.districts.length }))}
-      brandIndex={brandIndex}
-      onBrand={setBrandIndex}
+      city={current.city}
+      members={current.brand.members}
+      bar={
+        <div className="preview-bar" role="region" aria-label="Preview controls" data-testid="preview-bar">
+          <span className="preview-flag">LOCAL PREVIEW</span>
+          <span className="preview-note">Simulated brands, members, roles and progress. Nothing is claimed, verified or spent.</span>
+          <div className="preview-brands" role="group" aria-label="Sample brand">
+            {chips.map((b, i) => (
+              <button key={b.key} type="button" className={`chip${i === brandIndex ? ' on' : ''}`} aria-pressed={i === brandIndex} onClick={() => setBrandIndex(i)} data-testid={`brand-${i}`}>
+                {b.name} · {b.districts}
+              </button>
+            ))}
+          </div>
+        </div>
+      }
     />
   )
 }
 
-function BrandCityPreview({ loaded, brands, brandIndex, onBrand }: { loaded: Loaded; brands: { key: string; name: string; districts: number }[]; brandIndex: number; onBrand: (i: number) => void }) {
-  const { city, brand } = loaded
+/**
+ * ONE CONFIGURED CITY on the standard renderer, with the standard HUD and panels. Shared by
+ * the sample preview and the Proofy Play launch page, so both draw exactly the same city for
+ * the same data; only the bar above (`bar`) says where the data came from.
+ */
+export function BrandCityPreview({ city, members, bar }: { city: LoadedBrandCity; members: readonly (PreviewMember | null)[]; bar: ReactNode }) {
   const { scene, state, config } = city
   const [memberIndex, setMemberIndex] = useState(1)
-  const member: PreviewMember | null = brand.members[memberIndex] ?? null
+  const member: PreviewMember | null = members[memberIndex] ?? null
   const [panel, setPanel] = useState<Panel>(null)
   const [placement, setPlacement] = useState<Placement | null>(null)
   const [focus, setFocus] = useState<{ buildingId: string; seq: number } | null>(null)
@@ -189,18 +205,18 @@ function BrandCityPreview({ loaded, brands, brandIndex, onBrand }: { loaded: Loa
           </div>
         </div>
         <div className="hud-right">
-          <label className="player-chip viewer-chip" title="Simulated viewer: no sign-in, no real roles">
+          <label className="player-chip viewer-chip" title={member?.kind === 'player' ? 'The player Proofy Play launched: their Proofy rules are not checked here' : 'Simulated viewer: no sign-in, no real roles'}>
             <div>
               <div className="player-name">Viewing as</div>
               <select value={memberIndex} onChange={(e) => setMemberIndex(Number(e.target.value))} data-testid="viewer-select" aria-label="Simulated viewer">
-                {brand.members.map((m, i) => (
+                {members.map((m, i) => (
                   <option key={m?.id ?? 'visitor'} value={i}>
                     {m ? m.label : 'Visitor · not signed in'}
                   </option>
                 ))}
               </select>
               <div className="wallet">
-                <span className="sim-tag">SIMULATED MEMBER</span>
+                <span className="sim-tag">{member?.kind === 'player' ? 'PROOFY PLAY PLAYER · RULES NOT CHECKED' : 'SIMULATED MEMBER'}</span>
               </div>
             </div>
           </label>
@@ -217,17 +233,7 @@ function BrandCityPreview({ loaded, brands, brandIndex, onBrand }: { loaded: Loa
         </div>
       </header>
 
-      <div className="preview-bar" role="region" aria-label="Preview controls" data-testid="preview-bar">
-        <span className="preview-flag">LOCAL PREVIEW</span>
-        <span className="preview-note">Simulated brands, members, roles and progress. Nothing is claimed, verified or spent.</span>
-        <div className="preview-brands" role="group" aria-label="Sample brand">
-          {brands.map((b, i) => (
-            <button key={b.key} type="button" className={`chip${i === brandIndex ? ' on' : ''}`} aria-pressed={i === brandIndex} onClick={() => onBrand(i)} data-testid={`brand-${i}`}>
-              {b.name} · {b.districts}
-            </button>
-          ))}
-        </div>
-      </div>
+      {bar}
 
       {drawer && (
         <aside className="drawer" data-testid="drawer">

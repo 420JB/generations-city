@@ -6,12 +6,12 @@ const ORIGIN = 'https://rarecity.example'
 
 describe('server config', () => {
   it('defaults to local mode with no database, bound to loopback', () => {
-    expect(loadConfig({})).toEqual({ mode: 'local', port: 8787, host: '127.0.0.1', databaseUrl: null, commit: null, publicOrigin: 'http://127.0.0.1:8787', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'none', rateLimits: true, frameAncestors: [], hstsMaxAge: 0, activationEnabled: false })
+    expect(loadConfig({})).toEqual({ mode: 'local', port: 8787, host: '127.0.0.1', databaseUrl: null, commit: null, publicOrigin: 'http://127.0.0.1:8787', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'none', rateLimits: true, frameAncestors: [], hstsMaxAge: 0, activationEnabled: false, play: null })
   })
 
   it('reads staging and production with their database and platform values', () => {
     const cfg = loadConfig({ APP_MODE: 'staging', NODE_ENV: 'production', PORT: '3000', DATABASE_URL: DB, RAILWAY_GIT_COMMIT_SHA: 'abc123', PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' })
-    expect(cfg).toEqual({ mode: 'staging', port: 3000, host: '0.0.0.0', databaseUrl: DB, commit: 'abc123', publicOrigin: ORIGIN, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'railway', rateLimits: true, frameAncestors: [], hstsMaxAge: 31_536_000, activationEnabled: false })
+    expect(cfg).toEqual({ mode: 'staging', port: 3000, host: '0.0.0.0', databaseUrl: DB, commit: 'abc123', publicOrigin: ORIGIN, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'railway', rateLimits: true, frameAncestors: [], hstsMaxAge: 31_536_000, activationEnabled: false, play: null })
     expect(loadConfig({ APP_MODE: 'production', DATABASE_URL: DB.replace('postgres:', 'postgresql:'), PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' }).mode).toBe('production')
     expect(loadConfig({ APP_MODE: 'local', DATABASE_URL: DB, HOST: '::' })).toMatchObject({ mode: 'local', databaseUrl: DB, host: '::' })
   })
@@ -174,5 +174,35 @@ describe('server config', () => {
     expect(loadConfig({ ...deployed, APP_MODE: 'production', HSTS_MAX_AGE: '31536000' }).hstsMaxAge).toBe(31_536_000)
     expect(loadConfig({ ...deployed, APP_MODE: 'production', HSTS_MAX_AGE: '0' }).hstsMaxAge).toBe(0)
     for (const HSTS_MAX_AGE of ['-1', '1.5', '1d', 'max', '63072001', '99999999999999999999', '86400; includeSubDomains', '86400; preload']) expect(() => loadConfig({ HSTS_MAX_AGE }), HSTS_MAX_AGE).toThrow(/^HSTS_MAX_AGE must be/)
+  })
+
+  it('connects to Proofy Play only with a URL and a credential from an environment this mode may use', () => {
+    const cred = (env: string) => `ppk_${env}_${'a'.repeat(24)}.${'b'.repeat(64)}`
+    const deployed = { APP_MODE: 'staging', DATABASE_URL: DB, PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' }
+    expect(loadConfig({}).play).toBeNull()
+    expect(loadConfig({ PLAY_API_URL: 'http://127.0.0.1:18090/', PLAY_SERVICE_CREDENTIAL: cred('dev') }).play).toEqual({ apiUrl: 'http://127.0.0.1:18090', credential: cred('dev'), environment: 'dev', gameKey: 'rare-city' })
+    expect(loadConfig({ PLAY_API_URL: 'http://127.0.0.1:18090', PLAY_SERVICE_CREDENTIAL: cred('test'), PLAY_GAME_KEY: 'rare-city-test' }).play?.gameKey).toBe('rare-city-test')
+    expect(loadConfig({ ...deployed, PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: cred('staging') }).play?.environment).toBe('staging')
+    expect(loadConfig({ ...deployed, APP_MODE: 'production', PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: cred('live') }).play?.environment).toBe('live')
+    // The same mapping as world_play_bindings: a staging city never reads live installations, production nothing else.
+    for (const [mode, env] of [['local', 'staging'], ['local', 'live'], ['staging', 'live'], ['staging', 'dev'], ['production', 'staging'], ['production', 'test']] as const) {
+      const base = mode === 'local' ? {} : { ...deployed, APP_MODE: mode }
+      expect(() => loadConfig({ ...base, PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: cred(env) }), `${mode}/${env}`).toThrow(/may only use/)
+    }
+    expect(() => loadConfig({ PLAY_API_URL: 'http://127.0.0.1:1' })).toThrow(/must be set together/)
+    expect(() => loadConfig({ PLAY_SERVICE_CREDENTIAL: cred('dev') })).toThrow(/must be set together/)
+    expect(() => loadConfig({ PLAY_GAME_KEY: 'rare-city' })).toThrow(/PLAY_GAME_KEY is set/)
+    expect(() => loadConfig({ ...deployed, PLAY_API_URL: 'http://play.example', PLAY_SERVICE_CREDENTIAL: cred('staging') })).toThrow(/https/)
+    expect(() => loadConfig({ PLAY_API_URL: 'http://u:p@127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: cred('dev') })).toThrow(/must not carry/)
+    expect(() => loadConfig({ PLAY_API_URL: 'http://127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: cred('dev'), PLAY_GAME_KEY: 'Rare City' })).toThrow(/game key/)
+    const secret = 'ppk_dev_short.secret-value'
+    let message = ''
+    try {
+      loadConfig({ PLAY_API_URL: 'http://127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: secret })
+    } catch (err) {
+      message = (err as Error).message
+    }
+    expect(message).toMatch(/not a Proofy Play service credential/)
+    expect(message).not.toContain('secret-value')
   })
 })

@@ -50,3 +50,7 @@ export {
   type IdentityErrorCode,
   type ViewerResponse,
 } from '../../src/protocol/identity'
+// Brand cities opened from Proofy Play: the configuration contract and the one brand validator, and the world engine that compiles them.
+export { compileBrandWorld } from '../../src/brand/core/layout'
+export { PLAY_CONFIG_JSON_SCHEMA, PLAY_CONFIG_SCHEMA_VERSION, PLAY_GAME_KEY, parsePlayCityConfig, playPreviewWorldId, SUPPORTED_PLAY_SCHEMA_VERSIONS, type PlayEnvironment } from '../../src/brand/core/playConfig'
+export { PLAY_SESSION_ENDPOINT, RUN_TOKEN_PATTERN, type PlayErrorBody, type PlayErrorCode, type PlaySessionResponse } from '../../src/protocol/play'

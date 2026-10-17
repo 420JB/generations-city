@@ -24,10 +24,15 @@ export type BrandCityLoad = { ok: true; city: LoadedBrandCity } | { ok: false; p
 export function loadBrandCity(rawConfig: unknown, spec: SampleCitySpec): BrandCityLoad {
   const parsed = parseBrandCityConfig(rawConfig)
   if (!parsed.ok) return parsed
-  const compiled = compileBrandWorld(parsed.config)
+  return loadParsedBrandCity(parsed.config, spec)
+}
+
+/** The same, for a configuration that was already validated (for example one read from Proofy Play). */
+export function loadParsedBrandCity(config: Readonly<BrandCityConfig>, spec: SampleCitySpec): BrandCityLoad {
+  const compiled = compileBrandWorld(config)
   if (!compiled.ok) return { ok: false, problems: compiled.problems.map((p) => ({ path: `world:${p.code}`, detail: p.detail })) }
-  const state = buildSampleCity(parsed.config, compiled.world, spec)
-  return { ok: true, city: { config: parsed.config, world: compiled.world, state, scene: brandScene(parsed.config, compiled.world, state.nfts) } }
+  const state = buildSampleCity(config, compiled.world, spec)
+  return { ok: true, city: { config, world: compiled.world, state, scene: brandScene(config, compiled.world, state.nfts) } }
 }
 
 /** Plots a joining member could take in a district, as the engine computes them from the city's occupancy. */

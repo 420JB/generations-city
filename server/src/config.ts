@@ -7,7 +7,8 @@
  * - `production` the canonical city; the database is required.
  */
 import { TRUSTED_PROXIES, type TrustedProxy } from './clientKey'
-import { RARE_FRIENDS_CHAIN } from './engine'
+import { PLAY_GAME_KEY, RARE_FRIENDS_CHAIN, type PlayEnvironment } from './engine'
+import { PLAY_CREDENTIAL_PATTERN } from './play/client'
 
 export type AppMode = 'local' | 'staging' | 'production'
 
@@ -44,6 +45,34 @@ export interface ServerConfig {
    * the database holds.
    */
   activationEnabled: boolean
+  /**
+   * The connection to Proofy Play, as Rare City's game service, or null: not connected, and
+   * the Play launch route refuses with `play_disabled`. Set by PLAY_API_URL together with
+   * PLAY_SERVICE_CREDENTIAL; one without the other stops start-up.
+   */
+  play: PlayConnection | null
+}
+
+export interface PlayConnection {
+  /** Base URL of proofy-play-api. */
+  apiUrl: string
+  /** Rare City's service credential (`ppk_<env>_<keyId>.<secret>`). A secret: never logged or echoed. */
+  credential: string
+  /** The Play environment the credential was minted in. Must be one this mode may serve. */
+  environment: PlayEnvironment
+  /** Rare City's game key in Play. */
+  gameKey: string
+}
+
+/**
+ * Which Play environments a deployment of each mode may talk to: the same mapping
+ * `world_play_bindings` enforces (migration 0005). A staging city never reads live Play
+ * installations, and production never reads anything else.
+ */
+export const PLAY_ENVIRONMENTS_FOR_MODE: Readonly<Record<AppMode, readonly PlayEnvironment[]>> = {
+  local: ['dev', 'test'],
+  staging: ['staging'],
+  production: ['live'],
 }
 
 export type OwnershipSource = 'robinhood' | 'fixture'
@@ -227,6 +256,36 @@ function readActivationEnabled(env: Record<string, string | undefined>): boolean
   throw new ConfigError('ACTIVATION_ENABLED must be true or false.')
 }
 
+const GAME_KEY = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/
+
+/** Validates shapes only. The credential is a secret, so no error ever echoes it. */
+function readPlay(env: Record<string, string | undefined>, mode: AppMode): PlayConnection | null {
+  const apiUrl = clean(env.PLAY_API_URL)
+  const credential = clean(env.PLAY_SERVICE_CREDENTIAL)
+  const gameKey = clean(env.PLAY_GAME_KEY) ?? PLAY_GAME_KEY
+  if (apiUrl === undefined && credential === undefined) {
+    if (clean(env.PLAY_GAME_KEY) !== undefined) throw new ConfigError('PLAY_GAME_KEY is set but PLAY_API_URL and PLAY_SERVICE_CREDENTIAL are not.')
+    return null
+  }
+  if (apiUrl === undefined || credential === undefined) throw new ConfigError('PLAY_API_URL and PLAY_SERVICE_CREDENTIAL must be set together.')
+  let url: URL
+  try {
+    url = new URL(apiUrl)
+  } catch {
+    throw new ConfigError('PLAY_API_URL is not a valid URL.')
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new ConfigError('PLAY_API_URL must be an http:// or https:// URL.')
+  if (mode !== 'local' && url.protocol !== 'https:') throw new ConfigError(`PLAY_API_URL must be https:// when APP_MODE=${mode}.`)
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError('PLAY_API_URL must not carry credentials, a query or a fragment.')
+  const match = PLAY_CREDENTIAL_PATTERN.exec(credential)
+  if (!match) throw new ConfigError('PLAY_SERVICE_CREDENTIAL is not a Proofy Play service credential (ppk_<env>_<keyId>.<secret>).')
+  const environment = match[1] as PlayEnvironment
+  const allowed = PLAY_ENVIRONMENTS_FOR_MODE[mode]
+  if (!allowed.includes(environment)) throw new ConfigError(`PLAY_SERVICE_CREDENTIAL was minted for Play environment ${environment}; APP_MODE=${mode} may only use ${allowed.join(' or ')}.`)
+  if (!GAME_KEY.test(gameKey)) throw new ConfigError('PLAY_GAME_KEY is not a Proofy Play game key.')
+  return { apiUrl: url.toString().replace(/\/+$/, ''), credential, environment, gameKey }
+}
+
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
   const mode = readMode(env)
   const port = readPort(env)
@@ -245,5 +304,6 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     frameAncestors: readFrameAncestors(env),
     hstsMaxAge: readHstsMaxAge(env, mode),
     activationEnabled: readActivationEnabled(env),
+    play: readPlay(env, mode),
   }
 }

@@ -18,6 +18,11 @@ export type RuleAnswer = true | false | null
 export interface PreviewMember {
   id: string
   label: string
+  /**
+   * `player`: the real player Proofy Play launched, whose rules are NOT checked here (every
+   * rule answer stays unknown, so every gated district stays closed). Absent: simulated.
+   */
+  kind?: 'player'
   /** Simulated answers per Proofy verification rule id. A rule absent here is unknown (null). */
   answers: Readonly<Record<number, RuleAnswer>>
 }
