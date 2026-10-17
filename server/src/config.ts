@@ -48,7 +48,8 @@ export interface ServerConfig {
   /**
    * The connection to Proofy Play, as Rare City's game service, or null: not connected, and
    * the Play launch route refuses with `play_disabled`. Set by PLAY_API_URL together with
-   * PLAY_SERVICE_CREDENTIAL; one without the other stops start-up.
+   * PLAY_SERVICE_CREDENTIAL; one without the other stops start-up, and so does either without
+   * DATABASE_URL, because a launch opens the installation's persistent city.
    */
   play: PlayConnection | null
 }
@@ -290,11 +291,14 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
   const mode = readMode(env)
   const port = readPort(env)
   const host = clean(env.HOST) ?? (mode === 'local' ? '127.0.0.1' : '0.0.0.0')
+  const databaseUrl = readDatabaseUrl(env, mode)
+  const play = readPlay(env, mode)
+  if (play && !databaseUrl) throw new ConfigError('PLAY_API_URL needs DATABASE_URL: a Play launch opens the installation\'s persistent city.')
   return {
     mode,
     port,
     host,
-    databaseUrl: readDatabaseUrl(env, mode),
+    databaseUrl,
     commit: clean(env.RAILWAY_GIT_COMMIT_SHA) ?? clean(env.GIT_SHA) ?? null,
     publicOrigin: readPublicOrigin(env, mode, host, port),
     rpcUrl: readRpcUrl(env, mode),
@@ -304,6 +308,6 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     frameAncestors: readFrameAncestors(env),
     hstsMaxAge: readHstsMaxAge(env, mode),
     activationEnabled: readActivationEnabled(env),
-    play: readPlay(env, mode),
+    play,
   }
 }

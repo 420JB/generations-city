@@ -32,6 +32,9 @@ export PLAY_API_URL=http://127.0.0.1:18090
 export PLAY_DEV_OPERATOR_KEY=$DEV_OPERATOR_KEY
 export PLAY_DEV_CORE_ISSUER_PRIVATE_KEY=$DEV_CORE_ISSUER_PRIVATE_KEY
 export PLAY_DEV_CORE_ISSUER_KEY_ID=$DEV_CORE_ISSUER_KEY_ID
+# A disposable Postgres database whose name ends in _test. Each installation's first launch
+# founds its persistent city here; worlds are permanent, so use a database you can drop.
+export CITY_PLAY_DATABASE_URL=postgres://localhost:5432/rarecity_city_play_test
 ```
 
 ## 3. Run it
@@ -56,6 +59,7 @@ helpers in `play.ts` (`install`, `publish`, `launch`, `launchHref`), and open th
 ## For a deployment
 
 The server reads `PLAY_API_URL`, `PLAY_SERVICE_CREDENTIAL` and optionally `PLAY_GAME_KEY`
-(default `rare-city`). The credential's Play environment must match `APP_MODE`
+(default `rare-city`), and needs `DATABASE_URL` with them: a launch opens the installation's
+persistent city (migration 0005 must be applied). The credential's Play environment must match `APP_MODE`
 (local → dev/test, staging → staging, production → live). Register the schema once per Play
 environment with `npm run play:register-schema`.

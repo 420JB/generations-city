@@ -52,5 +52,8 @@ export {
 } from '../../src/protocol/identity'
 // Brand cities opened from Proofy Play: the configuration contract and the one brand validator, and the world engine that compiles them.
 export { compileBrandWorld } from '../../src/brand/core/layout'
-export { PLAY_CONFIG_JSON_SCHEMA, PLAY_CONFIG_SCHEMA_VERSION, PLAY_GAME_KEY, parsePlayCityConfig, playPreviewWorldId, SUPPORTED_PLAY_SCHEMA_VERSIONS, type PlayEnvironment } from '../../src/brand/core/playConfig'
-export { PLAY_SESSION_ENDPOINT, RUN_TOKEN_PATTERN, type PlayErrorBody, type PlayErrorCode, type PlaySessionResponse } from '../../src/protocol/play'
+export { PLAY_CONFIG_JSON_SCHEMA, PLAY_CONFIG_SCHEMA_VERSION, PLAY_GAME_KEY, parsePlayCityConfig, SUPPORTED_PLAY_SCHEMA_VERSIONS, type PlayEnvironment } from '../../src/brand/core/playConfig'
+export { PLAY_SESSION_ENDPOINT, RUN_TOKEN_PATTERN, type PlayErrorBody, type PlayErrorCode, type PlaySessionResponse, type PlayWorld } from '../../src/protocol/play'
+// Persistent brand cities: how a world's configuration may change, and the state its city is stored with.
+export { establishedCollections, foundationOf, governingProblems, judgeWorldConfig, parseWorldFoundation, sameFoundation, WORLD_CONFIG_JUDGE, type FoundationCollection, type WorldConfigJudgement, type WorldFoundation } from '../../src/brand/core/evolution'
+export { emptyWorldCityState, parseWorldCityState, WORLD_CITY_STATE_VERSION, type WorldCityState } from '../../src/world/cityState'

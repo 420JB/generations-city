@@ -1018,7 +1018,13 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
     for (const table of Object.keys(LEGACY).filter((k) => k !== 'city')) expect(after[table], table).toBe(before[table])
     const legacyCity = async () => JSON.stringify((await t.db.query(`SELECT id, instance_id, sequence, state::text AS state FROM city WHERE id = 'main'`)).rows)
     expect(JSON.parse(after.city).filter((c: { id: string }) => c.id === 'main')).toEqual(JSON.parse(before.city))
-    expect(await verifyCity(t.db)).toEqual(report)
+    // The Rare Friends city verifies exactly as before. The two worlds here are bare rows written by hand (a legacy
+    // state, no founding event, a test document), not worlds the store founded, and the world-aware verifier says so.
+    const verified = await verifyCity(t.db)
+    expect({ city: verified.city, counts: verified.counts }).toEqual({ city: report.city, counts: report.counts })
+    expect(verified.worlds.map((w) => w.id).sort()).toEqual([a.worldId, b.worldId].sort())
+    expect([...new Set(verified.violations.map((v) => v.category))]).toEqual(['worlds'])
+    expect(verified.violations.filter((v) => v.category !== 'worlds')).toEqual([])
     const main = await legacyCity()
     // The legacy city still activates exactly as before, through the guards that refuse a world's city.
     const identity = await addIdentity(t.db)

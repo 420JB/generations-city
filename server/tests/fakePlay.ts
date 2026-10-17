@@ -1,5 +1,8 @@
+import { emptyWorldCityState, judgeWorldConfig } from '../src/engine'
 import { canonicalHash } from '../src/play/canonical'
 import { PlayApiError, type PlayConfigVersion, type PlayGameReader, type PlayInstallation, type PlayRun } from '../src/play/client'
+import { uuidv7 } from '../src/world/ids'
+import { WorldRefusal, type ConfirmActive, type VerifiedLaunch, type WorldStore } from '../src/world/store'
 
 /** Two brand documents in Rare City's Play schema v1 (a small one and the reference one). */
 export const DOC_A = {
@@ -85,15 +88,26 @@ export function fakePlay() {
     install(id: string, guild: string) {
       installations.set(id, { id, gameKey: 'rare-city', discordGuildId: guild, status: 'active', activeConfigVersion: null, activeConfigHash: null, versions: [] })
     },
-    /** Create and activate a version, as an admin would. */
-    publish(id: string, config: Record<string, unknown>, schemaVersion = 1) {
+    /** Create a version without activating it. */
+    create(id: string, config: Record<string, unknown>, schemaVersion = 1) {
       const i = installations.get(id)!
       const version = i.versions.length + 1
       const configHash = canonicalHash(config)
       i.versions.push({ installationId: id, version, schemaVersion, configHash, config: structuredClone(config) })
-      i.activeConfigVersion = version
-      i.activeConfigHash = configHash
       return { version, configHash }
+    },
+    /** Make a version the active one (Play may re-activate an earlier version). */
+    activate(id: string, version: number) {
+      const i = installations.get(id)!
+      const v = i.versions.find((x) => x.version === version)!
+      i.activeConfigVersion = v.version
+      i.activeConfigHash = v.configHash
+    },
+    /** Create and activate a version, as an admin would. */
+    publish(id: string, config: Record<string, unknown>, schemaVersion = 1) {
+      const created = this.create(id, config, schemaVersion)
+      this.activate(id, created.version)
+      return created
     },
     setStatus(id: string, status: PlayInstallation['status']) {
       installations.get(id)!.status = status
@@ -117,4 +131,43 @@ export function fakePlay() {
       return runToken
     },
   }
+}
+
+/**
+ * A stand-in for the world store, for launch-path tests that need no database: one world per
+ * installation, kept in memory, judged with the same pure judge the real store uses. It
+ * records exactly what the launch path handed it. The real store is tested against Postgres
+ * (world.db.test.ts).
+ */
+export function memoryWorlds() {
+  const worlds = new Map<string, string>()
+  const opened: VerifiedLaunch[] = []
+  const confirms: ConfirmActive[] = []
+  const store: WorldStore & { fail?: Error } = {
+    async open(launch, confirmActive) {
+      opened.push(structuredClone(launch))
+      confirms.push(confirmActive)
+      if (store.fail) throw store.fail
+      const known = worlds.get(launch.installationId)
+      const id = known ?? uuidv7()
+      const judged = judgeWorldConfig(launch.pinned.config, id, null)
+      if (judged.verdict === 'rejected') throw new WorldRefusal(judged.code, 'refused', judged.problems)
+      worlds.set(launch.installationId, id)
+      return {
+        cityId: `world:${id}`,
+        instance: '00000000-0000-4000-8000-000000000000',
+        accepted: judged,
+        world: {
+          id,
+          provisioned: true,
+          created: !known,
+          foundedAt: '2026-10-17T00:00:00.000Z',
+          sequence: 1,
+          definition: { foundingConfigVersion: 1, governingConfigVersion: launch.pinned.version, layoutKey: judged.foundation.layout.key, geometryFingerprint: judged.foundation.layout.geometryFingerprint },
+          state: emptyWorldCityState(),
+        },
+      }
+    },
+  }
+  return { store, opened, confirms, worlds }
 }

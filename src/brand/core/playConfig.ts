@@ -1,4 +1,3 @@
-import { uuidV8FromText } from '../../world/property'
 import { BRAND_LIMITS, parseBrandCityConfig, type ConfigProblem, type ParsedBrandConfig } from './config'
 import { BRAND_MEDIA_PREFIX } from './media'
 
@@ -225,17 +224,3 @@ export function parsePlayCityConfig(document: unknown, worldId: string): ParsedB
 
 /** Play's environment labels, as embedded in a service credential (`ppk_<env>_…`). */
 export type PlayEnvironment = 'dev' | 'test' | 'staging' | 'live'
-
-/**
- * The world id the PREVIEW uses for an installation that has no provisioned world yet.
- *
- * A real world is a `worlds` row (migration 0005) with an application-generated UUIDv7, bound
- * once to its installation. Founding one is not done here (it needs `city:verify` to become
- * world-aware first). Until then the city still needs an id for the engine, so this derives one
- * from the installation: stable across launches, different per installation and environment,
- * and a UUIDv8, so it can never be mistaken for, or collide with, a provisioned UUIDv7 world.
- * Nothing permanent may be keyed by it.
- */
-export function playPreviewWorldId(environment: PlayEnvironment, installationId: string): string {
-  return uuidV8FromText(`rare-city:play-preview-world:v1|env=${environment}|installation=${installationId}`)
-}

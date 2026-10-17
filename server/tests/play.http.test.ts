@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app'
 import { createLogger } from '../src/log'
 import { createPlayLaunchService, type PlayLaunchService } from '../src/play/launch'
-import { DOC_A, fakePlay, GUILD_A, INSTALLATION_A } from './fakePlay'
+import { DOC_A, fakePlay, GUILD_A, INSTALLATION_A, memoryWorlds } from './fakePlay'
 import { TEST_ORIGIN, testConfig } from './testConfig'
 
 const servers: Server[] = []
@@ -34,7 +34,7 @@ describe('POST /v1/play/session', () => {
     const p = fakePlay()
     p.install(INSTALLATION_A, GUILD_A)
     p.publish(INSTALLATION_A, DOC_A)
-    const base = await start(createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city' }))
+    const base = await start(createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city', worlds: memoryWorlds().store }))
 
     const foreign = await post(base, { runToken: p.launch(INSTALLATION_A, 'x') }, 'https://evil.example')
     expect([foreign.status, await foreign.json()]).toEqual([403, { error: 'origin_mismatch' }])
@@ -43,8 +43,9 @@ describe('POST /v1/play/session', () => {
     const res = await post(base, { runToken: p.launch(INSTALLATION_A, 'a') })
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-store')
-    const body = (await res.json()) as { play: { installationId: string }; config: unknown }
+    const body = (await res.json()) as { play: { installationId: string }; world: { provisioned: boolean; created: boolean }; config: unknown }
     expect(body.play.installationId).toBe(INSTALLATION_A)
+    expect(body.world).toMatchObject({ provisioned: true, created: true })
     expect(body.config).toEqual(DOC_A)
 
     const get = await fetch(`${base}/v1/play/session`)
@@ -55,7 +56,7 @@ describe('POST /v1/play/session', () => {
     const p = fakePlay()
     p.install(INSTALLATION_A, GUILD_A)
     p.publish(INSTALLATION_A, { ...DOC_A, roads: 'gold' })
-    const base = await start(createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city' }))
+    const base = await start(createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city', worlds: memoryWorlds().store }))
     const named = await post(base, { runToken: 'a.b.c', installationId: INSTALLATION_A })
     expect([named.status, await named.json()]).toEqual([422, { error: 'invalid_request' }])
     const invalid = await post(base, { runToken: p.launch(INSTALLATION_A, 'bad') })
@@ -70,7 +71,7 @@ describe('POST /v1/play/session', () => {
     const p = fakePlay()
     p.install(INSTALLATION_A, GUILD_A)
     p.publish(INSTALLATION_A, DOC_A)
-    const base = await start(createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city' }), true)
+    const base = await start(createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city', worlds: memoryWorlds().store }), true)
     for (let i = 0; i < 20; i++) expect((await post(base, { runToken: 'eyJhbGciOiJFZERTQSJ9.dW5rbm93bi10b2tlbg.c2lnbmF0dXJlLXNpZ25hdHVyZQ' })).status).toBe(403)
     const calls = p.calls.length
     const limited = await post(base, { runToken: p.launch(INSTALLATION_A, 'late') })

@@ -58,6 +58,9 @@ server/
     seed-demo-cli.ts   `npm run city:seed-demo -- --non-canonical`
     genesis-cli.ts     `npm run city:genesis -- <command>`
     verify-cli.ts      `npm run city:verify`
+    world/store.ts     persistent brand cities: founding, configuration versions, adoption, loading
+    world/verify.ts    the world half of `city:verify`
+    world/ids.ts       UUIDv7 world ids
     db/pool.ts         pg pool
     db/transaction.ts  one transaction on one pooled connection, and when that connection may be reused
     db/migrations.ts   migration loader, runner and readiness probe
@@ -724,16 +727,47 @@ property at the property's sequence, every property the property of a committed 
 eras numbered from 1 with only the latest open, each era's address, wallet and user naming
 one owner, and each building owned in the state by the user of its open era.
 
-- exit `0`: valid, with one `city verified` line of metadata and counts;
+It is world-aware (migration 0005). A persistent brand city's city row and events belong to
+its world, not to the Rare Friends city, and each world is checked on its own: exactly one
+Play binding, for a Play environment this database serves; a city `world:<id>` of the kind
+0005 founds a world on here (canonical in production, a rehearsal elsewhere) holding no Rare
+Friends records; a state this build reads (version 1, empty) at sequence 1; one
+`city.initialized` event whose founding record agrees with the binding and with the city row
+(origin, canonical, rehearsal flag, state version), the database's environment stamp and the
+founding copy (version, hash, schema version); every configuration copy stored as Play's
+canonical text of itself and hashing to its hash; every accepted copy a valid city on the
+founding geometry that keeps the founding collections; every rejected copy judged by this
+build's rules (`judged_by` = `rare-city/play-config-v1+world-evolution-v2`) carrying the
+verdict they give it; adoptions numbered from 1, adoption 1 the
+founding version, never re-adopting the version that governs, and each keeping every
+collection the adoptions before it established. Across worlds, no
+installation, Discord server or city belongs to two. A city row that is neither `main` nor a
+world's is reported. A database before 0005 is verified exactly as before.
+
+- exit `0`: valid, with one `world` line per world and one `city verified` line of metadata
+  and counts;
 - exit `1`: invalid; each violation is logged with its `category` (`city`, `mode`,
-  `state`, `buildings`, `users`, `properties`, `events`, `eras`, `intents`), `rule` and
-  detail;
+  `state`, `buildings`, `users`, `properties`, `events`, `eras`, `intents`, `worlds`),
+  `rule` and detail;
 - exit `2`: the check could not be run.
 
 ## Genesis, the rehearsal city and the staging fixture
 
-**Nothing installs or replaces a city automatically**: not a migration, not a deploy, not
-the service at start-up, not a request. Only these operator commands do, each run by hand.
+**Nothing installs or replaces the Rare Friends city automatically**: not a migration, not a
+deploy, not the service at start-up, not a request. Only these operator commands do, each run
+by hand.
+
+The one city a request can create is a persistent brand city (a world, migration 0005): a
+Proofy Play installation's first launch that Play has verified founds it, once, in one
+transaction with its permanent binding (`world/store.ts`). It is never replaced or reset:
+later launches open it, whatever configuration version they run. A configuration version's
+verdict depends on that version and the world's foundation alone, never on which launch showed
+it first: one that would move the districts or drop or repoint a founding collection is
+recorded as rejected and refused. Collections are additive: a version (an older one
+re-activated, a new one, or one a run is still pinned to) that lacks a collection a governing
+version established cannot govern, and its launch is refused without anything being written
+beyond its verdict. A version is adopted only once Play confirms, asked again under the world's
+lock with a 3-second deadline, that it is still the installation's active one.
 
 `createGenesisState()` is the empty city: no users, no buildings, no simulated wallets, no
 badges or counters, nothing held, no history, no radio, one founding ward open per

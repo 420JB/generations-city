@@ -1,13 +1,11 @@
 import {
-  compileBrandWorld,
-  parsePlayCityConfig,
-  playPreviewWorldId,
   RUN_TOKEN_PATTERN,
   SUPPORTED_PLAY_SCHEMA_VERSIONS,
   type PlayEnvironment,
   type PlayErrorCode,
   type PlaySessionResponse,
 } from '../engine'
+import { WorldRefusal, type ConfirmActive, type WorldRefusalCode, type WorldStore } from '../world/store'
 import { canonicalHash } from './canonical'
 import { PlayApiError, type PlayGameReader } from './client'
 
@@ -37,6 +35,10 @@ export interface PlayLaunchOptions {
   environment: PlayEnvironment
   /** Rare City's game key in Play. */
   gameKey: string
+  /** Where the installation's persistent city lives. */
+  worlds: WorldStore
+  /** Tests only: the deadline for Play's confirmation under the world's lock. */
+  activeConfirmMs?: number
 }
 
 /** Play's answers to a redemption, as the city states them. Anything else is Play being unavailable. */
@@ -57,6 +59,25 @@ function redeemRefusal(err: PlayApiError): PlayLaunchError | null {
 }
 
 const unavailable = () => new PlayLaunchError(503, 'play_unavailable', 'Proofy Play could not be reached or answered outside its contract.')
+
+/** How each refusal of the world store is stated. */
+const WORLD_STATUS: Record<WorldRefusalCode, number> = {
+  config_invalid: 422,
+  config_incompatible: 409,
+  config_superseded: 409,
+  config_binding_mismatch: 502,
+  world_binding_conflict: 409,
+  world_unavailable: 503,
+}
+/**
+ * How long the world store waits, holding one world's lock, for Play to confirm the active version
+ * before it founds the world or adopts a version. Shorter than the store's lock timeout (5s), so a
+ * launch queued behind it still gets the lock; past it, nothing is founded or adopted.
+ */
+export const ACTIVE_CONFIRM_MS = 3_000
+
+// The database failing is not Play failing: say which. The cause stays in the server log, never in the answer.
+const worldUnavailable = (err: unknown) => new PlayLaunchError(503, 'world_unavailable', `The city could not be read or stored: ${err instanceof Error ? err.message : String(err)}`)
 const mismatch = (what: string) => new PlayLaunchError(502, 'config_binding_mismatch', `Proofy Play's answer does not belong to this run: ${what}.`)
 
 /**
@@ -71,13 +92,38 @@ const mismatch = (what: string) => new PlayLaunchError(502, 'config_binding_mism
  *   4. The PINNED version is loaded (never "the active one": a run keeps the version it was
  *      launched with, contract §4.4). It must be that installation's, that version, carry the
  *      run's hash, and hash to it when Rare City recomputes Play's canonical JSON.
- *   5. Its schema version must be one this build reads, and the document must be a valid
- *      Rare City city: Rare City's own validator, then the world engine's.
+ *   5. Its schema version must be one this build reads.
+ *   6. The installation's PERSISTENT city is opened (`world/store.ts`): founded by its first
+ *      launch, the same world on every launch after. Before it founds the world or adopts the
+ *      pinned version, the store has Play confirm, once and within ACTIVE_CONFIRM_MS, that the
+ *      version is still the installation's active one. The world judges the pinned document:
+ *      Rare City's validator, the world engine's, and the rules for how a founded city's
+ *      configuration may change. A version it cannot accept is recorded as rejected and refused.
  *
  * Any failure refuses the launch. Nothing is substituted: there is no sample city, no
- * "last good" configuration, no default.
+ * "last good" configuration, no default, and never a second city.
  */
-export function createPlayLaunchService({ play, environment, gameKey }: PlayLaunchOptions): PlayLaunchService {
+export function createPlayLaunchService({ play, environment, gameKey, worlds, activeConfirmMs = ACTIVE_CONFIRM_MS }: PlayLaunchOptions): PlayLaunchService {
+  /** The store's one question to Play under its lock: still this installation's, still active, and which version? */
+  function confirmActive(installationId: string, discordGuildId: string): ConfirmActive {
+    let asked = false
+    return async () => {
+      if (asked) return null
+      asked = true
+      let timer: NodeJS.Timeout | undefined
+      const deadline = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), activeConfirmMs)))
+      const answer = play.getInstallation(installationId).then(
+        (i) => (i.id === installationId && i.gameKey === gameKey && i.discordGuildId === discordGuildId && i.status === 'active' ? { version: i.activeConfigVersion, configHash: i.activeConfigHash } : null),
+        () => null,
+      )
+      try {
+        return await Promise.race([answer, deadline])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+  }
+
   async function ask<T>(work: Promise<T>, refusal: (err: PlayApiError) => PlayLaunchError | null = () => null): Promise<T> {
     try {
       return await work
@@ -122,11 +168,23 @@ export function createPlayLaunchService({ play, environment, gameKey }: PlayLaun
       if (!SUPPORTED_PLAY_SCHEMA_VERSIONS.includes(version.schemaVersion)) {
         throw new PlayLaunchError(422, 'config_schema_unsupported', `Configuration schema version ${version.schemaVersion} is not one this build reads.`)
       }
-      const worldId = playPreviewWorldId(environment, run.installationId)
-      const parsed = parsePlayCityConfig(version.config, worldId)
-      if (!parsed.ok) throw new PlayLaunchError(422, 'config_invalid', 'The pinned configuration is not a valid Rare City city.', parsed.problems)
-      const compiled = compileBrandWorld(parsed.config)
-      if (!compiled.ok) throw new PlayLaunchError(422, 'config_invalid', 'The pinned configuration does not make a valid world.', compiled.problems.map((p) => ({ path: `world:${p.code}`, detail: p.detail })))
+      let opened
+      try {
+        opened = await worlds.open(
+          {
+            environment,
+            gameKey,
+            installationId: run.installationId,
+            discordGuildId: run.discordGuildId,
+            active: { version: installation.activeConfigVersion, configHash: installation.activeConfigHash },
+            pinned: { version: version.version, schemaVersion: version.schemaVersion, configHash: version.configHash, config: version.config },
+          },
+          confirmActive(run.installationId, run.discordGuildId),
+        )
+      } catch (err) {
+        if (err instanceof WorldRefusal) throw new PlayLaunchError(WORLD_STATUS[err.code], err.code, err.message, err.problems)
+        throw worldUnavailable(err)
+      }
 
       return {
         play: {
@@ -141,7 +199,7 @@ export function createPlayLaunchService({ play, environment, gameKey }: PlayLaun
           schemaVersion: version.schemaVersion,
         },
         player: { displayName: run.player.displayName },
-        world: { id: worldId, provisioned: false },
+        world: opened.world,
         config: version.config,
       }
     },

@@ -1,5 +1,6 @@
 import type { Database } from '../db/pool'
 import { checkAuthoritativeCity, STATE_VERSION, type CityMode, type InvariantCategory, type PropertyFacts } from '../engine'
+import { hasWorldTables, verifyWorlds, worldCityIds, type WorldVerifyReport } from '../world/verify'
 import { CITY_ID } from './store'
 
 /**
@@ -12,8 +13,14 @@ import { CITY_ID } from './store'
  * It checks the state's own invariants, exact parity between buildings and normalized
  * property rows where the city may hold real properties, that the events account for the
  * sequence, and the ownership-era rules that can be seen from the rows.
+ *
+ * WORLD-AWARE: a database may also hold persistent brand cities (`worlds`, migration 0005).
+ * Their cities and events are theirs, not orphans of the Rare Friends city, and each world is
+ * verified by its own rules (`world/verify.ts`, category `worlds`). A city row that is neither
+ * the Rare Friends city nor a world's is reported. A database with worlds may have no Rare
+ * Friends city; one with neither has nothing installed and fails, as it always has.
  */
-export type VerifyCategory = InvariantCategory | 'city' | 'events' | 'eras' | 'intents'
+export type VerifyCategory = InvariantCategory | 'city' | 'events' | 'eras' | 'intents' | 'worlds'
 
 export interface VerifyViolation {
   category: VerifyCategory
@@ -26,6 +33,8 @@ export interface VerifyReport {
   /** null when no city is installed. */
   city: { id: string; instance: string; sequence: number; stateVersion: number; canonical: boolean; origin: string; activationRehearsal: boolean; mode: CityMode | null } | null
   counts: { buildings: number; users: number; events: number; properties: number; eras: number; openEras: number; intents: number; committedIntents: number }
+  /** Every persistent brand city in the database, in founding order. */
+  worlds: WorldVerifyReport[]
   violations: VerifyViolation[]
 }
 
@@ -72,13 +81,17 @@ export async function verifyCity(db: Database): Promise<VerifyReport> {
   const client = await db.connect()
   try {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+    // Before migration 0005 there are no worlds, and the Rare Friends city is verified exactly as it always was.
+    const worldCities = (await hasWorldTables(client)) ? await worldCityIds(client) : new Set<string>()
     const row = (
       await client.query<{ id: string; instance_id: string; sequence: string; state_version: number; canonical: boolean; origin: string; activation_rehearsal: boolean; state: unknown }>(
         'SELECT id, instance_id, sequence, state_version, canonical, origin, activation_rehearsal, state FROM city WHERE id = $1',
         [CITY_ID],
       )
     ).rows[0]
-    const events = (await client.query<{ city_id: string; sequence: string; type: string }>('SELECT city_id, sequence, type FROM city_events ORDER BY city_id, sequence')).rows
+    // A world's events are its own; everything else is the Rare Friends city's, or nobody's.
+    const events = (await client.query<{ city_id: string; sequence: string; type: string }>('SELECT city_id, sequence, type FROM city_events ORDER BY city_id, sequence')).rows.filter((e) => !worldCities.has(e.city_id))
+    const unknownCities = (await client.query<{ id: string }>('SELECT id FROM city WHERE id <> $1 ORDER BY id', [CITY_ID])).rows.filter((c) => !worldCities.has(c.id))
     const properties = (
       await client.query<PropertyRow>(
         `SELECT p.id, p.city_id, p.city_instance_id, p.token_id::text AS token_id, p.family_id, p.district_id, p.ward, p.plot, p.plot_id, p.building_id,
@@ -103,11 +116,14 @@ export async function verifyCity(db: Database): Promise<VerifyReport> {
     counts.intents = intents.reduce((a, i) => a + i.n, 0)
     counts.committedIntents = intents.find((i) => i.status === 'committed')?.n ?? 0
 
+    for (const c of unknownCities) add('city', 'unknown-city', `city ${c.id} is neither the Rare Friends city nor a world's city`)
+    const worlds = worldCities.size > 0 ? await verifyWorlds(client, (rule, detail) => add('worlds', rule, detail)) : []
+
     if (!row) {
-      add('city', 'not-initialized', 'no city is installed in this database')
+      if (worldCities.size === 0) add('city', 'not-initialized', 'no city is installed in this database')
       if (events.length > 0) add('events', 'orphan-events', `${events.length} city events exist without a city`)
       if (properties.length > 0) add('properties', 'orphan-properties', `${properties.length} properties exist without a city`)
-      return { ok: false, city: null, counts, violations }
+      return { ok: violations.length === 0, city: null, counts, worlds, violations }
     }
 
     const sequence = Number(row.sequence)
@@ -173,6 +189,7 @@ export async function verifyCity(db: Database): Promise<VerifyReport> {
       ok: violations.length === 0,
       city: { id: row.id, instance: row.instance_id, sequence, stateVersion: row.state_version, canonical: row.canonical, origin: row.origin, activationRehearsal: row.activation_rehearsal, mode: check.mode },
       counts,
+      worlds,
       violations,
     }
   } finally {

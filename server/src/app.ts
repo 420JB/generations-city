@@ -363,7 +363,8 @@ export function createApp(deps: AppDeps): RequestListener {
     }),
     [ACTIVATION_INTENTS_ENDPOINT]: activationRoute(ACTIVATION_INTENTS_ENDPOINT, LIMITS.activationIntent, (service, session, body) => service.issueIntent(session, body)),
     [ACTIVATIONS_ENDPOINT]: activationRoute(ACTIVATIONS_ENDPOINT, LIMITS.activationCommit, (service, session, body) => service.commit(session, body)),
-    // A Proofy Play launch: the run token in, the validated brand city out. No session, no database: Play is the authority.
+    // A Proofy Play launch: the run token in, the installation's persistent city out. No session: Play says which
+    // installation and configuration this is; the world store, from its own bindings, which city.
     [PLAY_SESSION_ENDPOINT]: {
       limit: LIMITS.playSession.client,
       failure: { code: 'play_unavailable', log: 'play launch failed' },

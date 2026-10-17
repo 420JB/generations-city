@@ -43,6 +43,7 @@ describe.skipIf(NO_TEST_DATABASE)('city:verify against a disposable Postgres', (
         ok: true,
         city: { id: 'main', instance: meta.instance, sequence: 1, stateVersion: 5, canonical: false, origin: 'demo-fixture', activationRehearsal: false, mode: 'demo-fixture' },
         counts: { buildings: 180, users: 57, events: 1, properties: 0, eras: 0, openEras: 0, intents: 0, committedIntents: 0 },
+        worlds: [],
         violations: [],
       })
     })
@@ -64,6 +65,7 @@ describe.skipIf(NO_TEST_DATABASE)('city:verify against a disposable Postgres', (
         ok: true,
         city: { id: 'main', instance: meta.instance, sequence: 4, stateVersion: 5, canonical: false, origin: 'demo-fixture', activationRehearsal: true, mode: 'rehearsal' },
         counts: { buildings: 3, users: 3, events: 4, properties: 3, eras: 3, openEras: 3, intents: 3, committedIntents: 3 },
+        worlds: [],
         violations: [],
       })
     })

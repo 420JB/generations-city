@@ -2,12 +2,11 @@ import { resolve } from 'node:path'
 import { defineConfig, devices } from '@playwright/test'
 
 // Browser tests of the Proofy Play launch page against a LOCAL Proofy Play (see README.md for the
-// environment it needs). Three servers: the Rare City server connected to that Play (serve.ts),
-// the built launch page (its registered launch URL), and the built sample preview, for the
-// side-by-side renderer comparison. `npm run test:e2e:city-play`.
+// environment it needs). Two servers: the Rare City server connected to that Play and to a
+// disposable database (serve.ts), and the built launch page (its registered launch URL).
+// `npm run test:e2e:city-play`.
 const SERVER_PORT = 4351
 const PAGE_PORT = 4352
-const SAMPLE_PORT = 4353
 const repo = resolve(import.meta.dirname, '..')
 
 export default defineConfig({
@@ -40,13 +39,6 @@ export default defineConfig({
       cwd: repo,
       env: { RARE_CITY_SERVER: `http://127.0.0.1:${SERVER_PORT}` },
       url: `http://localhost:${PAGE_PORT}`,
-      reuseExistingServer: false,
-      timeout: 180_000,
-    },
-    {
-      command: `npx vite build --config proofy-city-preview/vite.config.ts && npx vite preview --config proofy-city-preview/vite.config.ts --port ${SAMPLE_PORT} --strictPort`,
-      cwd: repo,
-      url: `http://localhost:${SAMPLE_PORT}`,
       reuseExistingServer: false,
       timeout: 180_000,
     },

@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HARBORLIGHT } from '../samples'
-import { buildSampleCity } from './sampleCity'
 import { parseBrandCityConfig } from './config'
-import { compileBrandWorld } from './layout'
-import { MAX_VERIFICATION_RULE_ID, parsePlayCityConfig, PLAY_CONFIG_JSON_SCHEMA, playPreviewWorldId } from './playConfig'
-import { standardSimulation } from './simulation'
+import { MAX_VERIFICATION_RULE_ID, parsePlayCityConfig, PLAY_CONFIG_JSON_SCHEMA } from './playConfig'
 
 const WORLD = '65f52587-14b5-8a6e-aae7-faf8ea5651ec'
 
@@ -32,18 +29,6 @@ describe('Rare City Play configuration (schema v1)', () => {
     const asCore = { ...sample.config, districts: sample.config.districts.map((d) => ({ ...d, gate: d.gate ? { ...d.gate, source: 'proofy-core' } : null })) }
     expect(r.config).toEqual(asCore)
     expect(r.config.districts[3].gate).toEqual({ source: 'proofy-core', verificationRuleId: 9001, label: 'Verified Captain role' })
-  })
-
-  it('a four-district Play city gets exactly the Harborlight sample\'s simulated skyline', () => {
-    const r = parsePlayCityConfig(harborlightDocument(), WORLD)
-    if (!r.ok) throw new Error('invalid')
-    const world = compileBrandWorld(r.config)
-    if (!world.ok) throw new Error('world')
-    const sample = buildSampleCity(r.config, world.world, HARBORLIGHT.city)
-    const standard = buildSampleCity(r.config, world.world, standardSimulation(r.config))
-    // Only the member handles differ (names, not who owns what).
-    const strip = (s: typeof sample) => ({ ...s, users: Object.values(s.users).map((u) => ({ ...u, handle: '' })) })
-    expect(strip(standard)).toEqual(strip(sample))
   })
 
   it('closes every object: anything but the brand surface is refused', () => {
@@ -193,15 +178,5 @@ describe('Rare City Play configuration (schema v1)', () => {
     expect(s.properties.districts.maxItems).toBe(9)
     // Within Play's 64 KiB schema limit by a wide margin.
     expect(JSON.stringify(s).length).toBeLessThan(8_000)
-  })
-})
-
-describe('preview world ids', () => {
-  it('are stable, per installation and environment, and UUIDv8 (never a provisioned UUIDv7 world)', () => {
-    const a = playPreviewWorldId('dev', '01a14806-e132-74c6-ae8d-d7ee9453ea64')
-    expect(a).toBe(playPreviewWorldId('dev', '01a14806-e132-74c6-ae8d-d7ee9453ea64'))
-    expect(a).not.toBe(playPreviewWorldId('dev', '01a14806-e132-74c6-ae8d-d7ee9453ea65'))
-    expect(a).not.toBe(playPreviewWorldId('staging', '01a14806-e132-74c6-ae8d-d7ee9453ea64'))
-    expect(a[14]).toBe('8')
   })
 })

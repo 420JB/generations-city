@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { parsePlayCityConfig } from '../core/playConfig'
 import type { PreviewMember } from '../core/eligibility'
 import type { ConfigProblem } from '../core/config'
-import { standardSimulation } from '../core/simulation'
-import { loadParsedBrandCity, type LoadedBrandCity } from '../load'
+import { loadPersistedBrandCity, type LoadedBrandCity } from '../load'
 import { BrandCityPreview } from '../preview/PreviewApp'
 import { parsePlaySessionResponse, PLAY_SESSION_ENDPOINT, runTokenFromFragment, type PlayErrorCode, type PlaySessionResponse } from '../../protocol/play'
 
@@ -31,6 +30,10 @@ const REFUSALS: Record<PlayErrorCode | 'unreadable', string> = {
   config_binding_mismatch: 'The city configuration Proofy Play returned does not belong to this launch, so it was not used.',
   config_schema_unsupported: 'This server’s city configuration uses a version this build of Rare City cannot read.',
   config_invalid: 'This server’s city configuration is not valid, so the city was not opened. A server admin must correct it in Proofy Play.',
+  config_incompatible: 'This server’s new city configuration would move its districts or drop a collection, so it was not applied. The city is unchanged; a server admin must keep its districts and collections in Proofy Play.',
+  config_superseded: 'This server’s city configuration changed after this launch. Launch Rare City again from Proofy Play.',
+  world_binding_conflict: 'This Discord server’s city belongs to another Rare City installation, so it was not opened.',
+  world_unavailable: 'The city could not be loaded just now. Launch again in a moment.',
   play_unavailable: 'Proofy Play could not be reached. Launch again in a moment.',
   unreadable: 'Rare City answered with something this page cannot read.',
 }
@@ -65,20 +68,22 @@ async function openSession(runToken: string): Promise<Phase> {
   }
   const session = parsePlaySessionResponse(body)
   if (!session) return { kind: 'refused', code: 'unreadable', problems: [] }
-  // The server validated this configuration; the page validates it again with the same code before drawing it.
+  // The server validated this configuration for this world; the page validates it again with the same code, and
+  // draws the city as stored, on the geometry it was founded on.
   const parsed = parsePlayCityConfig(session.config, session.world.id)
   if (!parsed.ok) return { kind: 'refused', code: 'config_invalid', problems: parsed.problems }
-  const loaded = loadParsedBrandCity(parsed.config, standardSimulation(parsed.config))
+  const loaded = loadPersistedBrandCity(parsed.config, session.world.state, session.world.definition.geometryFingerprint)
   if (!loaded.ok) return { kind: 'refused', code: 'config_invalid', problems: loaded.problems }
   return { kind: 'ready', session, city: loaded.city }
 }
 
 /**
  * THE PROOFY PLAY LAUNCH PAGE: Rare City's registered launch URL. Proofy Play sends the
- * player here with a run token in the fragment; the Rare City server redeems it with Play
- * and returns the installation's pinned, hash-checked configuration, which the standard city
- * renderer draws. Anything else (no token, a refused token, an invalid configuration) is
- * said plainly and nothing is drawn.
+ * player here with a run token in the fragment; the Rare City server redeems it with Play,
+ * opens the installation's persistent city (founding it on the first launch) and returns it
+ * with the pinned, hash-checked configuration. The standard city renderer draws exactly what
+ * is stored. Anything else (no token, a refused token, a configuration the city cannot take)
+ * is said plainly and nothing is drawn.
  */
 export function PlayCityApp() {
   const [runToken] = useState(takeRunToken)
@@ -138,7 +143,8 @@ export function PlayCityApp() {
 }
 
 function PlayCity({ session, city }: { session: PlaySessionResponse; city: LoadedBrandCity }) {
-  const { play, player } = session
+  const { play, player, world } = session
+  const buildings = Object.keys(city.state.buildings).length
   const members = useMemo<(PreviewMember | null)[]>(
     () => [
       null,
@@ -149,18 +155,32 @@ function PlayCity({ session, city }: { session: PlaySessionResponse; city: Loade
     [player.displayName, city.config.districts],
   )
   return (
-    <div className="play-city" data-testid="play-city" data-installation={play.installationId} data-guild={play.discordGuildId} data-config-version={play.configVersion} data-config-hash={play.configHash} data-world={session.world.id}>
+    <div
+      className="play-city"
+      data-testid="play-city"
+      data-installation={play.installationId}
+      data-guild={play.discordGuildId}
+      data-config-version={play.configVersion}
+      data-config-hash={play.configHash}
+      data-world={world.id}
+      data-world-created={String(world.created)}
+      data-world-sequence={world.sequence}
+      data-governing-version={world.definition.governingConfigVersion}
+      data-buildings={buildings}
+    >
       <BrandCityPreview
         city={city}
         members={members}
         bar={
           <div className="preview-bar play-bar" role="region" aria-label="Proofy Play installation" data-testid="preview-bar">
             <span className="preview-flag play-flag">PROOFY PLAY · {play.environment.toUpperCase()}</span>
-            <span className="preview-note">
-              Brand configuration from this server’s Proofy Play installation. Buildings, progress and the simulated viewers are not real; nothing is claimed, verified or spent.
+            <span className="preview-note" data-testid="play-world-note">
+              {world.created ? 'This server’s city was just founded. ' : 'This server’s city. '}
+              {buildings === 0 ? 'Nothing has been claimed or built yet.' : `${buildings} buildings.`} Claims are not open; the simulated viewers only preview district rules.
             </span>
             <span className="play-facts small" data-testid="play-facts">
-              server <code data-testid="play-guild">{play.discordGuildId}</code> · config <code data-testid="play-config-version">v{play.configVersion}</code> · <code data-testid="play-config-hash" title={play.configHash}>{play.configHash.slice(0, 12)}</code>
+              city <code data-testid="play-world" title={world.id}>{world.id.slice(0, 8)}</code> · server <code data-testid="play-guild">{play.discordGuildId}</code> · config{' '}
+              <code data-testid="play-config-version">v{play.configVersion}</code> · <code data-testid="play-config-hash" title={play.configHash}>{play.configHash.slice(0, 12)}</code>
             </span>
           </div>
         }

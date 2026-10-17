@@ -1,15 +1,17 @@
+import type { WorldCityState } from '../world/cityState'
 import type { World } from '../world/definition'
 import { availablePlotsIn, formatPlotId, type PlotCandidate } from '../world/plots'
 import type { CityScene } from '../ui/city/scene'
 import { parseBrandCityConfig, type BrandCityConfig, type ConfigProblem } from './core/config'
 import { compileBrandWorld } from './core/layout'
+import { persistedBrandCityState } from './core/persisted'
 import { buildSampleCity, type BrandCityState, type SampleCitySpec } from './core/sampleCity'
 import { brandScene } from './scene'
 
 /**
  * One configured city, ready for the standard renderer: the validated configuration, its
- * compiled world (the engine's authority on districts and plots), a simulated state and the
- * scene the renderer draws.
+ * compiled world (the engine's authority on districts and plots), its state (simulated for
+ * the sample preview, as stored for a persistent city) and the scene the renderer draws.
  */
 export interface LoadedBrandCity {
   config: Readonly<BrandCityConfig>
@@ -32,6 +34,19 @@ export function loadParsedBrandCity(config: Readonly<BrandCityConfig>, spec: Sam
   const compiled = compileBrandWorld(config)
   if (!compiled.ok) return { ok: false, problems: compiled.problems.map((p) => ({ path: `world:${p.code}`, detail: p.detail })) }
   const state = buildSampleCity(config, compiled.world, spec)
+  return { ok: true, city: { config, world: compiled.world, state, scene: brandScene(config, compiled.world, state.nfts) } }
+}
+
+/**
+ * A PERSISTENT city: a configuration the world accepted, drawn with the state the world
+ * stored. The compiled geometry must be the world's own (`geometryFingerprint`), or nothing is
+ * drawn: a city is never shown on districts it was not founded on.
+ */
+export function loadPersistedBrandCity(config: Readonly<BrandCityConfig>, stored: WorldCityState, geometryFingerprint: string): BrandCityLoad {
+  const compiled = compileBrandWorld(config)
+  if (!compiled.ok) return { ok: false, problems: compiled.problems.map((p) => ({ path: `world:${p.code}`, detail: p.detail })) }
+  if (compiled.world.layout.geometryFingerprint !== geometryFingerprint) return { ok: false, problems: [{ path: 'districts', detail: 'this configuration does not draw the districts this city was founded on' }] }
+  const state = persistedBrandCityState(config, stored)
   return { ok: true, city: { config, world: compiled.world, state, scene: brandScene(config, compiled.world, state.nfts) } }
 }
 

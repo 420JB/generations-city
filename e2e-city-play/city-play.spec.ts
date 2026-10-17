@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { BRAND_A, BRAND_B, keysOf } from './brands'
 import { call, createConfigVersion, install, launch, launchHref, operator, publish, snowflake, type Launch } from './play'
 
@@ -10,8 +10,11 @@ import { call, createConfigVersion, install, launch, launchHref, operator, publi
  * route, and the Rare City server redeems the run token and loads the pinned configuration
  * with its own service credential. Only Proofy Core is stood in for (its token issuer key).
  * Every test uses fresh Discord servers, so tests never share an installation.
+ *
+ * Each installation's city is PERSISTENT: its first launch founds it in the Rare City server's
+ * database, and every later launch opens the same city, whatever configuration version it runs.
  */
-const SAMPLE_PREVIEW = 'http://localhost:4353/'
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHOTS = resolve(import.meta.dirname, '../test-artifacts/city-play-evidence')
 mkdirSync(SHOTS, { recursive: true })
 
@@ -48,6 +51,12 @@ async function openRefused(page: Page, href: string, code: string) {
   await expect(page.getByTestId('city-name')).toHaveCount(0)
 }
 
+/** Open a launch over HTTP, as the page does, and return the answer. */
+async function session(request: APIRequestContext, l: Launch) {
+  const res = await request.post('/v1/play/session', { data: { runToken: l.runToken }, headers: { origin: 'http://localhost:4352' } })
+  return { status: res.status(), body: (await res.json()) as { error?: string; world: { id: string; created: boolean; definition: { governingConfigVersion: number } }; play: { installationId: string } } }
+}
+
 /** A Discord server with Rare City installed and the given configuration active. */
 async function installed(config: unknown) {
   const guild = snowflake()
@@ -71,12 +80,23 @@ test.describe('two installations, two brands', () => {
     expect((await districtKeys(page)).sort()).toEqual(keysOf(BRAND_A).sort())
     await expect(page.locator('[data-testid^="district-"].district-ground')).toHaveCount(4)
     await expect(page.getByTestId('play-guild')).toHaveText(a.guild)
+    // Its first launch founded A's persistent city, and it is empty: nothing simulated, nothing claimed.
+    await expect(city).toHaveAttribute('data-world-created', 'true')
+    await expect(city).toHaveAttribute('data-buildings', '0')
+    await expect(page.locator('.bldg')).toHaveCount(0)
+    await expect(page.getByTestId('play-world-note')).toContainText('just founded')
     await expect(page.getByTestId('viewer-select').locator('option').nth(1)).toHaveText('Ada · Proofy rules not checked')
     // The run token was taken out of the address bar and history as soon as the page read it.
     expect(page.url()).toBe('http://localhost:4352/')
     await still(page)
     await page.screenshot({ path: `${SHOTS}/installation-a-brand-a.png` })
     const worldA = await city.getAttribute('data-world')
+    expect(worldA).toMatch(UUID_V7)
+
+    // Relaunched: the same city, not a new one.
+    await openCity(page, await launch(a.guild, 'rare-city', 'Ada'))
+    await expect(city).toHaveAttribute('data-world', worldA!)
+    await expect(city).toHaveAttribute('data-world-created', 'false')
 
     await openCity(page, await launch(b.guild, 'rare-city', 'Bea'))
     await expect(city).toHaveAttribute('data-installation', b.installation)
@@ -88,12 +108,21 @@ test.describe('two installations, two brands', () => {
     await expect(page.getByTestId('district-label-fig-terrace').locator('rect').first()).toHaveAttribute('stroke', '#ef476f')
     await still(page)
     await page.screenshot({ path: `${SHOTS}/installation-b-brand-b.png` })
-    expect(await city.getAttribute('data-world')).not.toBe(worldA)
+    const worldB = await city.getAttribute('data-world')
+    expect(worldB).toMatch(UUID_V7)
+    expect(worldB).not.toBe(worldA)
+    await expect(city).toHaveAttribute('data-world-created', 'true')
+    await openCity(page, await launch(b.guild, 'rare-city', 'Bea'))
+    await expect(city).toHaveAttribute('data-world', worldB!)
+    await expect(city).toHaveAttribute('data-world-created', 'false')
   })
 
   test('updating Brand A changes only installation A, and a run keeps the version it was launched with', async ({ page }) => {
     const a = await installed(BRAND_A)
     const b = await installed(BRAND_B)
+    // The first launch founds A's city on version 1.
+    const founded = await session(page.request, await launch(a.guild))
+    expect(founded.body.world.definition.governingConfigVersion).toBe(1)
     const beforeUpdate = await launch(a.guild)
 
     const updated = { ...BRAND_A, cityName: 'Harborlight Reach', districts: BRAND_A.districts.map((d) => (d.key === 'saltmarsh' ? { ...d, name: 'Salt Flats', accent: '#e9c46a' } : d)) }
@@ -103,6 +132,9 @@ test.describe('two installations, two brands', () => {
 
     await openCity(page, await launch(a.guild))
     await expect(page.getByTestId('city-name')).toHaveText('HARBORLIGHT REACH')
+    // A new configuration version governs the SAME city: nothing was reset or replaced.
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-world', founded.body.world.id)
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-governing-version', '2')
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-config-version', '2')
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-config-hash', v2.configHash)
     await expect(page.getByTestId('district-label-saltmarsh')).toContainText('SALT FLATS')
@@ -115,11 +147,55 @@ test.describe('two installations, two brands', () => {
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-config-version', '1')
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-config-hash', b.configHash)
 
-    // Launched before the update: pinned to v1 by Play, and Rare City loads exactly that version.
+    // Launched before the update: pinned to v1 by Play, and Rare City loads exactly that version, in the same
+    // city, without turning the city back to it.
     await openCity(page, beforeUpdate)
     await expect(page.getByTestId('city-name')).toHaveText('HARBORLIGHT')
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-config-version', '1')
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-config-hash', a.configHash)
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-world', founded.body.world.id)
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-governing-version', '2')
+  })
+})
+
+test.describe('one persistent city per installation', () => {
+  test('first launches racing each other found one city', async ({ request }) => {
+    const a = await installed(BRAND_A)
+    const launches = await Promise.all(Array.from({ length: 8 }, () => launch(a.guild)))
+    const answers = await Promise.all(launches.map((l) => session(request, l)))
+    expect(answers.map((x) => x.status)).toEqual(Array(8).fill(200))
+    expect(new Set(answers.map((x) => x.body.world.id)).size).toBe(1)
+    expect(answers.filter((x) => x.body.world.created)).toHaveLength(1)
+  })
+
+  test('a configuration that would move districts is refused, the city is unchanged, and a compatible one governs it', async ({ page }) => {
+    const a = await installed(BRAND_A)
+    const first = await session(page.request, await launch(a.guild))
+    await publish(a.guild, a.installation, { ...BRAND_A, districts: [...BRAND_A.districts].reverse() })
+    await openRefused(page, launchHref(await launch(a.guild)), 'config_incompatible')
+    await expect(page.getByTestId('play-refusal')).toContainText('The city is unchanged')
+    await expect(page.getByTestId('play-problems')).toContainText('would move')
+    await page.screenshot({ path: `${SHOTS}/incompatible-config-refused.png` })
+    await publish(a.guild, a.installation, { ...BRAND_A, cityName: 'Harborlight Bay' })
+    await openCity(page, await launch(a.guild))
+    await expect(page.getByTestId('city-name')).toHaveText('HARBORLIGHT BAY')
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-world', first.body.world.id)
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-governing-version', '3')
+  })
+
+  test('a server\'s launches only ever answer with its own city', async ({ request }) => {
+    const a = await installed(BRAND_A)
+    const b = await installed(BRAND_B)
+    const worldB = (await session(request, await launch(b.guild))).body.world.id
+    for (let i = 0; i < 3; i++) {
+      const answer = await session(request, await launch(a.guild))
+      expect(answer.body.play.installationId).toBe(a.installation)
+      expect(answer.body.world.id).not.toBe(worldB)
+      expect(JSON.stringify(answer.body)).not.toContain(worldB)
+    }
+    // A body that names a world is refused before Play is asked.
+    const named = await request.post('/v1/play/session', { data: { runToken: (await launch(a.guild)).runToken, worldId: worldB }, headers: { origin: 'http://localhost:4352' } })
+    expect([named.status(), await named.json()]).toEqual([422, { error: 'invalid_request' }])
   })
 })
 
@@ -230,56 +306,27 @@ test.describe('invalid configuration is refused, never replaced', () => {
 })
 
 test.describe('the standard renderer, unchanged', () => {
-  /**
-   * The city drawing, compared two ways. Building ids are world-scoped (V2 property ids), and
-   * CityView paints buildings of equal depth in id order (CityView.tsx: depth, then key), so the
-   * same buildings in two worlds can be painted in a different order. Hence:
-   *   - `scenery`: everything except the buildings, exactly, in order;
-   *   - `elements`: every element of the whole drawing, ids blanked, as a sorted multiset.
-   */
-  async function drawing(page: Page): Promise<{ scenery: string; elements: string[]; size: number }> {
-    const { full, scenery } = await page.getByTestId('city-svg').evaluate((el) => {
-      const clone = el.cloneNode(true) as Element
-      for (const b of Array.from(clone.querySelectorAll('.bldg'))) {
-        const holder = b.parentElement && b.parentElement.children.length === 1 && b.parentElement.hasAttribute('transform') ? b.parentElement : b
-        holder.remove()
-      }
-      return { full: el.outerHTML, scenery: clone.outerHTML }
-    })
-    const blank = (html: string) => html.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<id>')
-    return { scenery: blank(scenery), elements: blank(full).split(/(?=<)/).sort(), size: full.length }
-  }
-
-  test('Brand A from Play draws the S2-B sample Harborlight city: the same scenery and the same buildings', async ({ page, browser }) => {
+  test('a Play city is drawn exactly as stored: the standard civic city, with no buildings until someone builds', async ({ page }) => {
     const a = await installed(BRAND_A)
     await openCity(page, await launch(a.guild))
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-buildings', '0')
+    await expect(page.locator('.bldg')).toHaveCount(0)
+    await expect(page.getByTestId('city-hall')).toBeAttached()
+    await expect(page.locator('[data-testid^="district-"].district-ground')).toHaveCount(4)
+    expect((await districtKeys(page)).sort()).toEqual(keysOf(BRAND_A).sort())
     await still(page)
-    const fromPlay = await drawing(page)
-
-    const sample = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-    await sample.goto(SAMPLE_PREVIEW)
-    await expect(sample.getByTestId('city-name')).toHaveText('HARBORLIGHT')
-    await still(sample)
-    const fromSample = await drawing(sample)
-    await sample.screenshot({ path: `${SHOTS}/s2b-sample-harborlight.png` })
-    await sample.close()
-
-    writeFileSync(`${SHOTS}/scenery.play-brand-a.html`, fromPlay.scenery)
-    writeFileSync(`${SHOTS}/scenery.s2b-sample-harborlight.html`, fromSample.scenery)
-    expect(fromPlay.size).toBeGreaterThan(100_000)
-    expect(fromPlay.size).toBe(fromSample.size)
-    expect(fromPlay.scenery === fromSample.scenery, 'scenery differs (see test-artifacts/city-play-evidence)').toBe(true)
-    expect(fromPlay.elements.length).toBe(fromSample.elements.length)
-    expect(fromPlay.elements.join('\n') === fromSample.elements.join('\n'), 'element multisets differ').toBe(true)
+    await page.screenshot({ path: `${SHOTS}/persistent-empty-city-brand-a.png` })
   })
 
   test('camera, district selection, plot preview and the standard art all work on a Play city', async ({ page }) => {
     const b = await installed(BRAND_B)
     await openCity(page, await launch(b.guild))
-    expect(await page.locator('.bldg').count()).toBeGreaterThan(50)
+    await expect(page.locator('.bldg')).toHaveCount(0)
     await expect(page.getByTestId('city-hall')).toBeAttached()
+    // The registry pylons stand; nothing holds a monument in an empty city, so none is raised.
     await expect(page.locator('[data-testid^="pylon-"]')).toHaveCount(5)
-    await expect(page.getByTestId('monument-m5')).toBeAttached()
+    await expect(page.locator('[data-testid^="pylon-"][data-holder=""]')).toHaveCount(5)
+    await expect(page.locator('[data-testid^="monument-m"]')).toHaveCount(0)
     await still(page)
     const before = await page.getByTestId('city-svg').getAttribute('viewBox')
     await page.mouse.move(720, 450)

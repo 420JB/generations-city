@@ -179,22 +179,25 @@ describe('server config', () => {
   it('connects to Proofy Play only with a URL and a credential from an environment this mode may use', () => {
     const cred = (env: string) => `ppk_${env}_${'a'.repeat(24)}.${'b'.repeat(64)}`
     const deployed = { APP_MODE: 'staging', DATABASE_URL: DB, PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' }
+    const local = { DATABASE_URL: DB }
     expect(loadConfig({}).play).toBeNull()
-    expect(loadConfig({ PLAY_API_URL: 'http://127.0.0.1:18090/', PLAY_SERVICE_CREDENTIAL: cred('dev') }).play).toEqual({ apiUrl: 'http://127.0.0.1:18090', credential: cred('dev'), environment: 'dev', gameKey: 'rare-city' })
-    expect(loadConfig({ PLAY_API_URL: 'http://127.0.0.1:18090', PLAY_SERVICE_CREDENTIAL: cred('test'), PLAY_GAME_KEY: 'rare-city-test' }).play?.gameKey).toBe('rare-city-test')
+    expect(loadConfig({ ...local, PLAY_API_URL: 'http://127.0.0.1:18090/', PLAY_SERVICE_CREDENTIAL: cred('dev') }).play).toEqual({ apiUrl: 'http://127.0.0.1:18090', credential: cred('dev'), environment: 'dev', gameKey: 'rare-city' })
+    expect(loadConfig({ ...local, PLAY_API_URL: 'http://127.0.0.1:18090', PLAY_SERVICE_CREDENTIAL: cred('test'), PLAY_GAME_KEY: 'rare-city-test' }).play?.gameKey).toBe('rare-city-test')
+    // A launch opens the installation's persistent city: Play without a database stops start-up.
+    expect(() => loadConfig({ PLAY_API_URL: 'http://127.0.0.1:18090', PLAY_SERVICE_CREDENTIAL: cred('dev') })).toThrow(/needs DATABASE_URL/)
     expect(loadConfig({ ...deployed, PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: cred('staging') }).play?.environment).toBe('staging')
     expect(loadConfig({ ...deployed, APP_MODE: 'production', PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: cred('live') }).play?.environment).toBe('live')
     // The same mapping as world_play_bindings: a staging city never reads live installations, production nothing else.
     for (const [mode, env] of [['local', 'staging'], ['local', 'live'], ['staging', 'live'], ['staging', 'dev'], ['production', 'staging'], ['production', 'test']] as const) {
-      const base = mode === 'local' ? {} : { ...deployed, APP_MODE: mode }
+      const base = mode === 'local' ? local : { ...deployed, APP_MODE: mode }
       expect(() => loadConfig({ ...base, PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: cred(env) }), `${mode}/${env}`).toThrow(/may only use/)
     }
     expect(() => loadConfig({ PLAY_API_URL: 'http://127.0.0.1:1' })).toThrow(/must be set together/)
     expect(() => loadConfig({ PLAY_SERVICE_CREDENTIAL: cred('dev') })).toThrow(/must be set together/)
     expect(() => loadConfig({ PLAY_GAME_KEY: 'rare-city' })).toThrow(/PLAY_GAME_KEY is set/)
     expect(() => loadConfig({ ...deployed, PLAY_API_URL: 'http://play.example', PLAY_SERVICE_CREDENTIAL: cred('staging') })).toThrow(/https/)
-    expect(() => loadConfig({ PLAY_API_URL: 'http://u:p@127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: cred('dev') })).toThrow(/must not carry/)
-    expect(() => loadConfig({ PLAY_API_URL: 'http://127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: cred('dev'), PLAY_GAME_KEY: 'Rare City' })).toThrow(/game key/)
+    expect(() => loadConfig({ ...local, PLAY_API_URL: 'http://u:p@127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: cred('dev') })).toThrow(/must not carry/)
+    expect(() => loadConfig({ ...local, PLAY_API_URL: 'http://127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: cred('dev'), PLAY_GAME_KEY: 'Rare City' })).toThrow(/game key/)
     const secret = 'ppk_dev_short.secret-value'
     let message = ''
     try {

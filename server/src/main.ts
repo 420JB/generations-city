@@ -16,6 +16,7 @@ import { createFriendsReader } from './ownership/reader'
 import { createPlayClient } from './play/client'
 import { createPlayLaunchService } from './play/launch'
 import { loadStaticSite } from './static'
+import { createWorldStore } from './world/store'
 
 const SHUTDOWN_GRACE_MS = 10_000
 const RPC_TIMEOUT_MS = 10_000
@@ -51,7 +52,16 @@ async function main() {
       // Built whenever there is a database, and inert unless ACTIVATION_ENABLED=true: the routes and the service both refuse first.
       activation: db ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
       properties: db ? createPropertyReader(db) : null,
-      playLaunch: config.play ? createPlayLaunchService({ play: createPlayClient({ baseUrl: config.play.apiUrl, credential: config.play.credential }), environment: config.play.environment, gameKey: config.play.gameKey }) : null,
+      // Config refuses Play without a database: every launch opens the installation's persistent city.
+      playLaunch:
+        config.play && db
+          ? createPlayLaunchService({
+              play: createPlayClient({ baseUrl: config.play.apiUrl, credential: config.play.credential }),
+              environment: config.play.environment,
+              gameKey: config.play.gameKey,
+              worlds: createWorldStore(db, { mode: config.mode, log }),
+            })
+          : null,
       site,
     }),
   )

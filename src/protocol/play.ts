@@ -1,3 +1,5 @@
+import { parseWorldCityState, type WorldCityState } from '../world/cityState'
+
 /**
  * Wire contract for opening a brand city from a Proofy Play launch. Used by the server and
  * the client. Portable: no browser or Node dependency.
@@ -15,7 +17,11 @@
  * to and checks it against the run before anything is drawn.
  *
  * Redemption is single use (Play `run_already_redeemed`), so a launch link opens the city
- * once; reloading means launching again from Proofy Play.
+ * once; reloading means launching again from Proofy Play. The run token is never a session:
+ * everything the page needs comes back in this one answer, and there is no other read.
+ *
+ * The city is PERSISTENT: one world per installation, founded by the installation's first
+ * launch and returned by every launch after it, whatever configuration version it runs.
  */
 export const PLAY_SESSION_ENDPOINT = '/v1/play/session'
 
@@ -45,13 +51,29 @@ export interface PlaySessionResponse {
   }
   /** The player Play launched. Presentation only. */
   player: { displayName: string }
+  /** The installation's persistent city, as stored. */
+  world: PlayWorld
   /**
-   * The world the city is drawn as. `provisioned: false`: no world is founded for this
-   * installation yet, and `id` is the derived preview id (see `playPreviewWorldId`).
+   * The configuration document of the pinned version, exactly as Play served it (hash-checked)
+   * and as the world accepted it: its presentation is drawn, on the world's fixed geometry.
    */
-  world: { id: string; provisioned: false }
-  /** The configuration document of the pinned version, exactly as Play served it (hash-checked). */
   config: unknown
+}
+
+/** The persistent city of an installation (a `worlds` row and its city, migration 0005). */
+export interface PlayWorld {
+  /** `worlds.id`: the city's permanent identity, a UUIDv7 bound once to this installation. */
+  id: string
+  provisioned: true
+  /** true when this launch founded the city; every later launch returns it unchanged. */
+  created: boolean
+  foundedAt: string
+  /** Authoritative changes the city has had; 1 = as founded. */
+  sequence: number
+  /** What the city was founded on and which accepted configuration version governs it now. */
+  definition: { foundingConfigVersion: number; governingConfigVersion: number; layoutKey: string; geometryFingerprint: string }
+  /** The stored state. Version 1 is an empty city: nothing has been claimed or built. */
+  state: WorldCityState
 }
 
 /** Error bodies are `{ "error": <code> }`, plus `problems` for `config_invalid`. */
@@ -76,6 +98,14 @@ export type PlayErrorCode =
   | 'config_schema_unsupported'
   /** The pinned configuration is not a valid Rare City city. */
   | 'config_invalid'
+  /** The pinned configuration would move the city's districts or drop a collection; the city is unchanged. */
+  | 'config_incompatible'
+  /** The city does not exist yet and this run is pinned to a configuration that is no longer active. */
+  | 'config_superseded'
+  /** This Discord server's city is bound to another installation (or Play disagrees with the binding). */
+  | 'world_binding_conflict'
+  /** The city's storage could not be reached, or holds a state this build cannot read. */
+  | 'world_unavailable'
   /** Proofy Play could not be reached, or answered outside its contract. */
   | 'play_unavailable'
 
@@ -85,7 +115,10 @@ export interface PlayErrorBody {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** A UUIDv7 (`worlds.id`): never the old derived preview ids, which were UUIDv8. */
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const HASH = /^[0-9a-f]{64}$/
+const KEY = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const GUILD = /^[0-9]{15,25}$/
 const ENVIRONMENTS = ['dev', 'test', 'staging', 'live'] as const
 
@@ -101,7 +134,9 @@ export function parsePlaySessionResponse(body: unknown): PlaySessionResponse | n
   if (typeof play.discordGuildId !== 'string' || !GUILD.test(play.discordGuildId)) return null
   if (typeof play.runId !== 'string' || !UUID.test(play.runId) || typeof play.runExpiresAt !== 'string') return null
   if (!posInt(play.configVersion) || !posInt(play.schemaVersion) || typeof play.configHash !== 'string' || !HASH.test(play.configHash)) return null
-  if (typeof player.displayName !== 'string' || typeof world.id !== 'string' || !UUID.test(world.id) || world.provisioned !== false) return null
+  if (typeof player.displayName !== 'string') return null
+  const parsedWorld = parsePlayWorld(world)
+  if (!parsedWorld) return null
   return {
     play: {
       environment: play.environment as PlaySessionResponse['play']['environment'],
@@ -115,8 +150,26 @@ export function parsePlaySessionResponse(body: unknown): PlaySessionResponse | n
       schemaVersion: play.schemaVersion,
     },
     player: { displayName: player.displayName },
-    world: { id: world.id, provisioned: false },
+    world: parsedWorld,
     config: body.config,
+  }
+}
+
+function parsePlayWorld(world: Record<string, unknown>): PlayWorld | null {
+  const { definition: d } = world
+  if (typeof world.id !== 'string' || !UUID_V7.test(world.id) || world.provisioned !== true || typeof world.created !== 'boolean') return null
+  if (typeof world.foundedAt !== 'string' || Number.isNaN(Date.parse(world.foundedAt)) || !posInt(world.sequence)) return null
+  if (!isRecord(d) || !posInt(d.foundingConfigVersion) || !posInt(d.governingConfigVersion) || typeof d.layoutKey !== 'string' || !KEY.test(d.layoutKey) || typeof d.geometryFingerprint !== 'string' || !HASH.test(d.geometryFingerprint)) return null
+  const state = parseWorldCityState(world.state)
+  if (!state) return null
+  return {
+    id: world.id,
+    provisioned: true,
+    created: world.created,
+    foundedAt: world.foundedAt,
+    sequence: world.sequence,
+    definition: { foundingConfigVersion: d.foundingConfigVersion, governingConfigVersion: d.governingConfigVersion, layoutKey: d.layoutKey, geometryFingerprint: d.geometryFingerprint },
+    state,
   }
 }
 
