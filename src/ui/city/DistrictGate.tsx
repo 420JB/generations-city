@@ -1,9 +1,9 @@
 import { memo } from 'react'
-import { getDistrict, type DistrictId } from '../../config/districts'
-import { districtAngle, polar } from '../../game/world'
+import { polar } from '../../game/world'
 import { CrestDisc } from './CapitalPlaza'
 import { iso, type Detail } from './geometry'
 import { IsoBox } from './parts'
+import type { SceneDistrict } from './scene'
 
 /** Half-span between the two pylons (world units); clears the Capital causeway. */
 const GATE_HALF = 2.9
@@ -14,15 +14,14 @@ const H = 38
  * crest and a name plaque. Wayfinding at mid/near zoom; decorative for screen readers
  * (the district label and panels already name the district).
  */
-export const DistrictGate = memo(function DistrictGate({ id, detail, isCapital, rot = 0 }: { id: DistrictId; detail: Detail; isCapital: boolean; rot?: number }) {
-  const d = getDistrict(id)
+export const DistrictGate = memo(function DistrictGate({ district: d, detail, isCapital, rot = 0 }: { district: SceneDistrict; detail: Detail; isCapital: boolean; rot?: number }) {
   // The gate spans its avenue, so the pylon pair turns with the city (the pylons stay upright).
-  const perp = polar(GATE_HALF, districtAngle(id) + 90)
+  const perp = polar(GATE_HALF, d.centerDeg + 90)
   const pylons = [iso(-perp.x, -perp.y, rot), iso(perp.x, perp.y, rot)].sort((a, b) => a.y - b.y)
   const trim = isCapital ? '#ffd45a' : d.color
   const plaqueW = Math.max(52, d.title.length * 4.7 + 14)
   return (
-    <g className="district-gate" data-testid={`district-gate-${id}`} data-family={d.familyKey} aria-hidden="true" pointerEvents="none">
+    <g className="district-gate" data-testid={`district-gate-${d.id}`} data-family={d.familyKey ?? undefined} aria-hidden="true" pointerEvents="none">
       <line x1={pylons[0].x} y1={pylons[0].y - H - 1} x2={pylons[1].x} y2={pylons[1].y - H - 1} stroke="#e6dcc2" strokeWidth={3.2} strokeLinecap="round" />
       <line x1={pylons[0].x} y1={pylons[0].y - H - 1} x2={pylons[1].x} y2={pylons[1].y - H - 1} stroke={trim} strokeWidth={0.9} strokeOpacity={0.9} />
       {pylons.map((p, i) => (
@@ -41,7 +40,7 @@ export const DistrictGate = memo(function DistrictGate({ id, detail, isCapital, 
           <circle cx={0} cy={-H - 6} r={1.8} fill="#ffd45a" />
         </g>
       ))}
-      <CrestDisc href={d.art.primaryTransparent} color={d.color} cx={0} cy={-H - 14} r={11} />
+      <CrestDisc href={d.crest} color={d.color} cx={0} cy={-H - 14} r={11} />
       {/* Name plaque only up close; at mid zoom the crest alone keeps monument labels clear. */}
       {detail === 'near' && (
         <g transform={`translate(0 ${-H + 9})`}>

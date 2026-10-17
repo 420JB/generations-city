@@ -1,15 +1,16 @@
 import { memo } from 'react'
-import { getDistrict, type DistrictId } from '../../config/districts'
-import { MONUMENTS, type MonumentId } from '../../config/monuments'
+import type { MonumentId } from '../../config/monuments'
 import { iso, isoEllipse, leftFace, PLAZA_R, polar, RING_OUTER, rightFace } from './geometry'
 import { IsoBox } from './parts'
+import { sceneDistrict, sceneMonument, useCityScene } from './scene'
 
 /** Ground-level plaza, ring road and traffic. Rendered beneath all objects. */
-export const PlazaGround = memo(function PlazaGround({ capital, rot = 0 }: { capital: DistrictId | null; rot?: number }) {
+export const PlazaGround = memo(function PlazaGround({ capital, rot = 0 }: { capital: string | null; rot?: number }) {
+  const scene = useCityScene()
   const plaza = isoEllipse(PLAZA_R)
   const ring = isoEllipse(RING_OUTER)
   const mid = isoEllipse((PLAZA_R + RING_OUTER) / 2)
-  const d = capital ? getDistrict(capital) : null
+  const d = capital ? sceneDistrict(scene, capital) : null
   return (
     <g className="plaza-ground">
       <ellipse rx={ring.rx} ry={ring.ry} fill="#0f1220" stroke="#252b40" strokeWidth={2} />
@@ -33,15 +34,18 @@ export const PlazaGround = memo(function PlazaGround({ capital, rot = 0 }: { cap
 })
 
 /** City Hall with Capital flag, holographic Capital sign and fountain. Depth ~0. */
-export const CityHall = memo(function CityHall({ capital }: { capital: DistrictId | null }) {
-  const d = capital ? getDistrict(capital) : null
+export const CityHall = memo(function CityHall({ capital }: { capital: string | null }) {
+  const scene = useCityScene()
+  const d = capital ? sceneDistrict(scene, capital) : null
+  // With no Capital the hall glows in the last district's light (the legacy hall used District IX's).
+  const glowPaint = (d ?? scene.districts[scene.districts.length - 1]).paint
   const color = d?.color ?? '#999'
   const glow = d?.glow ?? '#ccc'
   const stone = { left: '#bdb6a6', right: '#d9d2c1', top: '#ece6d8', edge: '#fff' }
   const base = { left: '#8f887a', right: '#a9a192', top: '#c4bcac' }
   return (
-    <g className="city-hall" data-testid="city-hall" data-capital={capital ?? ''} data-family={d?.familyKey ?? ''} role="img" aria-label={`City Hall. Capital: ${d ? `the ${d.title}` : 'none'}`}>
-      <ellipse cx={0} cy={4} rx={150} ry={80} fill={`url(#glow-${capital ?? 'd9'})`} opacity={0.25} />
+    <g className="city-hall" data-testid="city-hall" data-capital={capital ?? ''} data-family={d?.familyKey ?? ''} role="img" aria-label={`${scene.capital.name}. Capital: ${d ? `the ${d.title}` : 'none'}`}>
+      <ellipse cx={0} cy={4} rx={150} ry={80} fill={`url(#glow-${glowPaint})`} opacity={0.25} />
       <IsoBox a={5.2} z0={0} z1={8} colors={base} />
       <IsoBox a={4.6} z0={8} z1={14} colors={base} />
       <IsoBox
@@ -77,12 +81,14 @@ export const CityHall = memo(function CityHall({ capital }: { capital: DistrictI
             <g key={x} className="hall-banner">
               <path d={`M${x} 1 h14 v33 l-7 -5 l-7 5 Z`} fill={color} />
               <rect x={x} y={1} width={14} height={2.2} fill="#ffd45a" />
-              {d && <image href={d.art.secondaryTransparent} x={x + 1.5} y={8} width={11} height={11} opacity={0.95} />}
+              {d && <image href={d.banner} x={x + 1.5} y={8} width={11} height={11} opacity={0.95} />}
             </g>
           ))}
         </g>
       ))}
       <IsoBox a={4.3} z0={58} z1={64} colors={base} />
+      {/* The city's own crest on the front corner, under the cornice (brand cities). */}
+      {scene.capital.crest && <CrestDisc href={scene.capital.crest} color="#ffd45a" cx={0} cy={-46} r={10} />}
       {/* Dome */}
       <g transform="translate(0 -64)">
         <IsoBox a={2.2} z0={0} z1={16} colors={stone} />
@@ -95,38 +101,52 @@ export const CityHall = memo(function CityHall({ capital }: { capital: DistrictI
         <g className="flag" data-testid="capital-flag" style={{ transformOrigin: '0px -146px' }}>
           <path d="M0 -148 C 20 -154, 34 -140, 58 -146 L58 -118 C 34 -112, 20 -126, 0 -120 Z" fill={color} />
           <path d="M0 -148 C 20 -154, 34 -140, 58 -146 L58 -144 C 34 -138, 20 -152, 0 -146 Z" fill="#ffd45a" />
-          {d ? <CrestDisc href={d.art.primaryTransparent} color={color} cx={28} cy={-133} r={10} /> : null}
+          {d ? <CrestDisc href={d.crest} color={color} cx={28} cy={-133} r={10} /> : null}
         </g>
       </g>
     </g>
   )
 })
 
+/** Characters of the sign's title and kicker that fit between its crests at full size. */
+const SIGN_TITLE_FITS = 18
+const SIGN_KICKER_FITS = 26
+
 /** Floating holographic Capital sign; rendered above all city objects. */
 export const CapitalSign = memo(function CapitalSign({
   capital,
   featuredFriend,
   detail,
+  scale = 1,
 }: {
-  capital: DistrictId | null
+  capital: string | null
   /** The Capital's leading builder, already named: a real Friend by its id, a demo Friend labelled as one. */
   featuredFriend: string | null
   detail: 'far' | 'mid' | 'near'
+  /** Below 1 up close, so the sign keeps a bounded size on screen (about its own centre). */
+  scale?: number
 }) {
-  const d = capital ? getDistrict(capital) : null
+  const scene = useCityScene()
+  const d = capital ? sceneDistrict(scene, capital) : null
   const color = d?.color ?? '#999'
   const glow = d?.glow ?? '#ccc'
+  const title = d?.title.toUpperCase() ?? 'UNCLAIMED'
+  // Rare City's longest title (18) and its kicker (24) fit between the crests as drawn; longer
+  // brand text is set proportionally smaller so it never runs under the crests or off the board.
+  const titleFit = Math.min(1, SIGN_TITLE_FITS / title.length)
+  const kickerFit = Math.min(1, SIGN_KICKER_FITS / scene.capital.signKicker.length)
+  const titleSize = d && d.title.length > 16 ? 21 : 24
   return (
-    <g transform="translate(0 -266)" pointerEvents="none">
+    <g transform={scale < 1 ? `translate(0 -266) scale(${scale})` : 'translate(0 -266)'} pointerEvents="none">
       <g className="capital-sign">
         <rect x={-204} y={-34} width={408} height={66} rx={12} fill="#0b0f1cdd" stroke="#ffd45a" strokeWidth={2} />
         <rect x={-201} y={-31} width={402} height={60} rx={10} fill={color} opacity={0.1} stroke={color} strokeOpacity={0.6} />
-        <text x={0} y={-13} textAnchor="middle" fontSize={10.5} letterSpacing={3.5} fill="#ffe7a6" fontWeight={700}>
-          THE CAPITAL OF RARE CITY
+        <text x={0} y={-13} textAnchor="middle" fontSize={kickerFit < 1 ? +(10.5 * kickerFit).toFixed(2) : 10.5} letterSpacing={kickerFit < 1 ? +(3.5 * kickerFit).toFixed(2) : 3.5} fill="#ffe7a6" fontWeight={700}>
+          {scene.capital.signKicker}
         </text>
-        {d && [-1, 1].map((s) => <CrestDisc key={s} href={d.art.primaryTransparent} color={color} cx={s * 176} cy={-1} r={21} />)}
-        <text x={0} y={14} textAnchor="middle" fontSize={d && d.title.length > 16 ? 21 : 24} fontWeight={900} fill="#fff" letterSpacing={2} data-testid="capital-sign-name" data-family={d?.familyKey ?? ''}>
-          {d?.title.toUpperCase() ?? 'UNCLAIMED'}
+        {d && [-1, 1].map((s) => <CrestDisc key={s} href={d.crest} color={color} cx={s * 176} cy={-1} r={21} />)}
+        <text x={0} y={14} textAnchor="middle" fontSize={titleFit < 1 ? +(titleSize * titleFit).toFixed(2) : titleSize} fontWeight={900} fill="#fff" letterSpacing={titleFit < 1 ? +(2 * titleFit).toFixed(2) : 2} data-testid="capital-sign-name" data-family={d?.familyKey ?? ''}>
+          {title}
         </text>
         {featuredFriend && detail !== 'far' && (
           <text x={0} y={26} textAnchor="middle" fontSize={7.5} fill={glow} letterSpacing={1}>
@@ -150,14 +170,15 @@ export function CrestDisc({ href, color, cx, cy, r }: { href: string; color: str
 }
 
 /** Monument registry pylons ringing the plaza, coloured by the current holder. */
-export function RegistryPylon({ monumentId, holder }: { monumentId: MonumentId; holder: DistrictId | null }) {
-  const d = holder ? getDistrict(holder) : null
-  const m = MONUMENTS.find((x) => x.id === monumentId)!
+export function RegistryPylon({ monumentId, holder }: { monumentId: MonumentId; holder: string | null }) {
+  const scene = useCityScene()
+  const d = holder ? sceneDistrict(scene, holder) : null
+  const m = sceneMonument(scene, monumentId)
   return (
     <g data-testid={`pylon-${monumentId}`} data-holder={holder ?? ''}>
       <IsoBox a={0.9} z0={0} z1={6} colors={{ left: '#2b2f3f', right: '#3b4156', top: '#4d556e' }} />
       <IsoBox a={0.5} z0={6} z1={46} colors={{ left: d ? d.color : '#444', right: d ? d.glow : '#666', top: '#fff' }} />
-      <circle cx={0} cy={-52} r={12} fill={d ? `url(#glow-${d.id})` : 'none'} opacity={0.8} />
+      <circle cx={0} cy={-52} r={12} fill={d ? `url(#glow-${d.paint})` : 'none'} opacity={0.8} />
       <text x={0} y={-56} textAnchor="middle" fontSize={9} fontWeight={900} fill="#fff" stroke="#0b0f1c" strokeWidth={2.5} paintOrder="stroke">
         T{m.tier}
       </text>

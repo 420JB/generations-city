@@ -30,6 +30,22 @@ test.describe('Rare City', () => {
     await page.screenshot({ path: `${SHOTS}/01-city-overview.png` })
   })
 
+  test('district labels, the Capital crest and the City Hall sign stop growing at high zoom', async ({ page }) => {
+    await openCity(page)
+    const city = page.getByTestId('city')
+    const scales = () =>
+      page.evaluate(() => {
+        const at = (el: Element | null) => (el ? (el as SVGGraphicsElement).getScreenCTM()!.a : 0)
+        return [...document.querySelectorAll('[data-testid^="district-label-"]'), document.querySelector('[data-testid="capital-crest"]'), document.querySelector('.capital-sign')].map(at)
+      })
+    while (Number(await city.getAttribute('data-zoom')) < 3.19) {
+      await page.getByRole('button', { name: 'Zoom in' }).click()
+      await page.waitForTimeout(450)
+    }
+    await expect.poll(async () => Math.max(...(await scales()).slice(0, 10))).toBeLessThanOrEqual(1.101)
+    expect((await scales())[10]).toBeLessThanOrEqual(1.001)
+  })
+
   test('the map renders as one SVG root sharing a single camera viewBox', async ({ page }) => {
     await openCity(page)
     const roots = page.locator('[data-testid="city"] > svg')

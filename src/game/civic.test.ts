@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DISTRICT_IDS, type DistrictId } from '../config/districts'
 import { MONUMENTS, type MonumentId } from '../config/monuments'
+import { RARE_CITY_SCENE } from '../ui/city/legacyScene'
 import { layoutMonuments } from '../ui/city/monumentLayout'
 import { civicPads, civicPadsFit, civicScale, civicSlotWorld, CIVIC_LAYOUT, MONUMENT_PAD_HALF } from './world'
 import { createSeedState } from './seed'
@@ -57,10 +58,10 @@ describe('civic plaza composition', () => {
     const s = createSeedState()
     // Sparkling (d2) holding four monuments, then Family (d4) takes the Fountain (m4).
     const before = holding(s, 'd2', ['m2', 'm3', 'm4', 'm5'])
-    const standing = layoutMonuments(before, [])
+    const standing = layoutMonuments(RARE_CITY_SCENE, before, [])
     const was = standing.find((m) => m.monumentId === 'm4' && m.districtId === 'd2')!
     const after = { ...before, m4: { holder: 'd4' as DistrictId, sinceClock: 1 } }
-    const during = layoutMonuments(after, [{ key: 't', monumentId: 'm4', from: 'd2', to: 'd4' }])
+    const during = layoutMonuments(RARE_CITY_SCENE, after, [{ key: 't', monumentId: 'm4', from: 'd2', to: 'd4' }])
     const falling = during.find((m) => m.monumentId === 'm4' && m.districtId === 'd2')!
     expect(falling.phase).toBe('falling')
     expect(falling.world).toEqual(was.world)
@@ -70,15 +71,15 @@ describe('civic plaza composition', () => {
       expect(m.world).toEqual(standing.find((x) => x.monumentId === m.monumentId && x.districtId === 'd2')!.world)
     const rising = during.find((m) => m.monumentId === 'm4' && m.districtId === 'd4')!
     expect(rising.phase).toBe('rising')
-    const settled = layoutMonuments(after, []).find((m) => m.monumentId === 'm4')!
+    const settled = layoutMonuments(RARE_CITY_SCENE, after, []).find((m) => m.monumentId === 'm4')!
     expect(rising.world).toEqual(settled.world)
   })
 
   it('orders slots by monument tier so the same holdings always get the same composition', () => {
     const s = createSeedState()
     const all = holding(s, 'd2', MONUMENTS.map((m) => m.id))
-    const a = layoutMonuments(all, []).filter((m) => m.districtId === 'd2')
+    const a = layoutMonuments(RARE_CITY_SCENE, all, []).filter((m) => m.districtId === 'd2')
     expect(a.map((m) => m.monumentId)).toEqual(['m2', 'm3', 'm4', 'm5', 'm6'])
-    expect(JSON.stringify(layoutMonuments(all, []))).toBe(JSON.stringify(layoutMonuments(all, [])))
+    expect(JSON.stringify(layoutMonuments(RARE_CITY_SCENE, all, []))).toBe(JSON.stringify(layoutMonuments(RARE_CITY_SCENE, all, [])))
   })
 })

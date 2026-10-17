@@ -1,8 +1,9 @@
-import type { DistrictId } from '../../config/districts'
 import { WORLD } from '../../config/world'
-import { districtAngle, plotWorld, polar, wardBand, wardStreetRadius, type WorldPoint } from '../../game/world'
+import { polar, wardBand, wardStreetRadius, type WorldPoint } from '../../game/world'
+import { plotWorldIn } from './districtGeometry'
 import { arcPoints, footprintHalf, isoW, LOT_MARGIN, type Pt } from './geometry'
 import { rotatePointAroundCenter } from './rotation'
+import type { SceneDistrict } from './scene'
 
 /**
  * ROAD MODEL (pure). Mirrors exactly how CityGround draws asphalt: arc streets are polylines
@@ -38,11 +39,11 @@ function wardArcs(ward: number): { kind: RoadKind; r: number }[] {
 }
 
 /** Every road polyline near a district's ward (arcs as drawn + both radial boundary avenues). */
-export function wardRoads(id: DistrictId, ward: number, rot = 0): RoadPolyline[] {
-  const arcs = wardArcs(ward).map(({ kind, r }) => ({ kind, points: arcPoints(id, r, undefined, rot), halfWidth: ROAD_STROKE[kind] / 2 }))
+export function wardRoads(d: SceneDistrict, ward: number, rot = 0): RoadPolyline[] {
+  const arcs = wardArcs(ward).map(({ kind, r }) => ({ kind, points: arcPoints(d, r, undefined, rot), halfWidth: ROAD_STROKE[kind] / 2 }))
   const outer = wardBand(ward + 1).outer + 1
   const radials = [-1, 1].map((s) => {
-    const a = districtAngle(id) + (s * WORLD.districtSpanDeg) / 2
+    const a = d.centerDeg + (s * d.spanDeg) / 2
     return { kind: 'radial' as const, points: [isoW(polar(WORLD.ringRoadOuter, a), rot), isoW(polar(outer, a), rot)], halfWidth: ROAD_STROKE.radial / 2 }
   })
   return [...arcs, ...radials]
@@ -55,7 +56,7 @@ export function wardRoads(id: DistrictId, ward: number, rot = 0): RoadPolyline[]
  * converted from screen px to world units conservatively (worst-case iso scale).
  * `p` is the unrotated plot centre; `rot` turns it and its roads together about City Hall.
  */
-export function roadSafeHalf(id: DistrictId, ward: number, p: WorldPoint, rot = 0): number {
+export function roadSafeHalf(d: SceneDistrict, ward: number, p: WorldPoint, rot = 0): number {
   const turn = (rot * Math.PI) / 180
   const r = Math.hypot(p.x, p.y)
   const theta = Math.atan2(p.y, p.x) + turn
@@ -65,7 +66,7 @@ export function roadSafeHalf(id: DistrictId, ward: number, p: WorldPoint, rot = 
     best = Math.min(best, (Math.abs(R - r) - ROAD_STROKE[kind] / 2 / ISO_MIN_SCALE - LOT_SETBACK) / reach)
   }
   for (const s of [-1, 1]) {
-    const phi = ((districtAngle(id) + (s * WORLD.districtSpanDeg) / 2) * Math.PI) / 180 + turn
+    const phi = ((d.centerDeg + (s * d.spanDeg) / 2) * Math.PI) / 180 + turn
     const dist = Math.abs(r * Math.sin(theta - phi))
     const reach = Math.abs(Math.sin(phi)) + Math.abs(Math.cos(phi))
     best = Math.min(best, (dist - ROAD_STROKE.radial / 2 / ISO_MIN_SCALE - LOT_SETBACK) / reach)
@@ -134,10 +135,10 @@ export function squareOnScreen(p0: WorldPoint, half: number, rot = 0): Pt[] {
 }
 
 /** Minimum clearance (screen px) and the road kind it is measured against. */
-export function minClearance(id: DistrictId, ward: number, p: WorldPoint, half: number, rot = 0): { px: number; kind: RoadKind } {
+export function minClearance(d: SceneDistrict, ward: number, p: WorldPoint, half: number, rot = 0): { px: number; kind: RoadKind } {
   const poly = squareOnScreen(p, half, rot)
   let best = { px: Number.POSITIVE_INFINITY, kind: 'civic' as RoadKind }
-  for (const road of wardRoads(id, ward, rot)) {
+  for (const road of wardRoads(d, ward, rot)) {
     const c = polygonRoadClearance(poly, road)
     if (c < best.px) best = { px: c, kind: road.kind }
   }
@@ -158,6 +159,6 @@ export function lotHalfWithin(tier: number, safe: number): number {
  * road-safe envelope of its plot. Open and ghost plots use the Tier 0 lot so an open plot and
  * the property that later fills it read as the same parcel.
  */
-export function propertyLotHalf(id: DistrictId, ward: number, plot: number, tier = 0, rot = 0): number {
-  return lotHalfWithin(tier, roadSafeHalf(id, ward, plotWorld(id, ward, plot), rot))
+export function propertyLotHalf(d: SceneDistrict, ward: number, plot: number, tier = 0, rot = 0): number {
+  return lotHalfWithin(tier, roadSafeHalf(d, ward, plotWorldIn(d, ward, plot), rot))
 }

@@ -40,7 +40,7 @@ export function wardRenderMode(population: number, detail: DetailLevel): WardRen
  * towers plus anything that must always be visible (the player's, the selected one, the
  * Crown holder). Deterministic ordering.
  */
-export function representativeBuildings(buildings: Building[], keep: ReadonlySet<string>, n: number = LOD_LIMITS.representatives): Set<string> {
+export function representativeBuildings(buildings: readonly Pick<Building, 'id' | 'patrons' | 'ownerBuilt'>[], keep: ReadonlySet<string>, n: number = LOD_LIMITS.representatives): Set<string> {
   const out = new Set<string>()
   for (const b of buildings) if (keep.has(b.id)) out.add(b.id)
   const sorted = [...buildings].sort((a, z) => totalBuilt(z) - totalBuilt(a) || a.id.localeCompare(z.id))

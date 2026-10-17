@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { DISTRICT_IDS } from '../../config/districts'
+import { RARE_CITY_SCENE } from './legacyScene'
+import { sceneDistrict } from './scene'
 import { plotWorld, wardCapacity } from '../../game/world'
 import { footprintHalf, iso, isoEllipse, isoW, LOT_MARGIN, place, placeBuilding, rotateScreen } from './geometry'
 import { minClearance, propertyLotHalf } from './roads'
 import { normalizeAngle, ROTATION_STEP_DEG, rotatePointAroundCenter, shortestAngleDelta } from './rotation'
+
+/** The legacy districts, as the renderer reads them. */
+const D = (id: string) => sceneDistrict(RARE_CITY_SCENE, id)
 
 describe('angle helpers', () => {
   it('normalizeAngle wraps cleanly into [0, 360)', () => {
@@ -91,8 +96,8 @@ describe('rotated projection', () => {
 
   it('rotation is presentation only: placements keep their world point and plot address', () => {
     const b = { districtId: 'd4', ward: 0, plot: 6 } as const
-    const at0 = placeBuilding(b)
-    const at90 = placeBuilding(b, 90)
+    const at0 = placeBuilding(RARE_CITY_SCENE, b)
+    const at90 = placeBuilding(RARE_CITY_SCENE, b, 90)
     expect(at90.world).toEqual(at0.world)
     expect(at90.world).toEqual(plotWorld('d4', 0, 6))
     expect(at90.screen).not.toEqual(at0.screen)
@@ -136,11 +141,11 @@ describe('road clearance while the city is rotated', () => {
           for (let i = 0; i < wardCapacity(w); i++) {
             const p = plotWorld(d, w, i)
             for (const tier of [0, 6]) {
-              const lot = propertyLotHalf(d, w, i, tier, rot)
+              const lot = propertyLotHalf(D(d), w, i, tier, rot)
               expect(lot).toBeGreaterThan(footprintHalf(tier))
-              expect(minClearance(d, w, p, lot, rot).px, `${d} w${w} p${i} T${tier} @${rot}°`).toBeGreaterThanOrEqual(MIN_GAP_PX)
+              expect(minClearance(D(d), w, p, lot, rot).px, `${d} w${w} p${i} T${tier} @${rot}°`).toBeGreaterThanOrEqual(MIN_GAP_PX)
             }
-            expect(minClearance(d, w, p, footprintHalf(6), rot).px).toBeGreaterThanOrEqual(MIN_GAP_PX)
+            expect(minClearance(D(d), w, p, footprintHalf(6), rot).px).toBeGreaterThanOrEqual(MIN_GAP_PX)
           }
   })
 
@@ -148,6 +153,6 @@ describe('road clearance while the city is rotated', () => {
     for (let rot = 0; rot < 360; rot += ROTATION_STEP_DEG)
       for (const d of DISTRICT_IDS)
         for (const w of [0, 1])
-          for (let i = 0; i < wardCapacity(w); i++) expect(propertyLotHalf(d, w, i, 0, rot)).toBe(footprintHalf(0) + LOT_MARGIN)
+          for (let i = 0; i < wardCapacity(w); i++) expect(propertyLotHalf(D(d), w, i, 0, rot)).toBe(footprintHalf(0) + LOT_MARGIN)
   })
 })

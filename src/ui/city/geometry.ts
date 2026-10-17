@@ -1,9 +1,9 @@
-import { DISTRICTS, type DistrictId } from '../../config/districts'
 import { WORLD } from '../../config/world'
 import { floorsFor } from '../../game/economy'
-import type { Building } from '../../game/types'
-import { districtAngle, plotWorld, polar, type WorldPoint } from '../../game/world'
+import { polar, type WorldPoint } from '../../game/world'
+import { plotWorldIn } from './districtGeometry'
 import { rotatePointAroundCenter } from './rotation'
+import { sceneDistrict, type CityScene, type SceneBuilding, type SceneDistrict } from './scene'
 
 /**
  * SVG strategic-map projection. World layout lives in `game/world.ts`; this module only
@@ -24,7 +24,7 @@ export const FLOOR_PX = 12
 export const PLAZA_R = WORLD.plazaRadius
 export const RING_OUTER = WORLD.ringRoadOuter
 
-export { districtAngle, polar }
+export { polar }
 
 export interface Pt {
   x: number
@@ -64,12 +64,20 @@ function pointsStr(pts: Pt[]): string {
   return pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
 }
 
-/** Annular sector of a district between radii r0..r1, inset from the boundary avenues. */
-export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits = 1.4, rot = 0): string {
-  const a = districtAngle(id)
-  const half = WORLD.districtSpanDeg / 2
+/**
+ * Arc segments for a wedge: 18 per 40° (the legacy wedge), so wider wedges are drawn just as
+ * smoothly and their straight chords never sag toward the lots beside them.
+ */
+export function arcSteps(d: SceneDistrict): number {
+  return Math.max(18, Math.ceil((d.spanDeg / 40) * 18))
+}
+
+/** Annular sector of a district's wedge between radii r0..r1, inset from the boundary avenues. */
+export function sectorPolygon(d: SceneDistrict, r0: number, r1: number, insetUnits = 1.4, rot = 0): string {
+  const a = d.centerDeg
+  const half = d.spanDeg / 2
   const pts: Pt[] = []
-  const steps = 18
+  const steps = arcSteps(d)
   const arc = (r: number, reverse: boolean) => {
     const insetDeg = (insetUnits / r) * (180 / Math.PI)
     const from = a - half + insetDeg
@@ -85,17 +93,18 @@ export function sectorPolygon(id: DistrictId, r0: number, r1: number, insetUnits
 }
 
 /** Iso polyline along an arc (used for ward boundary streets). */
-export function arcPoints(id: DistrictId, r: number, insetUnits = 1.4, rot = 0): Pt[] {
-  const a = districtAngle(id)
-  const half = WORLD.districtSpanDeg / 2
+export function arcPoints(d: SceneDistrict, r: number, insetUnits = 1.4, rot = 0): Pt[] {
+  const a = d.centerDeg
+  const half = d.spanDeg / 2
   const insetDeg = (insetUnits / r) * (180 / Math.PI)
+  const steps = arcSteps(d)
   const pts: Pt[] = []
-  for (let i = 0; i <= 18; i++) pts.push(isoW(polar(r, a - half + insetDeg + ((2 * half - 2 * insetDeg) * i) / 18), rot))
+  for (let i = 0; i <= steps; i++) pts.push(isoW(polar(r, a - half + insetDeg + ((2 * half - 2 * insetDeg) * i) / steps), rot))
   return pts
 }
 
-export function arcPath(id: DistrictId, r: number, insetUnits = 1.4, rot = 0): string {
-  return pointsStr(arcPoints(id, r, insetUnits, rot))
+export function arcPath(d: SceneDistrict, r: number, insetUnits = 1.4, rot = 0): string {
+  return pointsStr(arcPoints(d, r, insetUnits, rot))
 }
 
 /** Iso ellipse radii for a world-space circle of radius r. */
@@ -130,18 +139,18 @@ export function place(w: WorldPoint, rot = 0): Placement {
   return { world: w, screen: isoW(w, rot), depth: depthOf(w, rot) }
 }
 
-export function placeBuilding(b: Pick<Building, 'districtId' | 'ward' | 'plot'>, rot = 0): Placement {
-  return place(plotWorld(b.districtId, b.ward, b.plot), rot)
+export function placeBuilding(scene: CityScene, b: Pick<SceneBuilding, 'districtId' | 'ward' | 'plot'>, rot = 0): Placement {
+  return place(plotWorldIn(sceneDistrict(scene, b.districtId), b.ward, b.plot), rot)
 }
 
 /** Screen point near the middle of a building (used for camera warp). */
-export function buildingFocus(b: Building, total: number, rot = 0): Pt {
-  const p = placeBuilding(b, rot).screen
+export function buildingFocus(scene: CityScene, b: Pick<SceneBuilding, 'districtId' | 'ward' | 'plot'>, total: number, rot = 0): Pt {
+  const p = placeBuilding(scene, b, rot).screen
   return { x: p.x, y: p.y - buildingHeightPx(total) * 0.5 }
 }
 
-export function districtLabelPos(id: DistrictId, radius: number, rot = 0): Pt {
-  return isoW(polar(radius + 5, districtAngle(id)), rot)
+export function districtLabelPos(d: SceneDistrict, radius: number, rot = 0): Pt {
+  return isoW(polar(radius + 5, d.centerDeg), rot)
 }
 
 /** Iso box corner offsets for half-sizes ax (along world x) and ay (along world y). */
@@ -178,8 +187,8 @@ export function hsl(h: number, s = 70, l = 60): string {
 export const WINDOW_TILES: Record<string, number> = { grid: 8, ribbon: 8, arched: 9, lattice: 8, panoramic: 16 }
 
 /** District gateway: on the avenue between the ring road and the civic square. */
-export function gateWorld(id: DistrictId): WorldPoint {
-  return polar((WORLD.ringRoadOuter + WORLD.civicSquare.inner) / 2 + 0.2, districtAngle(id))
+export function gateWorld(d: SceneDistrict): WorldPoint {
+  return polar((WORLD.ringRoadOuter + WORLD.civicSquare.inner) / 2 + 0.2, d.centerDeg)
 }
 
 export function pylonWorld(i: number) {
@@ -192,5 +201,3 @@ export type Detail = 'far' | 'mid' | 'near'
 export function detailFor(zoom: number): Detail {
   return zoom < 0.8 ? 'far' : zoom < 1.3 ? 'mid' : 'near'
 }
-
-export const DISTRICT_LIST = DISTRICTS

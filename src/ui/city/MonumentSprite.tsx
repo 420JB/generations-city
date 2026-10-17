@@ -1,10 +1,9 @@
 import { memo, useId } from 'react'
-import { getDistrict, type DistrictId } from '../../config/districts'
-import { getMonument, type MonumentId } from '../../config/monuments'
+import type { MonumentId } from '../../config/monuments'
 import { boxCorners, COS30, iso, S, type Detail } from './geometry'
-import { statueForm } from './familyStatue'
 import { MONUMENT_PAD_A, MONUMENT_SPRITE_SCALE } from '../../game/world'
 import { IsoBox } from './parts'
+import { sceneDistrict, sceneMonument, useCityScene, type StatueArt } from './scene'
 
 export type MonumentPhase = 'standing' | 'rising' | 'falling'
 
@@ -201,19 +200,32 @@ const CORNICE = { left: '#cbbf9f', right: '#e6dcc2', top: '#f4ecd8' }
 /** Extrusion steps (back → front) giving the cast its thickness. */
 const DEPTH = [8, 7, 6, 5, 4, 3, 2, 1]
 
+/** Arched stele a District Monument's artwork is mounted in (px; feet at 0, 0). */
+const STELE = { w: 84, h: 106 } as const
+
+/** The stele outline: straight sides under a semicircular head. */
+function stelePath(x: number, y: number, w: number, h: number): string {
+  const r = w / 2
+  return `M${x} ${y + h} V${y + r} A${r} ${r} 0 0 1 ${x + w} ${y + r} V${y + h} Z`
+}
+
 /**
- * T5 Friend Statue: a monumental bronze cast of the HOLDING family's Friend silhouette on
- * a pale-stone plinth with a gilded inscription and architectural uplighting. The official
- * transparent silhouette is used as a mask (not pasted flat): an extruded dark-bronze body
- * gives it thickness, a pale-gold rim catches the light and a polished gradient forms the
- * face. Works for every family because it is driven entirely by `statueForm()`.
+ * T5 District Monument (the legacy "Friend Statue"): a monumental bronze cast on a pale-stone
+ * plinth with a gilded inscription and architectural uplighting. What is cast depends on the
+ * holding district (`StatueArt`):
+ *   silhouette  the official transparent silhouette used as a mask (not pasted flat): an
+ *               extruded dark-bronze body, a pale-gold rim, a polished face (legacy families)
+ *   portrait    an arched bronze stele whose window carries the configured NFT's artwork
+ *   emblem      the same stele with an engraved monogram: the standard fallback
+ * The plinth, lighting and casting technique are the same for every form.
  */
-function Statue({ districtId, color, glow }: { districtId: DistrictId; color: string; glow: string }) {
+function Statue({ art, paint, color, glow }: { art: StatueArt; paint: string; color: string; glow: string }) {
   const uid = useId().replace(/[^\w-]/g, '')
-  const f = statueForm(districtId)
+  const f = art.kind === 'silhouette' ? art : { width: STELE.w, height: STELE.h }
   const mask = `statue-mask-${uid}`
   const metal = `statue-metal-${uid}`
   const sheen = `statue-sheen-${uid}`
+  const windowClip = `statue-window-${uid}`
   /** Plinth height (px); the bronze casting base adds BASE on top. */
   const top = 66
   const BASE = 5
@@ -223,12 +235,19 @@ function Statue({ districtId, color, glow }: { districtId: DistrictId; color: st
   const cast = (fill: string, dx = 0, dy = 0, opacity = 1) => (
     <rect x={fig.x} y={fig.y} width={fig.w} height={fig.h} fill={fill} opacity={opacity} mask={`url(#${mask})`} transform={dx || dy ? `translate(${dx} ${dy})` : undefined} />
   )
-  const name = f.familyName.toUpperCase()
+  const name = art.name.toUpperCase()
+  // The stele's window: inset from its bronze frame.
+  const inset = 8
+  const win = { x: -STELE.w / 2 + inset, y: -STELE.h + inset, w: STELE.w - 2 * inset, h: STELE.h - 2 * inset - 4 }
   return (
-    <g className="statue" data-statue-family={f.familyKey}>
+    <g className="statue" data-statue-family={art.kind === 'silhouette' ? (art.familyKey ?? undefined) : undefined} data-statue-kind={art.kind === 'silhouette' ? undefined : art.kind}>
       <defs>
         <mask id={mask} style={{ maskType: 'alpha' }}>
-          <image href={f.image} x={f.imageX} y={f.imageY} width={f.imageSize} height={f.imageSize} />
+          {art.kind === 'silhouette' ? (
+            <image href={art.image} x={art.imageX} y={art.imageY} width={art.imageSize} height={art.imageSize} />
+          ) : (
+            <path d={stelePath(-STELE.w / 2, -STELE.h, STELE.w, STELE.h)} fill="#fff" />
+          )}
         </mask>
         <linearGradient id={metal} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stopColor="#f3dca2" />
@@ -247,9 +266,14 @@ function Statue({ districtId, color, glow }: { districtId: DistrictId; color: st
           <stop offset="0.42" stopColor="#fff6dc" stopOpacity="0.55" />
           <stop offset="0.52" stopColor="#fff" stopOpacity="0" />
         </linearGradient>
+        {art.kind !== 'silhouette' && (
+          <clipPath id={windowClip}>
+            <path d={stelePath(win.x, win.y, win.w, win.h)} />
+          </clipPath>
+        )}
       </defs>
       {/* Civic plinth: three granite/stone steps, a pale-stone die with panel moulding and a
-          gilded family inscription, washed by ground uplights, then a gold-filleted cornice. */}
+          gilded inscription, washed by ground uplights, then a gold-filleted cornice. */}
       <IsoBox a={2.05} z0={0} z1={7} colors={STONE_DARK} />
       <IsoBox a={1.78} z0={7} z1={13} colors={{ left: '#5d6581', right: '#707a99', top: '#8a93b0' }} />
       <IsoBox a={1.52} z0={13} z1={18} colors={{ left: '#a39a86', right: '#c2b9a4', top: '#d6cdb8' }} />
@@ -293,7 +317,7 @@ function Statue({ districtId, color, glow }: { districtId: DistrictId; color: st
       <IsoBox a={1.12} z0={top} z1={top + BASE} colors={{ left: '#4a2f12', right: '#6f4a1d', top: '#a97a3c' }} />
       <g transform={`translate(0 ${-(top + BASE)})`}>
         {/* District halo + restrained gold uplight cones from the cornice lamps */}
-        <ellipse cx={0} cy={-f.height * 0.55} rx={f.width * 0.62} ry={f.height * 0.62} fill={`url(#glow-${districtId})`} opacity={0.32} />
+        <ellipse cx={0} cy={-f.height * 0.55} rx={f.width * 0.62} ry={f.height * 0.62} fill={`url(#glow-${paint})`} opacity={0.32} />
         {[-1, 1].map((s) => (
           <polygon key={s} points={`${s * 16},2 ${s * 5},2 ${s * (f.width * 0.32)},${-f.height - 24} ${s * (f.width * 0.62 + 10)},${-f.height - 24}`} fill="url(#beam-gold)" opacity={0.28} />
         ))}
@@ -308,11 +332,44 @@ function Statue({ districtId, color, glow }: { districtId: DistrictId; color: st
         {cast('#fff3d0', 0, -0.9, 0.75)}
         {cast('#ffecb8', -1, -0.3, 0.85)}
         {cast(`url(#${metal})`)}
-        {cast(`url(#${sheen})`)}
+        {art.kind !== 'silhouette' && <SteleWindow art={art} win={win} clip={windowClip} color={color} />}
+        {/* A lighter sheen over a stele, so the artwork in its window stays readable. */}
+        {cast(`url(#${sheen})`, 0, 0, art.kind === 'silhouette' ? 1 : 0.45)}
         {[-1, 1].map((s) => (
           <circle key={s} cx={s * 19} cy={BASE - 1} r={1.8} fill="#fff4cf" />
         ))}
       </g>
+    </g>
+  )
+}
+
+/** The stele's window: the NFT's artwork in a bevelled bronze reveal, or the engraved fallback. */
+function SteleWindow({ art, win, clip, color }: { art: Extract<StatueArt, { kind: 'portrait' | 'emblem' }>; win: { x: number; y: number; w: number; h: number }; clip: string; color: string }) {
+  const outline = stelePath(win.x, win.y, win.w, win.h)
+  return (
+    <g className="stele-window">
+      <path d={outline} fill="#120c06" />
+      {art.kind === 'portrait' ? (
+        <image href={art.image} x={win.x} y={win.y} width={win.w} height={win.h} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clip})`} data-testid="monument-artwork" />
+      ) : (
+        <g clipPath={`url(#${clip})`} data-testid="monument-fallback">
+          <rect x={win.x} y={win.y} width={win.w} height={win.h} fill="#3a2410" />
+          <circle cx={0} cy={win.y + win.h * 0.5} r={win.w * 0.36} fill="none" stroke="#d6a865" strokeWidth={1.4} opacity={0.8} />
+          <text x={0.6} y={win.y + win.h * 0.5 + 11.6} textAnchor="middle" fontSize={32} fontWeight={900} fill="#1d1208">
+            {art.monogram}
+          </text>
+          <text x={0} y={win.y + win.h * 0.5 + 11} textAnchor="middle" fontSize={32} fontWeight={900} fill="#e9c27a">
+            {art.monogram}
+          </text>
+          <text x={0} y={win.y + win.h - 9} textAnchor="middle" fontSize={8} fill={color}>
+            ★
+          </text>
+        </g>
+      )}
+      {/* Bevel: a dark reveal inside, a gold catch-light outside, a district-coloured fillet. */}
+      <path d={outline} fill="none" stroke="#1d1208" strokeWidth={2.4} opacity={0.75} />
+      <path d={stelePath(win.x - 1.6, win.y - 1.6, win.w + 3.2, win.h + 3.2)} fill="none" stroke="#ffe3a0" strokeWidth={0.9} opacity={0.7} />
+      <path d={stelePath(win.x - 3.4, win.y - 3.4, win.w + 6.8, win.h + 6.8)} fill="none" stroke={color} strokeWidth={0.8} opacity={0.6} />
     </g>
   )
 }
@@ -354,8 +411,9 @@ function Beacon({ color, glow }: { color: string; glow: string }) {
   )
 }
 
-export function MonumentShape({ monumentId, districtId, color, glow }: { monumentId: MonumentId; districtId: DistrictId; color: string; glow: string }) {
-  switch (getMonument(monumentId).kind) {
+export function MonumentShape({ monumentId, districtId, color, glow }: { monumentId: MonumentId; districtId: string; color: string; glow: string }) {
+  const scene = useCityScene()
+  switch (sceneMonument(scene, monumentId).kind) {
     case 'fountain':
       return <Fountain color={color} glow={glow} />
     case 'arch':
@@ -363,7 +421,7 @@ export function MonumentShape({ monumentId, districtId, color, glow }: { monumen
     case 'obelisk':
       return <Obelisk color={color} glow={glow} />
     case 'statue':
-      return <Statue districtId={districtId} color={color} glow={glow} />
+      return <Statue art={scene.statueFor(districtId)} paint={sceneDistrict(scene, districtId).paint} color={color} glow={glow} />
     case 'beacon':
       return <Beacon color={color} glow={glow} />
   }
@@ -378,14 +436,16 @@ export const MonumentSprite = memo(function MonumentSprite({
   labelScale,
 }: {
   monumentId: MonumentId
-  districtId: DistrictId
+  districtId: string
   phase: MonumentPhase
   detail: Detail
   scale: number
   labelScale: number
 }) {
-  const d = getDistrict(districtId)
-  const m = getMonument(monumentId)
+  const scene = useCityScene()
+  const d = sceneDistrict(scene, districtId)
+  const m = sceneMonument(scene, monumentId)
+  const art = m.kind === 'statue' ? scene.statueFor(districtId) : null
   const c = boxCorners(MONUMENT_PAD_A)
   return (
     <g
@@ -393,12 +453,12 @@ export const MonumentSprite = memo(function MonumentSprite({
       data-testid={phase === 'falling' ? `monument-ruin-${monumentId}` : `monument-${monumentId}`}
       data-district={districtId}
       data-kind={m.kind}
-      data-family={d.familyKey}
-      aria-label={`${m.name}${m.kind === 'statue' ? ` in ${d.name} form` : ''}, ${phase === 'falling' ? 'collapsing in' : 'held by'} the ${d.title}`}
+      data-family={d.familyKey ?? undefined}
+      aria-label={`${m.name}${art?.kind === 'silhouette' ? ` in ${d.name} form` : art?.kind === 'portrait' ? `, showing ${art.caption}` : ''}, ${phase === 'falling' ? 'collapsing in' : 'held by'} the ${d.title}`}
       role="img"
       transform={`scale(${scale * MONUMENT_SPRITE_SCALE})`}
     >
-      <ellipse cx={0} cy={2} rx={c.E.x * 1.5} ry={c.Sx.y * 1.5} fill={`url(#glow-${districtId})`} opacity={phase === 'falling' ? 0.1 : 0.55} />
+      <ellipse cx={0} cy={2} rx={c.E.x * 1.5} ry={c.Sx.y * 1.5} fill={`url(#glow-${d.paint})`} opacity={phase === 'falling' ? 0.1 : 0.55} />
       <g className="monument-padwrap">
         <MonumentPad color={d.color} glow={d.glow} />
       </g>
@@ -406,7 +466,7 @@ export const MonumentSprite = memo(function MonumentSprite({
         <g className="capture-fx" pointerEvents="none">
           <ellipse cx={0} cy={-8} rx={c.E.x} ry={c.Sx.y} fill="none" stroke={d.glow} strokeWidth={5} className="shockwave" />
           <ellipse cx={0} cy={-8} rx={c.E.x} ry={c.Sx.y} fill="none" stroke="#fff" strokeWidth={2} className="shockwave shockwave-b" />
-          <rect x={-26} y={-700} width={52} height={692} fill={`url(#beam-${districtId})`} className="capture-column" />
+          <rect x={-26} y={-700} width={52} height={692} fill={`url(#beam-${d.paint})`} className="capture-column" />
         </g>
       )}
       <g transform="translate(0 -8)">

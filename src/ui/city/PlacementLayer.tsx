@@ -1,9 +1,9 @@
 import { memo, type KeyboardEvent, type MouseEvent } from 'react'
-import { getDistrict } from '../../config/districts'
-import { wardName, type PlotCandidate } from '../../game/allocation'
-import { plotWorld } from '../../game/world'
+import { wardName } from '../../game/allocation'
+import { plotWorldIn } from './districtGeometry'
 import { boxCorners, isoW } from './geometry'
 import { propertyLotHalf } from './roads'
+import { sceneDistrict, useCityScene, type ScenePlotCandidate } from './scene'
 
 /**
  * Placement mode: the district's selectable property sites drawn on the real plot geometry
@@ -22,20 +22,21 @@ export const PlacementLayer = memo(function PlacementLayer({
   labelScale,
   rot = 0,
 }: {
-  candidates: PlotCandidate[]
+  candidates: readonly ScenePlotCandidate[]
   selected: { ward: number; plot: number } | null
   /** Screen-constant label scale from the camera (as used by building/monument labels). */
   labelScale: number
-  onPick: (c: PlotCandidate, e: MouseEvent | KeyboardEvent) => void
+  onPick: (c: ScenePlotCandidate, e: MouseEvent | KeyboardEvent) => void
   /** City rotation in degrees: sites follow their plots exactly as the ground draws them. */
   rot?: number
 }) {
+  const scene = useCityScene()
   if (candidates.length === 0) return null
-  const d = getDistrict(candidates[0].districtId)
+  const d = sceneDistrict(scene, candidates[0].districtId)
   const preview = candidates[0].newWard ? candidates[0].ward : null
   // Centred over the previewed ward's plots (which the camera frames), just above the topmost
   // site, so the marker stays on screen at any width without covering a site's centre.
-  const sites = preview !== null ? candidates.map((c) => isoW(plotWorld(c.districtId, c.ward, c.plot), rot)) : []
+  const sites = preview !== null ? candidates.map((c) => isoW(plotWorldIn(d, c.ward, c.plot), rot)) : []
   const label =
     sites.length > 0
       ? { x: (Math.min(...sites.map((p) => p.x)) + Math.max(...sites.map((p) => p.x))) / 2, y: Math.min(...sites.map((p) => p.y)) - 34 }
@@ -47,7 +48,7 @@ export const PlacementLayer = memo(function PlacementLayer({
         // because the placement bar already explains that this Friend opens the ward.
         <g transform={`translate(${label.x.toFixed(1)} ${label.y.toFixed(1)}) scale(${labelScale})`} className="placement-new-ward" pointerEvents="none" data-testid="placement-new-ward">
           <text className="placement-new-ward-full" textAnchor="middle" fontSize={12} fontWeight={900} letterSpacing={2} fill="#ffe7a6" stroke="#0b0f1a" strokeWidth={3} paintOrder="stroke">
-            NEW WARD · {wardName(preview!).toUpperCase()} OPENS WITH THIS FRIEND
+            NEW WARD · {wardName(preview!).toUpperCase()} OPENS WITH THIS {scene.resident.one.toUpperCase()}
           </text>
           <text className="placement-new-ward-short" textAnchor="middle" fontSize={12} fontWeight={900} letterSpacing={2} fill="#ffe7a6" stroke="#0b0f1a" strokeWidth={3} paintOrder="stroke">
             NEW WARD · {wardName(preview!).toUpperCase()}
@@ -58,8 +59,8 @@ export const PlacementLayer = memo(function PlacementLayer({
           site so a tap on a site's own diamond always wins over a neighbour's hit area. */}
       <g className="candidate-hits" aria-hidden="true">
         {candidates.map((c) => {
-          const p = isoW(plotWorld(c.districtId, c.ward, c.plot), rot)
-          const k = boxCorners(Math.max(propertyLotHalf(c.districtId, c.ward, c.plot, 0, rot), CANDIDATE_HIT_HALF))
+          const p = isoW(plotWorldIn(d, c.ward, c.plot), rot)
+          const k = boxCorners(Math.max(propertyLotHalf(d, c.ward, c.plot, 0, rot), CANDIDATE_HIT_HALF))
           return (
             <polygon
               key={`${c.ward}-${c.plot}`}
@@ -73,8 +74,8 @@ export const PlacementLayer = memo(function PlacementLayer({
         })}
       </g>
       {candidates.map((c) => {
-        const p = isoW(plotWorld(c.districtId, c.ward, c.plot), rot)
-        const k = boxCorners(propertyLotHalf(c.districtId, c.ward, c.plot, 0, rot))
+        const p = isoW(plotWorldIn(d, c.ward, c.plot), rot)
+        const k = boxCorners(propertyLotHalf(d, c.ward, c.plot, 0, rot))
         const on = selected?.ward === c.ward && selected.plot === c.plot
         const pts = `${k.W.x},${k.W.y} ${k.N.x},${k.N.y} ${k.E.x},${k.E.y} ${k.Sx.x},${k.Sx.y}`
         return (

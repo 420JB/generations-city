@@ -1,23 +1,20 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as RPointerEvent, type ReactNode, type WheelEvent as RWheelEvent } from 'react'
-import { DISTRICTS, getDistrict, type DistrictId } from '../../config/districts'
-import { buildingFriendLabel } from '../../config/identity'
-import { MONUMENTS } from '../../config/monuments'
 import { WORLD } from '../../config/world'
 import { tierFor, totalBuilt } from '../../game/economy'
 import { intersects, representativeBuildings, wardRenderMode, type Rect } from '../../game/lod'
-import type { Building, GameState } from '../../game/types'
-import { cityRadius, districtAngle, polar, wardBand } from '../../game/world'
+import { polar, wardBand } from '../../game/world'
 import { easeInOutCubic, prefersReducedMotion } from '../motion'
 import { BuildingSprite, MassingSprite, type BuildFx } from './BuildingSprite'
 import { CapitalSign, CityHall, CrestDisc, Fountain, RegistryPylon } from './CapitalPlaza'
 import { CityGround } from './CityGround'
 import { CityDefs } from './Defs'
+import { sceneCityRadius } from './districtGeometry'
 import { buildingFocus, buildingHeightPx, detailFor, districtLabelPos, footprintHalf, isoW, LOT_MARGIN, place, placeBuilding, pylonWorld, gateWorld, rotateScreen, type Detail, type Pt } from './geometry'
 import { DistrictGate } from './DistrictGate'
 import { PlacementLayer } from './PlacementLayer'
 import { roadSafeHalf } from './roads'
 import { normalizeAngle, ROTATION_STEP_DEG, shortestAngleDelta } from './rotation'
-import type { PlotCandidate } from '../../game/allocation'
+import { CitySceneContext, sceneDistrict, type CityModel, type CityScene, type SceneBuilding, type SceneDistrict, type ScenePlotCandidate } from './scene'
 import type { WorldPoint } from '../../game/world'
 
 const noop = () => {}
@@ -49,6 +46,13 @@ const ROTATE_EASE_MS = 90
 const ROTATE_REPEAT_MS = 110
 /** A selected property becomes the rotation pivot once the camera is this far past overview. */
 const PIVOT_ON_SELECTION_ZOOM = 1.5
+/**
+ * Largest on-screen size of the name overlays (district labels, the Capital crest, the City
+ * Hall sign), as a multiple of their drawn size at zoom 1. Up close they stop growing here
+ * instead of burying the buildings and monuments; at ordinary zoom the cap never binds.
+ */
+const LABEL_MAX_SCREEN = 1.1
+const SIGN_MAX_SCREEN = 1
 
 /** Overview framing for the current city radius (grows as wards open). The city's footprint
  *  is a circle about City Hall, so the same framing fits it at every rotation. */
@@ -61,6 +65,7 @@ function homeFor(w: number, h: number, radius: number, drawerOpen = false): Fram
 }
 
 const DistrictLabels = memo(function DistrictLabels({
+  districts,
   capital,
   monumentsHeld,
   onSelect,
@@ -68,17 +73,18 @@ const DistrictLabels = memo(function DistrictLabels({
   radii,
   rot,
 }: {
-  capital: DistrictId | null
+  districts: readonly SceneDistrict[]
+  capital: string | null
   monumentsHeld: Record<string, number>
-  onSelect: (d: DistrictId) => void
+  onSelect: (d: string) => void
   scale: number
-  radii: Record<DistrictId, number>
+  radii: Record<string, number>
   rot: number
 }) {
   return (
     <g className="district-labels">
-      {DISTRICTS.map((d) => {
-        const p = districtLabelPos(d.id, radii[d.id], rot)
+      {districts.map((d) => {
+        const p = districtLabelPos(d, radii[d.id], rot)
         const isCap = capital === d.id
         const w = 50 + Math.max(64, d.name.length * 9.2) + (isCap ? 78 : 0)
         return (
@@ -89,14 +95,14 @@ const DistrictLabels = memo(function DistrictLabels({
             role="button"
             aria-label={`${d.title} Build Board`}
             data-testid={`district-label-${d.id}`}
-            data-family={d.familyKey}
+            data-family={d.familyKey ?? undefined}
             onClick={(e) => {
               e.stopPropagation()
               onSelect(d.id)
             }}
           >
             <rect x={-w / 2} y={-17} width={w} height={34} rx={17} fill={isCap ? '#2a2106f0' : '#0b0f1ce6'} stroke={isCap ? '#ffd45a' : d.color} strokeWidth={isCap ? 2.2 : 1.2} />
-            <CrestDisc href={d.art.primaryTransparent} color={d.color} cx={-w / 2 + 18} cy={0} r={13} />
+            <CrestDisc href={d.crest} color={d.color} cx={-w / 2 + 18} cy={0} r={13} />
             <text x={-w / 2 + 38} y={2} fontSize={12.5} fontWeight={800} fill="#f3f5fb" letterSpacing={1.2}>
               {d.name.toUpperCase()}
             </text>
@@ -121,9 +127,8 @@ const DistrictLabels = memo(function DistrictLabels({
 })
 
 /** Capital flags lining the district's edge toward City Hall (depth-sorted object). */
-function CapitalFlags({ id, detail, rot }: { id: DistrictId; detail: Detail; rot: number }) {
-  const d = getDistrict(id)
-  const a = districtAngle(id)
+function CapitalFlags({ d, detail, rot }: { d: SceneDistrict; detail: Detail; rot: number }) {
+  const a = d.centerDeg
   // Flags flank the district gateway (±7°) rather than standing in front of it.
   const offs = [-17, -13.5, -10, 10, 13.5, 17]
   return (
@@ -137,7 +142,7 @@ function CapitalFlags({ id, detail, rot }: { id: DistrictId; detail: Detail; rot
             <circle cx={0} cy={-53} r={2} fill="#ffd45a" />
             <path d="M0.9 -50 C 8 -52, 12 -46, 20 -48 L20 -34 C 12 -32, 8 -38, 0.9 -36 Z" fill={d.color} />
             <path d="M0.9 -50 C 8 -52, 12 -46, 20 -48 L20 -46 C 12 -44, 8 -50, 0.9 -48 Z" fill="#ffd45a" />
-            {detail !== 'far' && <image href={d.art.secondaryTransparent} x={5.2} y={-46.5} width={10} height={10} />}
+            {detail !== 'far' && <image href={d.banner} x={5.2} y={-46.5} width={10} height={10} />}
           </g>
         )
       })}
@@ -146,27 +151,26 @@ function CapitalFlags({ id, detail, rot }: { id: DistrictId; detail: Detail; rot
 }
 
 /** Floating crest above the Capital district's civic square (overlay layer). */
-function CapitalCrest({ id, scale, compact, rot }: { id: DistrictId; scale: number; compact: boolean; rot: number }) {
-  const d = getDistrict(id)
-  const p = isoW(polar(WORLD.civicSquare.center, districtAngle(id)), rot)
+function CapitalCrest({ d, scale, compact, rot }: { d: SceneDistrict; scale: number; compact: boolean; rot: number }) {
+  const p = isoW(polar(WORLD.civicSquare.center, d.centerDeg), rot)
   // Away from near zoom the district label (★ CAPITAL) and the City Hall sign already name
   // the Capital, so the crest shrinks to a gold medallion marking the district's square.
   if (compact)
     return (
-      <g transform={`translate(${p.x.toFixed(1)} ${(p.y - 300).toFixed(1)}) scale(${scale})`} pointerEvents="none" className="capital-crest" data-testid="capital-crest" data-family={d.familyKey} data-compact="true">
+      <g transform={`translate(${p.x.toFixed(1)} ${(p.y - 300).toFixed(1)}) scale(${scale})`} pointerEvents="none" className="capital-crest" data-testid="capital-crest" data-family={d.familyKey ?? undefined} data-compact="true">
         <line x1={0} y1={22} x2={0} y2={150} stroke="#ffd45a" strokeOpacity={0.3} strokeDasharray="3 5" />
         <circle r={21} fill="#1e1705ee" stroke="#ffd45a" strokeWidth={2} />
-        <CrestDisc href={d.art.primaryTransparent} color={d.color} cx={0} cy={0} r={15} />
+        <CrestDisc href={d.crest} color={d.color} cx={0} cy={0} r={15} />
         <text x={0} y={-24} textAnchor="middle" fontSize={11} fill="#ffd45a">
           ★
         </text>
       </g>
     )
   return (
-    <g transform={`translate(${p.x.toFixed(1)} ${(p.y - 250).toFixed(1)}) scale(${scale})`} pointerEvents="none" className="capital-crest" data-testid="capital-crest" data-family={d.familyKey}>
+    <g transform={`translate(${p.x.toFixed(1)} ${(p.y - 250).toFixed(1)}) scale(${scale})`} pointerEvents="none" className="capital-crest" data-testid="capital-crest" data-family={d.familyKey ?? undefined}>
       <line x1={0} y1={22} x2={0} y2={120} stroke="#ffd45a" strokeOpacity={0.35} strokeDasharray="3 5" />
       <rect x={-118} y={-21} width={236} height={42} rx={21} fill="#1e1705ee" stroke="#ffd45a" strokeWidth={2} />
-      <CrestDisc href={d.art.primaryTransparent} color={d.color} cx={-96} cy={0} r={16} />
+      <CrestDisc href={d.crest} color={d.color} cx={-96} cy={0} r={16} />
       <text x={14} y={-3} textAnchor="middle" fontSize={12} fontWeight={900} fill="#fff" letterSpacing={2}>
         {d.title.toUpperCase()}
       </text>
@@ -177,21 +181,23 @@ function CapitalCrest({ id, scale, compact, rot }: { id: DistrictId; scale: numb
   )
 }
 
-interface Props {
-  game: GameState
+interface Props<C extends ScenePlotCandidate> {
+  /** Which city this is (districts, names, art). Mount one CityView per scene: key it by `scene.key`. */
+  scene: CityScene
+  game: CityModel
   /** Whose properties count as "yours" on the map. null = a visitor, who owns none. */
   viewerId: string | null
   selectedId: string | null
   onSelect: (id: string | null) => void
-  onSelectDistrict: (d: DistrictId) => void
-  /** Placement mode: selectable property sites for a joining Friend (null = off). */
-  placement: { candidates: PlotCandidate[]; selected: { ward: number; plot: number } | null } | null
-  onPickPlot: (c: PlotCandidate) => void
+  onSelectDistrict: (d: string) => void
+  /** Placement mode: selectable property sites for a joining resident (null = off). */
+  placement: { candidates: readonly C[]; selected: { ward: number; plot: number } | null } | null
+  onPickPlot: (c: C) => void
   /** Fit the camera to these world points (placement framing). */
   frame: { seq: number; points: WorldPoint[] } | null
   focus: { buildingId: string; seq: number } | null
   fx: Record<string, BuildFx>
-  transfers: MonumentTransfer[]
+  transfers: readonly MonumentTransfer[]
   drawerOpen: boolean
   homeSeq: number
   billboardDraft: { buildingId: string; image: string | null } | null
@@ -208,11 +214,11 @@ interface CityObject {
   render: () => ReactNode
 }
 
-export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia, placement, onPickPlot, frame }: Props) {
+export function CityView<C extends ScenePlotCandidate>({ scene, game, viewerId, selectedId, onSelect, onSelectDistrict, focus, fx, transfers, drawerOpen, homeSeq, billboardDraft, objectiveId, onViewMedia, placement, onPickPlot, frame }: Props<C>) {
   const placing = !!placement
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 1280, h: 800 })
-  const radius = useMemo(() => cityRadius(game.wards), [game.wards])
+  const radius = useMemo(() => sceneCityRadius(scene, game.wards), [scene, game.wards])
   const [cam, setCamState] = useState<Camera>(() => ({ ...homeFor(1280, 800, radius), angle: 0 }))
   const camRef = useRef(cam)
   const setCam = useCallback((c: Camera) => {
@@ -257,6 +263,11 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
   const orientation = normalizeAngle(Math.round(rot))
   // Labels stay roughly constant on screen; quantised so sprites only re-render on steps.
   const labelScale = Math.round(Math.min(2.4, Math.max(0.6, 1 / cam.zoom)) * 10) / 10
+  /** World scale that holds an overlay at `cap` times its size on screen (quantised like labelScale). */
+  const screenCap = (cap: number) => Math.floor((cap / cam.zoom) * 50) / 50
+  const districtLabelScale = Math.min(Math.max(0.8, labelScale * 0.95), screenCap(LABEL_MAX_SCREEN))
+  const capitalCrestScale = Math.min(1.15, labelScale, screenCap(LABEL_MAX_SCREEN))
+  const capitalSignScale = Math.min(1, screenCap(SIGN_MAX_SCREEN))
   const view: Rect = { x0: cam.x - vbW / 2 - 60, y0: cam.y - vbH / 2 - 60, x1: cam.x + vbW / 2 + 60, y1: cam.y + vbH / 2 + 60 }
 
   /**
@@ -308,7 +319,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
     const sel = selectedId ? game.buildings[selectedId] : null
     const overview = homeFor(size.w, size.h, radius, drawerOpen)
     if (sel && c.zoom >= overview.zoom * PIVOT_ON_SELECTION_ZOOM) {
-      const p = placeBuilding(sel, c.angle).screen
+      const p = placeBuilding(scene, sel, c.angle).screen
       if (Math.abs(p.x - c.x) * c.zoom < size.w / 2 && Math.abs(p.y - c.y) * c.zoom < size.h / 2) return p
     }
     return { x: c.x - (overview.x * overview.zoom) / c.zoom, y: c.y - (overview.y * overview.zoom) / c.zoom }
@@ -377,7 +388,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
     if (!focus) return
     const b = game.buildings[focus.buildingId]
     if (!b) return
-    const p = buildingFocus(b, totalBuilt(b), goalAngle.current)
+    const p = buildingFocus(scene, b, totalBuilt(b), goalAngle.current)
     const zoom = size.w < 820 ? 0.62 : Math.min(1.5, Math.max(0.85, size.w / 560))
     const offsetX = drawerOpen && size.w > 820 ? 210 / zoom : 0
     const offsetY = drawerOpen && size.w <= 820 ? (size.h * 0.16) / zoom : 0
@@ -490,13 +501,14 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
   )
 
   const handlePick = useCallback(
-    (c: PlotCandidate, e: ReactMouseEvent | ReactKeyboardEvent) => {
+    (c: ScenePlotCandidate, e: ReactMouseEvent | ReactKeyboardEvent) => {
       e.stopPropagation()
       if (suppressClick.current) {
         suppressClick.current = false
         return
       }
-      onPickPlot(c)
+      // The layer only hands back the candidates it was given, which are the caller's own.
+      onPickPlot(c as C)
     },
     [onPickPlot],
   )
@@ -533,40 +545,44 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
 
   const monumentsHeld = useMemo(() => {
     const out: Record<string, number> = {}
-    for (const m of MONUMENTS) {
+    for (const m of scene.monuments) {
       const h = game.monuments[m.id].holder
       if (h) out[h] = (out[h] ?? 0) + 1
     }
     return out
-  }, [game.monuments])
+  }, [scene, game.monuments])
 
   const labelRadii = useMemo(() => {
-    const out = {} as Record<DistrictId, number>
-    for (const d of DISTRICTS) out[d.id] = wardBand((game.wards[d.id] ?? 1) - 1).outer
+    const out: Record<string, number> = {}
+    for (const d of scene.districts) out[d.id] = wardBand((game.wards[d.id] ?? 1) - 1).outer
     return out
-  }, [game.wards])
+  }, [scene, game.wards])
 
   const featuredFriend = useMemo(() => {
     if (!game.capital.holder) return null
     const best = Object.values(game.buildings)
       .filter((b) => b.districtId === game.capital.holder)
       .sort((a, b) => totalBuilt(b) - totalBuilt(a))[0]
-    return best ? buildingFriendLabel(best) : null
-  }, [game.buildings, game.capital.holder])
+    return best ? scene.buildingLabel(best) : null
+  }, [scene, game.buildings, game.capital.holder])
 
   const occupied = useMemo(() => {
-    const out = Object.fromEntries(DISTRICTS.map((d) => [d.id, new Set<string>()])) as Record<DistrictId, Set<string>>
-    for (const b of Object.values(game.buildings)) out[b.districtId].add(`${b.ward}:${b.plot}`)
+    const out: Record<string, Set<string>> = Object.fromEntries(scene.districts.map((d) => [d.id, new Set<string>()]))
+    for (const b of Object.values(game.buildings)) {
+      const set = out[b.districtId]
+      if (!set) throw new Error(`Building ${b.id} is in ${b.districtId}, which is not a district of ${scene.key}`)
+      set.add(`${b.ward}:${b.plot}`)
+    }
     return out
-  }, [game.buildings])
+  }, [scene, game.buildings])
 
-  const placedMonuments = useMemo(() => layoutMonuments(game.monuments, transfers), [game.monuments, transfers])
+  const placedMonuments = useMemo(() => layoutMonuments(scene, game.monuments, transfers), [scene, game.monuments, transfers])
 
   // Level of detail: which buildings render individually vs as simple massing.
   const lodFull = useMemo(() => {
     const keep = new Set<string>([selectedId ?? '', game.crown.holder ?? '', objectiveId ?? ''])
     for (const b of Object.values(game.buildings)) if (b.ownerId === viewerId) keep.add(b.id)
-    const groups = new Map<string, Building[]>()
+    const groups = new Map<string, SceneBuilding[]>()
     for (const b of Object.values(game.buildings)) {
       const k = `${b.districtId}:${b.ward}`
       groups.set(k, [...(groups.get(k) ?? []), b])
@@ -582,7 +598,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
   const objects = useMemo(() => {
     const out: CityObject[] = []
     for (const b of Object.values(game.buildings)) {
-      const p = placeBuilding(b, rot)
+      const p = placeBuilding(scene, b, rot)
       const total = totalBuilt(b)
       const H = buildingHeightPx(total)
       const full = lodFull.has(b.id)
@@ -607,7 +623,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
                 labelScale={labelScale}
                 isObjective={objectiveId === b.id}
                 onViewMedia={handleViewMedia}
-                roadSafe={rot ? Math.min(footprintHalf(tierFor(total)) + LOT_MARGIN, roadSafeHalf(b.districtId, b.ward, p.world, rot)) : undefined}
+                roadSafe={rot ? Math.min(footprintHalf(tierFor(total)) + LOT_MARGIN, roadSafeHalf(sceneDistrict(scene, b.districtId), b.ward, p.world, rot)) : undefined}
               />
             ) : (
               <MassingSprite building={b} total={total} onSelect={handleSelect} onViewMedia={handleViewMedia} />
@@ -637,9 +653,9 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
         ),
       })
     }
-    for (const d of DISTRICTS) {
+    for (const d of scene.districts) {
       if (placedMonuments.some((m) => m.districtId === d.id)) continue
-      const p = place(polar(WORLD.civicSquare.center, districtAngle(d.id)), rot)
+      const p = place(polar(WORLD.civicSquare.center, d.centerDeg), rot)
       out.push({
         depth: p.depth,
         key: `civic-${d.id}`,
@@ -652,16 +668,16 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
       })
     }
     if (game.capital.holder) {
-      const cp = place(polar(WORLD.civicSquare.inner - 0.6, districtAngle(game.capital.holder)), rot)
-      const holder = game.capital.holder
+      const holder = sceneDistrict(scene, game.capital.holder)
+      const cp = place(polar(WORLD.civicSquare.inner - 0.6, holder.centerDeg), rot)
       out.push({
         depth: cp.depth,
         key: 'capital-flags',
         bbox: { x0: cp.screen.x - 260, x1: cp.screen.x + 260, y0: cp.screen.y - 200, y1: cp.screen.y + 200 },
-        render: () => <CapitalFlags key="capital-flags" id={holder} detail={detail} rot={rot} />,
+        render: () => <CapitalFlags key="capital-flags" d={holder} detail={detail} rot={rot} />,
       })
     }
-    MONUMENTS.forEach((m, i) => {
+    scene.monuments.forEach((m, i) => {
       const { screen: s, depth } = place(pylonWorld(i), rot)
       out.push({
         depth,
@@ -678,7 +694,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
     const { screen: f, depth: fountainDepth } = place({ x: 9.5, y: 9.5 }, rot)
     out.push({ depth: fountainDepth, key: 'fountain', bbox: { x0: f.x - 50, x1: f.x + 50, y0: f.y - 40, y1: f.y + 30 }, render: () => <g key="fountain" transform={`translate(${f.x} ${f.y})`}><Fountain /></g> })
     return out.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key))
-  }, [game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId, rot, viewerId])
+  }, [scene, game.buildings, game.users, game.crown.holder, game.monuments, game.capital.holder, selectedId, detail, fx, handleSelect, handleViewMedia, placedMonuments, lodFull, billboardDraft, labelScale, objectiveId, rot, viewerId])
 
   // Viewport culling: only mount what intersects the camera view.
   const visible = objects.filter((o) => intersects(o.bbox, view))
@@ -688,7 +704,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
   const gates =
     detail === 'far'
       ? []
-      : DISTRICTS.map((d) => ({ d, g: place(gateWorld(d.id), rot) })).filter(({ g }) =>
+      : scene.districts.map((d) => ({ d, g: place(gateWorld(d), rot) })).filter(({ g }) =>
           intersects({ x0: g.screen.x - 90, x1: g.screen.x + 90, y0: g.screen.y - 110, y1: g.screen.y + 40 }, view),
         )
 
@@ -704,9 +720,10 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
   // district labels with a cheap <use> of the label each sprite already renders.
   const priorityLabels = [...new Set([selectedId, objectiveId, game.crown.holder, ...Object.values(game.buildings).filter((b) => b.ownerId === viewerId).map((b) => b.id)])]
     .filter((id): id is string => !!id && !!game.buildings[id] && lodFull.has(id) && visible.some((o) => o.key === id))
-    .map((id) => ({ id, p: placeBuilding(game.buildings[id], rot).screen }))
+    .map((id) => ({ id, p: placeBuilding(scene, game.buildings[id], rot).screen }))
 
   return (
+    <CitySceneContext.Provider value={scene}>
     <div className={`city-wrap detail-${detail}`} ref={wrapRef} data-testid="city" data-zoom={cam.zoom.toFixed(2)} data-detail={detail} data-rendered={visible.length} data-radius={radius} data-rotation={orientation}>
       {/* ONE svg root with ONE camera viewBox: ground and objects always repaint together
           (separate roots could tear apart during production pan/zoom). Ground draws first. */}
@@ -728,7 +745,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
           if (!placing) onSelect(null)
         }}
         role="application"
-        aria-label="Rare City map. Drag to pan, scroll to zoom, Q and E to rotate, Tab to buildings."
+        aria-label={`${scene.cityName} map. Drag to pan, scroll to zoom, Q and E to rotate, Tab to buildings.`}
       >
         <CityDefs />
         <g className="ground-layer" aria-hidden="true">
@@ -737,7 +754,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
         <g className="gates">
           {gates.map(({ d, g }) => (
             <g key={d.id} transform={`translate(${g.screen.x.toFixed(1)} ${g.screen.y.toFixed(1)})`}>
-              <DistrictGate id={d.id} detail={detail} isCapital={game.capital.holder === d.id} rot={rot} />
+              <DistrictGate district={d} detail={detail} isCapital={game.capital.holder === d.id} rot={rot} />
             </g>
           ))}
         </g>
@@ -751,15 +768,15 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
           ))}
         </g>
         {/* District identity reads above ordinary towers; priority building labels above that. */}
-        <DistrictLabels capital={game.capital.holder} monumentsHeld={monumentsHeld} onSelect={placing ? noop : onSelectDistrict} scale={Math.max(0.8, labelScale * 0.95)} radii={labelRadii} rot={rot} />
+        <DistrictLabels districts={scene.districts} capital={game.capital.holder} monumentsHeld={monumentsHeld} onSelect={placing ? noop : onSelectDistrict} scale={districtLabelScale} radii={labelRadii} rot={rot} />
         <g className="priority-labels" pointerEvents="none" aria-hidden="true">
           {priorityLabels.map(({ id, p }) => (
             <use key={id} href={`#bl-${id}`} transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`} />
           ))}
         </g>
-        <CapitalSign capital={game.capital.holder} featuredFriend={featuredFriend} detail={detail} />
-        {game.capital.holder && <CapitalCrest id={game.capital.holder} scale={Math.min(1.15, labelScale)} compact={detail !== 'near'} rot={rot} />}
-        <TransferArcs transfers={transfers} placed={placedMonuments} rot={rot} />
+        <CapitalSign capital={game.capital.holder} featuredFriend={featuredFriend} detail={detail} scale={capitalSignScale} />
+        {game.capital.holder && <CapitalCrest d={sceneDistrict(scene, game.capital.holder)} scale={capitalCrestScale} compact={detail !== 'near'} rot={rot} />}
+        <TransferArcs scene={scene} transfers={transfers} placed={placedMonuments} rot={rot} />
         {/* Placement mode only: candidate sites on top of everything so towers and labels never hide them. */}
         {placement && <PlacementLayer candidates={placement.candidates} selected={placement.selected} onPick={handlePick} labelScale={labelScale} rot={rot} />}
       </svg>
@@ -788,6 +805,7 @@ export function CityView({ game, viewerId, selectedId, onSelect, onSelectDistric
         </button>
       </div>
     </div>
+    </CitySceneContext.Provider>
   )
 }
 
@@ -801,7 +819,7 @@ function RotateIcon({ dir }: { dir: 1 | -1 }) {
   )
 }
 
-function TransferArcs({ transfers, placed, rot }: { transfers: MonumentTransfer[]; placed: ReturnType<typeof layoutMonuments>; rot: number }) {
+function TransferArcs({ scene, transfers, placed, rot }: { scene: CityScene; transfers: readonly MonumentTransfer[]; placed: ReturnType<typeof layoutMonuments>; rot: number }) {
   return (
     <g pointerEvents="none">
       {transfers.map((t) => {
@@ -813,7 +831,7 @@ function TransferArcs({ transfers, placed, rot }: { transfers: MonumentTransfer[
         const b = isoW(to.world, rot)
         const mx = (a.x + b.x) / 2
         const my = Math.min(a.y, b.y) - 520
-        const color = getDistrict(t.to).glow
+        const color = sceneDistrict(scene, t.to).glow
         const d = `M${a.x} ${a.y - 90} Q${mx} ${my} ${b.x} ${b.y - 90}`
         return (
           <g key={t.key} className="transfer-arc">

@@ -1,15 +1,14 @@
 import { memo, type KeyboardEvent, type MouseEvent } from 'react'
 import { FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
-import { getDistrict } from '../../config/districts'
 import { MAX_VISIBLE_PATRONS } from '../../config/economy'
-import { buildingFriendLabel } from '../../config/identity'
 import { patronLevelIndex, rankedPatrons, stageFor, tierFor } from '../../game/economy'
-import type { Building, DemoUser, LandscapeKind } from '../../game/types'
+import type { DemoUser, LandscapeKind } from '../../game/types'
 import { useTween } from '../motion'
 import { CROWN_STEM, crownAnchor, crownScale, facadeBillboardWidth, landscapeSlotPos, ROOFTOP_BILLBOARD, roofHeightPx, rooftopExtent, sectionsFor } from './buildingGeometry'
 import { boxCorners, buildingHeightPx, FLOOR_PX, footprintHalf, hsl, iso, isoEllipse, leftFace, rightFace, S, TAN30, WINDOW_TILES, type Detail } from './geometry'
 import { lotHalfWithin, propertyLotHalf } from './roads'
 import { IsoBox } from './parts'
+import { sceneDistrict, useCityScene, type SceneBuilding } from './scene'
 
 export type { Detail }
 
@@ -222,7 +221,7 @@ function FaceWindows({ w, h, style, light, lobby, accent }: { w: number; h: numb
 }
 
 interface Props {
-  building: Building
+  building: SceneBuilding
   total: number
   users: Record<string, DemoUser>
   selected: boolean
@@ -248,7 +247,7 @@ interface Props {
  * Click/keyboard affordance for a billboard that has an image. Stops propagation so the
  * building underneath is not (de)selected; pointer-down is untouched so panning still works.
  */
-function mediaHit(b: Building, onViewMedia?: (id: string) => void) {
+function mediaHit(b: SceneBuilding, name: string, onViewMedia?: (id: string) => void) {
   if (!onViewMedia || !b.billboard.image) return {}
   const open = (e: MouseEvent | KeyboardEvent) => {
     e.stopPropagation()
@@ -258,7 +257,7 @@ function mediaHit(b: Building, onViewMedia?: (id: string) => void) {
     className: 'billboard-hit',
     role: 'button',
     tabIndex: 0,
-    'aria-label': `View property media on ${buildingFriendLabel(b)}`,
+    'aria-label': `View property media on ${name}`,
     onClick: open,
     onKeyDown: (e: KeyboardEvent) => {
       if (e.key !== 'Enter' && e.key !== ' ') return
@@ -277,14 +276,16 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const pal = FACADE_PALETTES[b.architecture.facade] ?? FACADE_PALETTES.slate
   const light = LIGHTING_COLORS[b.architecture.lighting] ? b.architecture.lighting : 'warm'
   const accent = LIGHTING_COLORS[light].accent
-  const district = getDistrict(b.districtId)
+  const scene = useCityScene()
+  const district = sceneDistrict(scene, b.districtId)
+  const name = scene.buildingLabel(b)
   const sections = sectionsFor(tier, H, a0)
   const topSec = sections[sections.length - 1]
   const shaft = sections.find((s) => s.kind === 'shaft') ?? sections[0]
   const podium = sections[0]
   const cPod = boxCorners(podium.a)
   // Paved lot trimmed to the plot's road-safe envelope (never paints over asphalt).
-  const lot = roadSafe === undefined ? propertyLotHalf(b.districtId, b.ward, b.plot, tier) : lotHalfWithin(tier, roadSafe)
+  const lot = roadSafe === undefined ? propertyLotHalf(district, b.ward, b.plot, tier) : lotHalfWithin(tier, roadSafe)
   const cl = boxCorners(lot)
   const patrons = rankedPatrons(b).slice(0, MAX_VISIBLE_PATRONS)
   // Dense city: at far/mid zoom only important buildings carry labels.
@@ -300,7 +301,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
     : null
   const crownAt = crown ? `translate(0 ${-topSec.z1 - crown.base}) scale(${crownK})` : undefined
   const topY = -topSec.z1 - (crown ? crown.base + (detail === 'far' ? 92 : 64) : roofH)
-  const label = `${buildingFriendLabel(b)}, Tier ${tierFor(target)}, ${district.name}${isPlayer ? ', your building' : ''}`
+  const label = `${name}, Tier ${tierFor(target)}, ${district.name}${isPlayer ? ', your building' : ''}`
 
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -453,7 +454,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
 
       {/* Property media ladder: T4 facade billboard; T5+ rooftop (see config/media.ts) */}
       {b.fixtures.includes('billboard') && shaft.kind !== 'podium' && tier < 5 && (
-        <g transform={rightFace(shaft.a, shaft.z1)} data-testid={`billboard-${b.friendId}`} data-media="facade" data-detail={detail} {...mediaHit(b, onViewMedia)}>
+        <g transform={rightFace(shaft.a, shaft.z1)} data-testid={`billboard-${b.friendId}`} data-media="facade" data-detail={detail} {...mediaHit(b, name, onViewMedia)}>
           <Billboard w={boxCorners(shaft.a).faceW} id={b.id} image={b.billboard.image} accent={accent} detail={detail} />
         </g>
       )}
@@ -476,7 +477,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       )}
 
       {roofMedia && (
-        <g transform={`translate(0 ${-topSec.z1})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail={detail} {...mediaHit(b, onViewMedia)}>
+        <g transform={`translate(0 ${-topSec.z1})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail={detail} {...mediaHit(b, name, onViewMedia)}>
           <RooftopBillboard id={b.id} image={b.billboard.image} accent={accent} landmark={tier >= 6} detail={detail} />
         </g>
       )}
@@ -588,9 +589,11 @@ function BuildingLabel({ text, isPlayer, stroke, objective, far }: { text: strin
 }
 
 /** Level-of-detail stand-in: plain massing for dense wards at far zoom. */
-export const MassingSprite = memo(function MassingSprite({ building: b, total, onSelect, onViewMedia }: { building: Building; total: number; onSelect: (id: string) => void; onViewMedia?: (id: string) => void }) {
+export const MassingSprite = memo(function MassingSprite({ building: b, total, onSelect, onViewMedia }: { building: SceneBuilding; total: number; onSelect: (id: string) => void; onViewMedia?: (id: string) => void }) {
   const tier = tierFor(total)
-  const d = getDistrict(b.districtId)
+  const scene = useCityScene()
+  const d = sceneDistrict(scene, b.districtId)
+  const name = scene.buildingLabel(b)
   const hasMedia = b.fixtures.includes('billboard') && tier >= 4
   const H = buildingHeightPx(total)
   const accent = LIGHTING_COLORS[b.architecture.lighting]?.accent ?? LIGHTING_COLORS.warm.accent
@@ -614,11 +617,11 @@ export const MassingSprite = memo(function MassingSprite({ building: b, total, o
       {/* Property media stays visible on massing stand-ins too (lightweight far treatment). */}
       {hasMedia &&
         (tier < 5 ? (
-          <g transform={rightFace(footprintHalf(tier), H * 0.7)} data-testid={`billboard-${b.friendId}`} data-media="facade" data-detail="far" {...mediaHit(b, onViewMedia)}>
+          <g transform={rightFace(footprintHalf(tier), H * 0.7)} data-testid={`billboard-${b.friendId}`} data-media="facade" data-detail="far" {...mediaHit(b, name, onViewMedia)}>
             <Billboard w={boxCorners(footprintHalf(tier)).faceW} id={`${b.id}-m`} image={b.billboard.image} accent={accent} detail="far" />
           </g>
         ) : (
-          <g transform={`translate(0 ${-H})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail="far" {...mediaHit(b, onViewMedia)}>
+          <g transform={`translate(0 ${-H})`} data-testid={`billboard-${b.friendId}`} data-media={tier >= 6 ? 'landmark' : 'skyline'} data-detail="far" {...mediaHit(b, name, onViewMedia)}>
             <RooftopBillboard id={`${b.id}-m`} image={b.billboard.image} accent={accent} landmark={tier >= 6} detail="far" />
           </g>
         ))}

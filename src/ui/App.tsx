@@ -17,6 +17,7 @@ import type { GameState } from '../game/types'
 import { findBuildingByFriend } from '../game/actions'
 import type { BuildFx } from './city/BuildingSprite'
 import { CityView, type MonumentTransfer } from './city/CityView'
+import { RARE_CITY_SCENE, toLegacyDistrictId } from './city/legacyScene'
 import { Hud } from './Hud'
 import { useIdentity } from './identity'
 import { AccountPanel } from './panels/AccountPanel'
@@ -415,12 +416,13 @@ function CityApp({ store, game, act }: { store: StoreState; game: GameState; act
         <div className="moon" />
       </div>
       <CityView
+        scene={RARE_CITY_SCENE}
         game={game}
         viewerId={viewerId}
         selectedId={selectedId}
         onSelect={select}
         onSelectDistrict={(d) => {
-          setBoardDistrict(d)
+          setBoardDistrict(toLegacyDistrictId(d))
           setPanel('board')
           setBackTo(null)
         }}

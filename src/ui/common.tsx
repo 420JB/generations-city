@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react'
-import { getDistrict, type DistrictId } from '../config/districts'
+import type { DistrictId } from '../config/districts'
 import { friendLabel } from '../config/identity'
 import { formatRF } from '../game/economy'
 import type { DemoUser } from '../game/types'
+import { RARE_CITY_SCENE } from './city/legacyScene'
+import { sceneDistrict, type SceneDistrict } from './city/scene'
 
 /** Procedural avatar for a demo Friend identity (no real NFT art is implied). */
 export function Avatar({ user, size = 28 }: { user: DemoUser | undefined; size?: number }) {
@@ -34,11 +36,15 @@ export function RF({ value, sim = true }: { value: number; sim?: boolean }) {
 }
 
 export function DistrictChip({ id, small }: { id: DistrictId | null; small?: boolean }) {
-  if (!id) return <span className="district-chip muted">Unclaimed</span>
-  const d = getDistrict(id)
+  return <SceneDistrictChip district={id ? sceneDistrict(RARE_CITY_SCENE, id) : null} small={small} />
+}
+
+/** District chip for any city's district (the legacy `DistrictChip` is this, for Rare City). */
+export function SceneDistrictChip({ district: d, small }: { district: SceneDistrict | null; small?: boolean }) {
+  if (!d) return <span className="district-chip muted">Unclaimed</span>
   return (
-    <span className={`district-chip${small ? ' small' : ''}`} style={{ ['--dc' as string]: d.color }} data-district={id}>
-      <DistrictEmblem id={id} />
+    <span className={`district-chip${small ? ' small' : ''}`} style={{ ['--dc' as string]: d.color }} data-district={d.id}>
+      <SceneDistrictEmblem district={d} />
       {d.name}
     </span>
   )
@@ -81,20 +87,28 @@ export function PanelHeader({ title, kicker, onClose, onBack }: { title: ReactNo
  * assistive tech. `banner` uses the SECONDARY silhouette for flag/banner contexts.
  */
 export function DistrictEmblem({ id, size = 20, banner = false }: { id: DistrictId; size?: number; banner?: boolean }) {
-  const d = getDistrict(id)
+  return <SceneDistrictEmblem district={sceneDistrict(RARE_CITY_SCENE, id)} size={size} banner={banner} />
+}
+
+/** District crest for any city's district. */
+export function SceneDistrictEmblem({ district: d, size = 20, banner = false }: { district: SceneDistrict; size?: number; banner?: boolean }) {
   return (
-    <span className="district-crest" style={{ ['--dc' as string]: d.color, width: size, height: size }} aria-hidden="true" data-family={d.familyKey}>
-      <img src={banner ? d.art.secondaryTransparent : d.art.primaryTransparent} alt="" width={size} height={size} decoding="async" draggable={false} />
+    <span className="district-crest" style={{ ['--dc' as string]: d.color, width: size, height: size }} aria-hidden="true" data-family={d.familyKey ?? undefined}>
+      <img src={banner ? d.banner : d.crest} alt="" width={size} height={size} decoding="async" draggable={false} />
     </span>
   )
 }
 
 /** Large civic header for a district: crest, family title and a subtle numeral reference. */
 export function DistrictBanner({ id, kicker, aside, testId }: { id: DistrictId; kicker?: ReactNode; aside?: ReactNode; testId?: string }) {
-  const d = getDistrict(id)
+  return <SceneDistrictBanner district={sceneDistrict(RARE_CITY_SCENE, id)} kicker={kicker} aside={aside} testId={testId} />
+}
+
+/** District header for any city's district. */
+export function SceneDistrictBanner({ district: d, kicker, aside, testId }: { district: SceneDistrict; kicker?: ReactNode; aside?: ReactNode; testId?: string }) {
   return (
-    <div className="district-banner" style={{ ['--dc' as string]: d.color }} data-testid={testId} data-district={id} data-family={d.familyKey}>
-      <DistrictEmblem id={id} size={46} />
+    <div className="district-banner" style={{ ['--dc' as string]: d.color }} data-testid={testId} data-district={d.id} data-family={d.familyKey ?? undefined}>
+      <SceneDistrictEmblem district={d} size={46} />
       <div className="grow">
         <div className="kicker">{kicker ?? `DISTRICT ${d.sigil}`}</div>
         <div className="district-banner-title">{d.title}</div>

@@ -1,8 +1,8 @@
 import { memo, type ReactElement } from 'react'
 import { LIGHTING_COLORS } from '../../config/architecture'
-import { DISTRICTS } from '../../config/districts'
 import { prng } from '../../game/seed'
 import { FLOOR_PX, WINDOW_TILES } from './geometry'
+import { useCityScene } from './scene'
 
 
 function WindowShape({ style, fill }: { style: string; fill: string }) {
@@ -45,6 +45,7 @@ function DarkMask({ style }: { style: string }) {
 }
 
 export const CityDefs = memo(function CityDefs() {
+  const scene = useCityScene()
   return (
     <defs>
       {Object.keys(WINDOW_TILES).flatMap((style) =>
@@ -105,17 +106,17 @@ export const CityDefs = memo(function CityDefs() {
         <stop offset="0.86" stopColor="#070d22" stopOpacity="0.55" />
         <stop offset="1" stopColor="#050810" stopOpacity="0" />
       </radialGradient>
-      {DISTRICTS.map((d) => (
+      {scene.districts.map((d) => (
         <g key={d.id}>
-          <linearGradient id={`beam-${d.id}`} x1="0" y1="1" x2="0" y2="0">
+          <linearGradient id={`beam-${d.paint}`} x1="0" y1="1" x2="0" y2="0">
             <stop offset="0" stopColor={d.color} stopOpacity="0.55" />
             <stop offset="1" stopColor={d.color} stopOpacity="0" />
           </linearGradient>
-          <radialGradient id={`glow-${d.id}`}>
+          <radialGradient id={`glow-${d.paint}`}>
             <stop offset="0" stopColor={d.glow} stopOpacity="0.85" />
             <stop offset="1" stopColor={d.color} stopOpacity="0" />
           </radialGradient>
-          <radialGradient id={`ground-${d.id}`} cx="0.5" cy="0.5" r="0.7">
+          <radialGradient id={`ground-${d.paint}`} cx="0.5" cy="0.5" r="0.7">
             <stop offset="0" stopColor={d.ground} />
             <stop offset="1" stopColor="#101524" />
           </radialGradient>

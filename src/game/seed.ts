@@ -140,7 +140,8 @@ const WINDOWS = ['grid', 'ribbon', 'arched', 'lattice']
 const LIGHTS = ['warm', 'cool', 'warm', 'neon', 'gold']
 const LANDSCAPE: LandscapeKind[] = ['tree', 'shrub', 'planter', 'bench', 'lamp']
 
-function seededArchitecture(rand: () => number, tier: number): ArchitectureConfig {
+/** Deterministic, tier-appropriate architecture (the demo seed and sample cities). */
+export function seededArchitecture(rand: () => number, tier: number): ArchitectureConfig {
   const pick = <T,>(arr: readonly T[]) => arr[Math.floor(rand() * arr.length)]
   const roofs = tier >= 4 ? ['spire', 'crown-deck', 'halo', 'terrace'] : tier >= 3 ? ['spire', 'terrace', 'dome'] : tier >= 2 ? ['terrace', 'dome', 'flat'] : ['flat']
   const tops = tier >= 4 ? ['helipad', 'beacon', 'antenna'] : tier >= 2 ? ['antenna', 'garden', 'none'] : ['none']

@@ -1,0 +1,249 @@
+import { useCallback, useMemo, useState } from 'react'
+import { heightMeters, totalBuilt } from '../../game/economy'
+import { CityView } from '../../ui/city/CityView'
+import { plotWorldIn } from '../../ui/city/districtGeometry'
+import { sceneDistrict, type ScenePlotCandidate } from '../../ui/city/scene'
+import { SceneDistrictEmblem } from '../../ui/common'
+import { mayAct, previewClaimAccess, type PreviewMember } from '../core/eligibility'
+import { districtPlots, loadBrandCity, type LoadedBrandCity } from '../load'
+import type { SampleBrand } from '../samples'
+import type { WorldPoint } from '../../game/world'
+import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
+
+type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string } | null
+
+/** A plot the engine offers, as the renderer's placement layer takes it. */
+export type PreviewCandidate = ScenePlotCandidate & { plotId: string }
+
+export interface Placement {
+  districtId: string
+  candidates: PreviewCandidate[]
+  selected: PreviewCandidate | null
+}
+
+interface Loaded {
+  brand: SampleBrand
+  city: LoadedBrandCity
+}
+
+/**
+ * LOCAL PREVIEW of the configurable city: the standard Rare City renderer (CityView, unchanged
+ * art, camera and interaction) drawing simulated brand cities. Nothing here claims, verifies,
+ * spends or persists anything.
+ */
+export function PreviewApp({ brands }: { brands: readonly SampleBrand[] }) {
+  const loaded = useMemo(
+    () =>
+      brands.map((brand): Loaded => {
+        const r = loadBrandCity(brand.config, brand.city)
+        if (!r.ok) throw new Error(`Sample brand is invalid: ${r.problems.map((p) => `${p.path} ${p.detail}`).join('; ')}`)
+        return { brand, city: r.city }
+      }),
+    [brands],
+  )
+  const [brandIndex, setBrandIndex] = useState(0)
+  const current = loaded[brandIndex]
+  // Everything below belongs to one brand. Keying by the city remounts it on a switch, so no
+  // selection, placement, camera or viewer can leak from one brand into another.
+  return (
+    <BrandCityPreview
+      key={current.city.scene.key}
+      loaded={current}
+      brands={loaded.map((l) => ({ key: l.city.scene.key, name: l.city.config.cityName, districts: l.city.config.districts.length }))}
+      brandIndex={brandIndex}
+      onBrand={setBrandIndex}
+    />
+  )
+}
+
+function BrandCityPreview({ loaded, brands, brandIndex, onBrand }: { loaded: Loaded; brands: { key: string; name: string; districts: number }[]; brandIndex: number; onBrand: (i: number) => void }) {
+  const { city, brand } = loaded
+  const { scene, state, config } = city
+  const [memberIndex, setMemberIndex] = useState(1)
+  const member: PreviewMember | null = brand.members[memberIndex] ?? null
+  const [panel, setPanel] = useState<Panel>(null)
+  const [placement, setPlacement] = useState<Placement | null>(null)
+  const [focus, setFocus] = useState<{ buildingId: string; seq: number } | null>(null)
+  const [frame, setFrame] = useState<{ seq: number; points: WorldPoint[] } | null>(null)
+  const [homeSeq, setHomeSeq] = useState(0)
+  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
+
+  const say = useCallback((text: string) => setNotice({ id: Date.now(), text }), [])
+  const selectedId = panel?.kind === 'building' ? panel.id : null
+
+  const select = useCallback((id: string | null) => {
+    setPanel(id ? { kind: 'building', id } : null)
+  }, [])
+
+  const openDistrict = useCallback((id: string) => {
+    setPlacement(null)
+    setPanel({ kind: 'district', id })
+  }, [])
+
+  const warp = useCallback((buildingId: string) => {
+    setPanel({ kind: 'building', id: buildingId })
+    setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
+  }, [])
+
+  /** Re-checked at every action, not only by the buttons' state (the server will check again for real). */
+  const allowedIn = (districtId: string) => mayAct(previewClaimAccess(config.districts.find((x) => x.key === districtId)?.gate ?? null, member))
+
+  const startPlacement = (districtId: string) => {
+    if (!allowedIn(districtId)) return
+    const d = sceneDistrict(scene, districtId)
+    const candidates = districtPlots(city, districtId).map((c) => ({ districtId: c.districtKey, ward: c.ward, plot: c.plot, newWard: c.newWard, plotId: c.plotId }))
+    setPlacement({ districtId, candidates, selected: null })
+    setPanel(null)
+    setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: candidates.map((c) => plotWorldIn(d, c.ward, c.plot)) }))
+  }
+
+  const capital = state.capital.holder ? sceneDistrict(scene, state.capital.holder) : null
+  const crown = state.crown.holder ? state.buildings[state.crown.holder] : null
+  const drawer =
+    placement !== null ? (
+      <PlotPanel
+        city={city}
+        member={member}
+        placement={placement}
+        onCancel={() => {
+          setPlacement(null)
+          setPanel({ kind: 'district', id: placement.districtId })
+        }}
+        onClaim={() => allowedIn(placement.districtId) && say('Preview only: nothing was claimed. A live claim will be decided by the server (NFT ownership and, where set, the Proofy rule).')}
+      />
+    ) : panel?.kind === 'district' ? (
+      <DistrictPanel key={panel.id} city={city} districtId={panel.id} member={member} onDistrict={openDistrict} onWarp={warp} onChoosePlot={() => startPlacement(panel.id)} onClose={() => setPanel(null)} />
+    ) : panel?.kind === 'building' && state.buildings[panel.id] ? (
+      <BuildingPreviewPanel
+        key={panel.id}
+        city={city}
+        buildingId={panel.id}
+        member={member}
+        onDistrict={openDistrict}
+        onClose={() => setPanel(null)}
+        onBuild={() => allowedIn(state.buildings[panel.id].districtId) && say('Preview only: nothing was built or spent. Building will use the shared Proofy community points, which are not connected yet.')}
+      />
+    ) : null
+
+  return (
+    <div className={`app preview-app${placement ? ' has-placement' : ''}${drawer ? ' has-drawer' : ''}`} data-testid="preview-app" data-brand={scene.key} data-districts={scene.districts.length}>
+      <div className="sky" aria-hidden="true">
+        <div className="stars" />
+        <div className="stars stars-2" />
+        <div className="moon" />
+      </div>
+      <CityView
+        scene={scene}
+        game={state}
+        viewerId={null}
+        selectedId={selectedId}
+        onSelect={select}
+        onSelectDistrict={openDistrict}
+        placement={placement ? { candidates: placement.candidates, selected: placement.selected } : null}
+        onPickPlot={(c) => setPlacement((p) => (p ? { ...p, selected: c } : p))}
+        frame={frame}
+        focus={focus}
+        fx={NO_FX}
+        transfers={NO_TRANSFERS}
+        drawerOpen={!!drawer}
+        homeSeq={homeSeq}
+        billboardDraft={null}
+        objectiveId={null}
+        onViewMedia={noop}
+      />
+
+      <header className="hud">
+        <div className="hud-brand">
+          {config.brand.logo ? <img className="brand-logo" src={config.brand.logo} alt="" width={40} height={40} /> : <div className="logo" aria-hidden="true"><span /><span /><span /></div>}
+          <div>
+            <h1 data-testid="city-name">{config.cityName.toUpperCase()}</h1>
+            <p>
+              {config.brand.name} · {scene.districts.length} districts · {config.collections.length} collections
+            </p>
+          </div>
+        </div>
+        <div className="hud-status">
+          <button type="button" className="status-pill capital" style={{ ['--dc' as string]: capital?.color ?? '#888' }} onClick={() => capital && openDistrict(capital.id)} data-testid="hud-capital" data-capital={capital?.id ?? ''}>
+            <span className="pill-k">{config.capital.name.toUpperCase()}</span>
+            <span className="pill-v">
+              {capital ? <SceneDistrictEmblem district={capital} size={20} /> : <i className="dot" />} {capital?.name ?? 'Unclaimed'}
+            </span>
+          </button>
+          <button type="button" className="status-pill crown" onClick={() => crown && warp(crown.id)} data-testid="hud-crown">
+            <span className="pill-k">♔ CROWN</span>
+            <span className="pill-v">{crown ? `${scene.buildingLabel(crown)} · ${heightMeters(totalBuilt(crown))} m` : '—'}</span>
+          </button>
+          <div className="status-pill monuments" aria-label="Monument holders">
+            <span className="pill-k">MONUMENTS</span>
+            <span className="pill-v mon-dots">
+              {scene.monuments.map((m) => {
+                const h = state.monuments[m.id].holder
+                const hd = h ? sceneDistrict(scene, h) : null
+                return (
+                  <i key={m.id} title={`${m.name}: ${hd?.name ?? 'Unclaimed'}`} style={{ background: hd?.color ?? 'transparent' }} className={hd ? '' : 'empty'} data-testid={`hud-mon-${m.id}`} data-holder={h ?? ''}>
+                    {m.tier}
+                  </i>
+                )
+              })}
+            </span>
+          </div>
+        </div>
+        <div className="hud-right">
+          <label className="player-chip viewer-chip" title="Simulated viewer: no sign-in, no real roles">
+            <div>
+              <div className="player-name">Viewing as</div>
+              <select value={memberIndex} onChange={(e) => setMemberIndex(Number(e.target.value))} data-testid="viewer-select" aria-label="Simulated viewer">
+                {brand.members.map((m, i) => (
+                  <option key={m?.id ?? 'visitor'} value={i}>
+                    {m ? m.label : 'Visitor · not signed in'}
+                  </option>
+                ))}
+              </select>
+              <div className="wallet">
+                <span className="sim-tag">SIMULATED MEMBER</span>
+              </div>
+            </div>
+          </label>
+          <nav className="hud-nav" aria-label="City panels">
+            <button type="button" className={`nav-btn board-nav${panel?.kind === 'district' ? ' on' : ''}`} onClick={() => openDistrict(panel?.kind === 'district' ? panel.id : scene.districts[0].id)} data-testid="nav-districts" aria-pressed={panel?.kind === 'district'}>
+              <span aria-hidden="true">▦</span>
+              <span className="nav-label">Districts</span>
+            </button>
+            <button type="button" className="nav-btn" onClick={() => setHomeSeq((s) => s + 1)} data-testid="nav-overview">
+              <span aria-hidden="true">⌂</span>
+              <span className="nav-label">Overview</span>
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      <div className="preview-bar" role="region" aria-label="Preview controls" data-testid="preview-bar">
+        <span className="preview-flag">LOCAL PREVIEW</span>
+        <span className="preview-note">Simulated brands, members, roles and progress. Nothing is claimed, verified or spent.</span>
+        <div className="preview-brands" role="group" aria-label="Sample brand">
+          {brands.map((b, i) => (
+            <button key={b.key} type="button" className={`chip${i === brandIndex ? ' on' : ''}`} aria-pressed={i === brandIndex} onClick={() => onBrand(i)} data-testid={`brand-${i}`}>
+              {b.name} · {b.districts}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {drawer && (
+        <aside className="drawer" data-testid="drawer">
+          {drawer}
+        </aside>
+      )}
+
+      {notice && (
+        <div className="error-toast notice" role="status" key={notice.id} data-testid="preview-notice">
+          {notice.text}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const NO_FX = {}
+const NO_TRANSFERS: never[] = []
+const noop = () => {}

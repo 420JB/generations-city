@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { DISTRICT_IDS } from '../../config/districts'
+import { RARE_CITY_SCENE } from './legacyScene'
+import { sceneDistrict } from './scene'
 import { plotWorld, wardCapacity } from '../../game/world'
 import { landscapeSlotPos } from './buildingGeometry'
 import { footprintHalf, iso, LOT_MARGIN, type Pt } from './geometry'
 import { minClearance, polygonRoadClearance, propertyLotHalf, wardRoads, type RoadKind } from './roads'
+
+/** The legacy districts, as the renderer reads them. */
+const D = (id: string) => sceneDistrict(RARE_CITY_SCENE, id)
 
 /** Wards I, II, V and XX: core, first expansion and representative outer wards. */
 const WARDS = [0, 1, 4, 19]
@@ -35,8 +40,8 @@ describe('road-safe property envelope', () => {
     let worstLot = Infinity
     let worstOpen = Infinity
     for (const { d, w, p } of plots()) {
-      worstLot = Math.min(worstLot, minClearance(d, w, p, footprintHalf(6) + LOT_MARGIN).px)
-      worstOpen = Math.min(worstOpen, minClearance(d, w, p, 1.9).px)
+      worstLot = Math.min(worstLot, minClearance(D(d), w, p, footprintHalf(6) + LOT_MARGIN).px)
+      worstOpen = Math.min(worstOpen, minClearance(D(d), w, p, 1.9).px)
     }
     expect(worstLot).toBeLessThan(0)
     expect(worstOpen).toBeLessThan(0)
@@ -46,17 +51,17 @@ describe('road-safe property envelope', () => {
     const seen: Partial<Record<RoadKind, number>> = {}
     for (const { d, w, i, p } of plots()) {
       for (let tier = 0; tier <= 6; tier++) {
-        const lot = propertyLotHalf(d, w, i, tier)
+        const lot = propertyLotHalf(D(d), w, i, tier)
         expect(lot).toBeGreaterThan(footprintHalf(tier))
-        const c = minClearance(d, w, p, lot)
+        const c = minClearance(D(d), w, p, lot)
         expect(c.px, `${d} w${w} p${i} T${tier} lot vs ${c.kind}`).toBeGreaterThanOrEqual(MIN_GAP_PX)
-        expect(minClearance(d, w, p, footprintHalf(tier)).px).toBeGreaterThanOrEqual(MIN_GAP_PX)
+        expect(minClearance(D(d), w, p, footprintHalf(tier)).px).toBeGreaterThanOrEqual(MIN_GAP_PX)
         seen[c.kind] = Math.min(seen[c.kind] ?? Infinity, c.px)
       }
-      expect(minClearance(d, w, p, propertyLotHalf(d, w, i)).px).toBeGreaterThanOrEqual(MIN_GAP_PX)
+      expect(minClearance(D(d), w, p, propertyLotHalf(D(d), w, i)).px).toBeGreaterThanOrEqual(MIN_GAP_PX)
     }
     // Clearance was measured against every road type, not just one.
-    for (const road of wardRoads('d4', 1)) expect(road.halfWidth).toBeGreaterThan(0)
+    for (const road of wardRoads(D('d4'), 1)) expect(road.halfWidth).toBeGreaterThan(0)
     expect(Object.keys(seen).sort()).toEqual(expect.arrayContaining(['civic', 'ward-boundary', 'ward-street']))
   })
 
@@ -65,17 +70,17 @@ describe('road-safe property envelope', () => {
       for (const w of WARDS) {
         const edge = [0, wardCapacity(w) - 1].map((i) => ({ i, p: plotWorld(d, w, i) }))
         for (const { i, p } of edge) {
-          const lot = propertyLotHalf(d, w, i, 6)
+          const lot = propertyLotHalf(D(d), w, i, 6)
           const poly = [iso(p.x - lot, p.y - lot), iso(p.x + lot, p.y - lot), iso(p.x + lot, p.y + lot), iso(p.x - lot, p.y + lot)]
-          for (const road of wardRoads(d, w).filter((r) => r.kind === 'radial')) expect(polygonRoadClearance(poly, road)).toBeGreaterThanOrEqual(MIN_GAP_PX)
+          for (const road of wardRoads(D(d), w).filter((r) => r.kind === 'radial')) expect(polygonRoadClearance(poly, road)).toBeGreaterThanOrEqual(MIN_GAP_PX)
         }
       }
   })
 
   it('selection ring, landscaping and patron markers stay on the property', () => {
     for (const { d, w, i, p } of plots()) {
-      const lot = propertyLotHalf(d, w, i, 6)
-      for (const road of wardRoads(d, w)) expect(polygonRoadClearance(circleOnScreen(p, lot * 1.1), road)).toBeGreaterThanOrEqual(0)
+      const lot = propertyLotHalf(D(d), w, i, 6)
+      for (const road of wardRoads(D(d), w)) expect(polygonRoadClearance(circleOnScreen(p, lot * 1.1), road)).toBeGreaterThanOrEqual(0)
       // Landscaping slots and patron markers lie inside the lot square (world coordinates).
       for (let k = 0; k < 8; k++) {
         const s = landscapeSlotPos(footprintHalf(6), k, lot)
@@ -97,9 +102,9 @@ describe('road-safe property envelope', () => {
     let trimmed = 0
     let total = 0
     for (const { d, w, i } of plots()) {
-      expect(propertyLotHalf(d, w, i, 0)).toBe(footprintHalf(0) + LOT_MARGIN)
+      expect(propertyLotHalf(D(d), w, i, 0)).toBe(footprintHalf(0) + LOT_MARGIN)
       total++
-      if (propertyLotHalf(d, w, i, 6) < footprintHalf(6) + LOT_MARGIN) trimmed++
+      if (propertyLotHalf(D(d), w, i, 6) < footprintHalf(6) + LOT_MARGIN) trimmed++
     }
     expect(trimmed / total).toBeLessThan(0.6)
   })
