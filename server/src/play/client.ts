@@ -49,7 +49,8 @@ export interface PlayRun {
 /** Everything the launch path asks of Play. `createPlayClient` talks to a deployed Play; tests use their own. */
 export interface PlayGameReader {
   redeemRun(runToken: string): Promise<PlayRun>
-  getInstallation(installationId: string): Promise<PlayInstallation>
+  /** `signal` ends the request early: it is abandoned, not left running in the background. */
+  getInstallation(installationId: string, options?: { signal?: AbortSignal }): Promise<PlayInstallation>
   getConfigVersion(installationId: string, version: number): Promise<PlayConfigVersion>
 }
 
@@ -163,12 +164,12 @@ export function createPlayClient(options: PlayClientOptions): PlayGameReader & P
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   /** The parsed `ok: true` body. Throws PlayApiError for anything else. */
-  async function request(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<Record<string, unknown>> {
+  async function request(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown, cancel?: AbortSignal): Promise<Record<string, unknown>> {
     const route = `${method} ${path.split('?')[0]}`
     const headers: Record<string, string> = { authorization: `Bearer ${options.credential}`, accept: 'application/json' }
     if (body !== undefined) headers['content-type'] = 'application/json'
-    // One deadline for the whole exchange, body included.
-    const signal = AbortSignal.timeout(timeoutMs)
+    // One deadline for the whole exchange, body included; a caller's signal can end it sooner.
+    const signal = cancel ? AbortSignal.any([cancel, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs)
     let status: number
     let text: string
     try {
@@ -201,8 +202,8 @@ export function createPlayClient(options: PlayClientOptions): PlayGameReader & P
     async redeemRun(runToken) {
       return readRun((await request('POST', '/v1/game/runs/redeem', { runToken })).run)
     },
-    async getInstallation(installationId) {
-      return readInstallation((await request('GET', `/v1/game/installations/${encodeURIComponent(installationId)}`)).installation)
+    async getInstallation(installationId, options) {
+      return readInstallation((await request('GET', `/v1/game/installations/${encodeURIComponent(installationId)}`, undefined, options?.signal)).installation)
     },
     async getConfigVersion(installationId, version) {
       return readConfigVersion((await request('GET', `/v1/game/installations/${encodeURIComponent(installationId)}/config/${version}`)).configVersion)

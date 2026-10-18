@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import pg, { type PoolClient } from 'pg'
 import { hashSessionToken } from '../auth/service'
 import type { Database } from '../db/pool'
@@ -6,7 +6,8 @@ import { withTransaction } from '../db/transaction'
 import type { PlayCityResponse, PlayEnvironment, PlayErrorCode, PlayFact, PlaySessionResponse, PlayViewer } from '../engine'
 import { errorFields, type Logger } from '../log'
 import { WorldRefusal, type WorldScope, type WorldStore } from '../world/store'
-import { PlayApiError, type PlayGameReader, type PlayRun } from './client'
+import type { PlayGameReader, PlayRun } from './client'
+import { createInstallationChecker, type InstallationVerdict } from './installationCheck'
 import type { PlayLaunch } from './launch'
 
 /**
@@ -28,18 +29,34 @@ import type { PlayLaunch } from './launch'
  * Proofy player is not a wallet user, and no `users` row is made for one).
  *
  * LIFETIME. A session ends at the earliest of: the end of Play's run (Rare City's registered
- * maxRunSeconds), PLAY_SESSION_MAX_MS after it opened, logout, a newer launch in the same browser,
- * and Play saying the installation is no longer active. It is never extended or renewed: the way
+ * maxRunSeconds), PLAY_SESSION_MAX_MS after it opened, logout, a newer launch by the same player in
+ * the same browser, and a definite no from Play (the installation no longer active, or Rare City
+ * itself refused). It is never extended or renewed: the way
  * back in is a new launch from Proofy Play, which is when Core checks the player's membership and
  * the server's entitlement again. Rare City has no way to ask Core about either in between
  * (no such contract), so the viewer says they were verified AT LAUNCH, never "now".
  *
- * AUTHORITY UNAVAILABLE. Opening a session needs Play (the launch) and the database. Reading the
- * city needs the database; Play is asked whether the installation is still active, within
- * INSTALLATION_CHECK_MS. A clear "not active" or "not this installation" from Play ends the
- * session. No answer leaves it as it is and says so (`installationActive: unknown`): the session
- * is already bounded by the run, and an outage of Play does not lock players out of a city they
- * were just admitted to, nor admit anyone new.
+ * PLAY'S AUTHORITY, ON EVERY READ (`installationCheck.ts`). Reading the city needs the database
+ * and Play's word that the installation is still active:
+ *   - `active` (asked now, or within INSTALLATION_CHECK_CACHE_MS): the city is served.
+ *   - a definite no ends the session for good (revoked, cookie cleared, 403): the installation
+ *     suspended, uninstalled, not shown or not this one (`installation_not_active`), or Play
+ *     refusing Rare City itself, its credential or its game (`play_authorization_refused`).
+ *   - no authoritative answer (unreachable, timed out, malformed): the city is still served, saying
+ *     `installationActive: unknown`, for at most PLAY_SESSION_GRACE_MS after Play's last `active`
+ *     for that installation in this process (a launch's own check counts). Past it, or with no
+ *     such reading, the read is refused for now (503 `installation_unverified`): the session is
+ *     kept, and serves again as soon as Play answers `active`.
+ * The grace period is for VIEWING only. Nothing that acts for a player may lean on it or on the
+ * cache: `requireActor` asks Play afresh and accepts only `active`.
+ *
+ * WHO IS ACTING. A browser holds one play session, and a launch in one tab replaces the session
+ * every other tab of that browser was showing. So a page knows which session it drew
+ * (`viewer.session.ref`, an identifier, never a credential), and anything that acts must name it,
+ * with the world and the player it expects, and be refused unless the cookie's session is exactly
+ * that one (`requireActor`). Nor does a launch change who a browser is: a run for another player
+ * than its live session opens nothing (app.ts), so a link carrying someone else's run token cannot
+ * sign a signed-in browser in as them.
  */
 
 /** The longest a play session lasts, however long Play's run is. */
@@ -50,10 +67,14 @@ export const MIN_PLAY_SESSION_MS = 60_000
 export const INSTALLATION_CHECK_MS = 3_000
 /** How long Play's "active" is reused for other reads of the same installation. A "not active" is never reused: it ends the session. */
 export const INSTALLATION_CHECK_CACHE_MS = 15_000
+/**
+ * How long after Play's last "active" for an installation a read may still be served when Play gives no
+ * authoritative answer. Viewing only; never anything that acts.
+ */
+export const PLAY_SESSION_GRACE_MS = 60_000
 /** Ended sessions are deleted this long after they ended. */
 const SESSION_RETENTION_MS = 30 * 24 * 60 * 60_000
 const TIDY_EVERY_MS = 15_000
-const MAX_CACHED_INSTALLATIONS = 10_000
 
 const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/
 
@@ -74,6 +95,7 @@ export class PlaySessionError extends Error {
  * serialised. The browser learns the player and the expiry, not the row.
  */
 export interface LivePlaySession {
+  /** The row's id: also the page's `viewer.session.ref`. Identifies a session; authorizes nothing. */
   id: string
   scope: WorldScope
   player: PlayRun['player']
@@ -83,6 +105,7 @@ export interface LivePlaySession {
 
 /** What a session row records. */
 export interface NewPlaySession {
+  id: string
   tokenHash: Buffer
   scope: WorldScope
   player: PlayRun['player']
@@ -115,10 +138,11 @@ export function createPlaySessionStore(db: Database): PlaySessionStore {
           // A browser holds one play session: the one it arrived with ends as the new one begins.
           if (retiring) await client.query('UPDATE play_sessions SET revoked_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL', [retiring, s.createdAt])
           await client.query(
-            `INSERT INTO play_sessions (token_hash, world_id, play_environment, play_game_key, play_installation_id, discord_guild_id, discord_user_id, core_user_id, display_name,
+            `INSERT INTO play_sessions (id, token_hash, world_id, play_environment, play_game_key, play_installation_id, discord_guild_id, discord_user_id, core_user_id, display_name,
                                         play_run_id, launch_config_version, launch_config_hash, run_expires_at, created_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
             [
+              s.id,
               s.tokenHash,
               s.scope.worldId,
               s.scope.environment,
@@ -183,13 +207,32 @@ export interface OpenedPlaySession {
   response: PlaySessionResponse
 }
 
+/** What an action names as its actor: the session the page drew, and the world and player it showed. */
+export interface ExpectedActor {
+  sessionRef: string
+  worldId: string
+  discordUserId: string
+}
+
 export interface PlaySessionService {
   /** Open this browser's play session for a launch the launch path and world store accepted. `presented` (a cookie it carried) is retired. */
   open(launch: PlayLaunch, presented: string | null): Promise<OpenedPlaySession>
   /** The live session behind this cookie value. Throws PlaySessionError: 401 `play_session_required`, 503 when it cannot be read. */
   session(presented: string | null): Promise<LivePlaySession>
-  /** A live session's city. Throws PlaySessionError: 403 `installation_not_active` (and the session is over), 503 when it cannot be read. */
+  /** The live session behind this cookie value, or null if there is none. Throws PlaySessionError 503 when it cannot be read. */
+  current(presented: string | null): Promise<LivePlaySession | null>
+  /**
+   * A live session's city. Throws PlaySessionError: 403 `installation_not_active` or `play_authorization_refused`
+   * (and the session is over), 503 `installation_unverified` (Play gave no answer past the grace period; the
+   * session is kept), 503 when it cannot be read.
+   */
   city(session: LivePlaySession): Promise<PlayCityResponse>
+  /**
+   * The session that may act, for anything that acts for a player (nothing does yet). The cookie's live session
+   * must be exactly `expected`'s, and Play must answer `active` now: no cache, no grace. Throws PlaySessionError:
+   * 401 `play_session_required`, 409 `play_actor_mismatch`, 403 as `city`, 503 `installation_unverified`.
+   */
+  requireActor(presented: string | null, expected: ExpectedActor): Promise<LivePlaySession>
   /** End the session behind this cookie value. Unknown or missing values are a no-op. */
   logout(presented: string | null): Promise<void>
 }
@@ -207,18 +250,19 @@ export interface PlaySessionOptions {
   random?: (bytes: number) => Buffer
   installationCheckMs?: number
   installationCacheMs?: number
+  graceMs?: number
+  /** Monotonic milliseconds, the launch service's clock too. Tests may replace it. */
+  clock?: () => number
 }
-
-type InstallationAnswer = 'active' | 'inactive' | 'unknown'
 
 const atLaunch = (source: 'proofy-core' | 'proofy-play', at: Date): PlayFact<true> => ({ status: 'verified', value: true, source, basis: 'launch', at: at.toISOString() })
 
 /** What a session's viewer is told: who Proofy says they are, what was verified when, and what is not known. */
-function viewerOf(player: PlayRun['player'], createdAt: Date, expiresAt: Date, installationActive: PlayFact<true>): PlayViewer {
+function viewerOf(ref: string, player: PlayRun['player'], createdAt: Date, expiresAt: Date, installationActive: PlayFact<true>): PlayViewer {
   return {
     authenticated: true,
     player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
-    session: { expiresAt: expiresAt.toISOString(), renewal: 'relaunch' },
+    session: { ref, expiresAt: expiresAt.toISOString(), renewal: 'relaunch' },
     status: {
       // Core signs a launch context only for a member of the server it is for, and only for an entitled server.
       guildMember: atLaunch('proofy-core', createdAt),
@@ -235,10 +279,18 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
   const { store, worlds, play, environment, gameKey, log } = options
   const now = options.now ?? (() => new Date())
   const random = options.random ?? randomBytes
-  const checkMs = options.installationCheckMs ?? INSTALLATION_CHECK_MS
-  const cacheMs = options.installationCacheMs ?? INSTALLATION_CHECK_CACHE_MS
-  /** installation id -> when Play last said it is active, this installation's, on this server. */
-  const activeAt = new Map<string, number>()
+  const graceMs = options.graceMs ?? PLAY_SESSION_GRACE_MS
+  const checker = createInstallationChecker({
+    play,
+    environment,
+    gameKey,
+    log,
+    checkMs: options.installationCheckMs ?? INSTALLATION_CHECK_MS,
+    cacheMs: options.installationCacheMs ?? INSTALLATION_CHECK_CACHE_MS,
+    graceMs,
+    clock: options.clock,
+    now,
+  })
   let tidiedAt = Number.NEGATIVE_INFINITY
 
   const hashOf = (presented: string | null) => (presented && SESSION_TOKEN.test(presented) ? hashSessionToken(presented) : null)
@@ -257,29 +309,28 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
     }
   }
 
-  /** Whether Play still has the session's installation active, on its server, for this game. Never throws. */
-  async function installation(scope: WorldScope): Promise<InstallationAnswer> {
-    const cached = activeAt.get(scope.installationId)
-    if (cached !== undefined && performance.now() - cached < cacheMs) return 'active'
-    let timer: NodeJS.Timeout | undefined
-    const deadline = new Promise<InstallationAnswer>((resolve) => (timer = setTimeout(() => resolve('unknown'), checkMs)))
-    const answer = play.getInstallation(scope.installationId).then(
-      (i): InstallationAnswer => (i.id === scope.installationId && i.gameKey === scope.gameKey && i.discordGuildId === scope.discordGuildId && i.status === 'active' ? 'active' : 'inactive'),
-      (err: unknown): InstallationAnswer => (err instanceof PlayApiError && err.code === 'installation_not_found' ? 'inactive' : 'unknown'),
-    )
+  async function find(presented: string | null): Promise<LivePlaySession | null> {
+    const hash = hashOf(presented)
+    if (!hash) return null
     try {
-      const result = await Promise.race([answer, deadline])
-      if (result === 'active') {
-        if (activeAt.size >= MAX_CACHED_INSTALLATIONS) activeAt.clear()
-        activeAt.set(scope.installationId, performance.now())
-      } else {
-        activeAt.delete(scope.installationId)
-      }
-      return result
-    } finally {
-      clearTimeout(timer)
+      return await store.find(hash, now(), environment, gameKey)
+    } catch (err) {
+      throw unavailable('read', err)
     }
   }
+
+  /** A definite no from Play: the session is over, not merely refused this once. Throws. */
+  async function end(session: LivePlaySession, verdict: Extract<InstallationVerdict, { kind: 'inactive' | 'refused' }>): Promise<never> {
+    await store.revoke({ id: session.id }, now()).catch((err: unknown) => log.warn('play session revocation failed', errorFields(err)))
+    if (verdict.kind === 'refused') {
+      log.info('play session ended: proofy play refused rare city', { installation: session.scope.installationId, world: session.scope.worldId, code: verdict.code })
+      throw new PlaySessionError(403, 'play_authorization_refused')
+    }
+    log.info('play session ended: installation not active', { installation: session.scope.installationId, world: session.scope.worldId })
+    throw new PlaySessionError(403, 'installation_not_active')
+  }
+
+  const unverified = () => new PlaySessionError(503, 'installation_unverified', 'Proofy Play has not confirmed the installation recently enough.')
 
   return {
     async open(launch, presented) {
@@ -290,10 +341,12 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
       if (!(expiresAt.getTime() - at.getTime() >= MIN_PLAY_SESSION_MS)) throw new PlaySessionError(409, 'run_expired', 'The run ends too soon to open a session.')
 
       const token = random(32).toString('base64url')
+      const id = randomUUID()
       const scope: WorldScope = { worldId: launch.world.id, environment: launch.play.environment, gameKey: launch.play.gameKey, installationId: launch.play.installationId, discordGuildId: launch.play.discordGuildId }
       try {
         await store.insert(
           {
+            id,
             tokenHash: hashSessionToken(token),
             scope,
             player: launch.player,
@@ -309,9 +362,10 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
         if (err instanceof PlaySessionError) throw err
         throw unavailable('open', err)
       }
+      // The launch asked Play about the installation and it was active: where this installation's freshness starts.
+      checker.verified(scope, launch.installationVerifiedAt)
       await tidy(at)
-      // The launch just read the installation from Play, and it was active.
-      const viewer = viewerOf(launch.player, at, expiresAt, atLaunch('proofy-play', at))
+      const viewer = viewerOf(id, launch.player, at, expiresAt, atLaunch('proofy-play', at))
       return {
         token,
         maxAgeSeconds: Math.floor((expiresAt.getTime() - at.getTime()) / 1000),
@@ -320,26 +374,18 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
     },
 
     async session(presented) {
-      const hash = hashOf(presented)
-      if (!hash) throw new PlaySessionError(401, 'play_session_required')
-      let session: LivePlaySession | null
-      try {
-        session = await store.find(hash, now(), environment, gameKey)
-      } catch (err) {
-        throw unavailable('read', err)
-      }
+      const session = await find(presented)
       if (!session) throw new PlaySessionError(401, 'play_session_required')
       return session
     },
 
+    current: find,
+
     async city(session) {
-      const answer = await installation(session.scope)
-      if (answer === 'inactive') {
-        // Play has said so: the session is over, not merely refused this once.
-        await store.revoke({ id: session.id }, now()).catch((err: unknown) => log.warn('play session revocation failed', errorFields(err)))
-        log.info('play session ended: installation not active', { installation: session.scope.installationId, world: session.scope.worldId })
-        throw new PlaySessionError(403, 'installation_not_active')
-      }
+      const verdict = await checker.check(session.scope)
+      if (verdict.kind === 'inactive' || verdict.kind === 'refused') return end(session, verdict)
+      // No authoritative answer: viewing continues only within the grace period after Play's last "active".
+      if (verdict.kind === 'unknown' && !(verdict.graceRemainingMs > 0)) throw unverified()
 
       let read
       try {
@@ -351,14 +397,29 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
         }
         throw unavailable('city read', err)
       }
+      // A cached answer is stated as of when Play gave it, not as of now.
       const installationActive: PlayFact<true> =
-        answer === 'active' ? { status: 'verified', value: true, source: 'proofy-play', basis: 'live', at: now().toISOString() } : { status: 'unknown', reason: 'authority-unavailable' }
+        verdict.kind === 'active' ? { status: 'verified', value: true, source: 'proofy-play', basis: 'live', at: verdict.verifiedAt.toISOString() } : { status: 'unknown', reason: 'authority-unavailable' }
       return {
         play: { environment: session.scope.environment, gameKey: session.scope.gameKey, installationId: session.scope.installationId, discordGuildId: session.scope.discordGuildId, configVersion: read.governing.version, configHash: read.governing.configHash, schemaVersion: read.governing.schemaVersion },
-        viewer: viewerOf(session.player, session.createdAt, session.expiresAt, installationActive),
+        viewer: viewerOf(session.id, session.player, session.createdAt, session.expiresAt, installationActive),
         world: read.world,
         config: read.governing.config,
       }
+    },
+
+    async requireActor(presented, expected) {
+      const session = await find(presented)
+      if (!session) throw new PlaySessionError(401, 'play_session_required')
+      // The page acted on what it drew. If the browser's session is no longer that one (another tab launched, signed
+      // out, or another player signed in), nothing is done as whoever holds the cookie now.
+      if (session.id !== expected.sessionRef || session.scope.worldId !== expected.worldId || session.player.discordUserId !== expected.discordUserId) {
+        throw new PlaySessionError(409, 'play_actor_mismatch', 'This page is not showing the session this browser holds now.')
+      }
+      const verdict = await checker.check(session.scope, { fresh: true })
+      if (verdict.kind === 'inactive' || verdict.kind === 'refused') return end(session, verdict)
+      if (verdict.kind !== 'active') throw unverified()
+      return session
     },
 
     async logout(presented) {

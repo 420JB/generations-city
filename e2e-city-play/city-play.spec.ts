@@ -242,7 +242,8 @@ test.describe('authority: only Play decides which installation a launch belongs 
     const b = await installed(BRAND_B)
     await openCity(page, await launch(a.guild))
     await expect(page.getByTestId('city-name')).toHaveText('HARBORLIGHT')
-    // Same document, new fragment: the page reloads itself and opens the new launch.
+    // Same document, new fragment: the page reloads itself and opens the new launch (the same player, so it replaces
+    // their own session).
     await page.goto(launchHref(await launch(b.guild)))
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-installation', b.installation)
     await expect(page.getByTestId('city-name')).toHaveText('NEON ORCHARD')

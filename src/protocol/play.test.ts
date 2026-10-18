@@ -8,7 +8,7 @@ const BODY = {
   viewer: {
     authenticated: true,
     player: { discordUserId: '111111111111111111', coreUserId: 'core-ada', displayName: 'Ada' },
-    session: { expiresAt: '2026-10-17T08:00:00.000Z', renewal: 'relaunch' },
+    session: { ref: '3f1c2b9a-7d4e-4c8b-9a21-5e6f7a8b9c0d', expiresAt: '2026-10-17T08:00:00.000Z', renewal: 'relaunch' },
     status: {
       guildMember: { status: 'verified', value: true, source: 'proofy-core', basis: 'launch', at: '2026-10-17T06:00:00.000Z' },
       playEntitled: { status: 'verified', value: true, source: 'proofy-core', basis: 'launch', at: '2026-10-17T06:00:00.000Z' },
@@ -81,6 +81,9 @@ describe('Play session viewer and city read', () => {
     expect(parsePlayViewer({ ...v, status: { ...v.status, guildMember: { status: 'verified', value: true, source: 'proofy-core', basis: 'launch' } } })).toBeNull()
     expect(parsePlayViewer({ ...v, permissions: { viewCity: true, claim: true, build: false } })).toBeNull()
     expect(parsePlayViewer({ ...v, session: { ...v.session, renewal: 'sliding' } })).toBeNull()
+    // A session the page cannot name is not one it can act for.
+    expect(parsePlayViewer({ ...v, session: { expiresAt: v.session.expiresAt, renewal: 'relaunch' } })).toBeNull()
+    expect(parsePlayViewer({ ...v, session: { ...v.session, ref: 'not-a-session' } })).toBeNull()
     expect(parsePlayViewer({ ...v, player: { ...v.player, discordUserId: 'ada' } })).toBeNull()
     expect(parsePlayViewer({ ...v, authenticated: false })).toBeNull()
   })

@@ -338,6 +338,8 @@ export function createApp(deps: AppDeps): RequestListener {
       return send(res, 200, await playSessions.city(session), PRIVATE)
     } catch (err) {
       if (err instanceof PlaySessionError) {
+        // A 401 or 403 is a session that is over (expired, revoked, or ended now because Play said no); a 503 is a
+        // session that is kept but cannot be served just now, and its cookie stays.
         const ended = presented !== null && (err.status === 401 || err.status === 403)
         const headers: Record<string, string> = { ...(ended ? { 'set-cookie': playCookie.clear() } : {}), ...(err.status === 503 ? { 'retry-after': '5' } : {}) }
         return identityError(res, err.status, err.code, headers)
@@ -405,8 +407,19 @@ export function createApp(deps: AppDeps): RequestListener {
       failure: { code: 'play_unavailable', log: 'play launch failed' },
       async handle({ req, res, body }) {
         if (!playLaunch || !playSessions) return identityError(res, 403, 'play_disabled')
+        const presented = playCookie.read(req)
+        // A run token is a bearer token: a link can carry anyone's. The player a browser is signed in as is never
+        // replaced by another one: a launch for a different player than the browser's live session opens nothing
+        // and leaves that session as it was. (The token is spent: Play redeems once, so the link is dead.) The same
+        // player launching again replaces their own session, as before. Switching players means signing out first.
+        const current = await playSessions.current(presented)
         const launched = await playLaunch.open(body)
-        const opened = await playSessions.open(launched, playCookie.read(req))
+        if (current && current.player.discordUserId !== launched.player.discordUserId) {
+          log.warn('play launch refused: browser is signed in as another player', { installation: launched.play.installationId })
+          const refusal: PlayErrorBody = { error: 'play_session_other_player', session: { displayName: current.player.displayName } }
+          return send(res, 409, refusal, PRIVATE)
+        }
+        const opened = await playSessions.open(launched, presented)
         send(res, 200, opened.response, { ...PRIVATE, 'set-cookie': playCookie.set(opened.token, opened.maxAgeSeconds) })
       },
     },

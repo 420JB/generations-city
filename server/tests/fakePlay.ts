@@ -197,13 +197,13 @@ export function memoryWorlds() {
  * the Postgres store itself is tested in play.session.db.test.ts.
  */
 export function memorySessions() {
-  const rows: (NewPlaySession & { id: string; revokedAt: Date | null })[] = []
+  const rows: (NewPlaySession & { revokedAt: Date | null })[] = []
   const store: PlaySessionStore & { fail?: Error } = {
     async insert(s, retiring) {
       if (store.fail) throw store.fail
       if (rows.some((r) => r.scope.environment === s.scope.environment && r.runId === s.runId)) throw new PlaySessionError(409, 'run_already_used')
       if (retiring) for (const r of rows) if (r.tokenHash.equals(retiring) && !r.revokedAt) r.revokedAt = s.createdAt
-      rows.push({ ...s, id: uuidv7(), revokedAt: null })
+      rows.push({ ...s, revokedAt: null })
     },
     async find(hash, at, environment, gameKey): Promise<LivePlaySession | null> {
       if (store.fail) throw store.fail

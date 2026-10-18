@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { copyFile, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,7 +37,7 @@ describe.skipIf(NO_TEST_DATABASE)('play sessions against a disposable Postgres',
   }
 
   /** Play with installations A and B, the real launch path and world store, and the real session store. */
-  async function setup(options: { mode?: AppMode; migrated?: boolean; now?: () => Date } = {}) {
+  async function setup(options: { mode?: AppMode; migrated?: boolean; now?: () => Date; installationCacheMs?: number } = {}) {
     const mode = options.mode ?? 'local'
     if (!options.migrated) await migrate(t.db, { dir: MIGRATIONS_DIR, environment: mode })
     const p = fakePlay()
@@ -49,7 +49,7 @@ describe.skipIf(NO_TEST_DATABASE)('play sessions against a disposable Postgres',
     const worlds = createWorldStore(t.db, { mode, log: silentLogger })
     const launch = createPlayLaunchService({ play: p.play, environment, gameKey: 'rare-city', worlds })
     const store = createPlaySessionStore(t.db)
-    const sessions = createPlaySessionService({ store, worlds, play: p.play, environment, gameKey: 'rare-city', log: silentLogger, now: options.now, installationCacheMs: 0 })
+    const sessions = createPlaySessionService({ store, worlds, play: p.play, environment, gameKey: 'rare-city', log: silentLogger, now: options.now, installationCacheMs: options.installationCacheMs ?? 0 })
     /** Launch into `installation` as `player` and open the browser's session, as POST /v1/play/session does. */
     const open = async (installation: string, name: string, player = ADA, presented: string | null = null) => sessions.open(await launch.open({ runToken: p.launch(installation, name, { player }) }), presented)
     return { p, worlds, launch, store, sessions, open, environment }
@@ -124,15 +124,18 @@ describe.skipIf(NO_TEST_DATABASE)('play sessions against a disposable Postgres',
       const env = await setup()
       const a = await env.open(INSTALLATION_A, 'a')
       const b = await env.open(INSTALLATION_B, 'b')
+      // One instant for both ends: computed twice, a session could end a millisecond after its run.
+      const ends = new Date(Date.now() + 3_600_000)
       const row = (s: Partial<NewPlaySession['scope']>, extra: Partial<NewPlaySession> = {}): NewPlaySession => ({
+        id: randomUUID(),
         tokenHash: randomBytes(32),
         scope: { worldId: a.response.world.id, environment: 'dev', gameKey: 'rare-city', installationId: INSTALLATION_A, discordGuildId: GUILD_A, ...s },
         player: ADA,
         runId: `01a14800-0000-7000-8000-${randomBytes(6).toString('hex')}`,
         launchConfig: { version: 1, configHash: 'a'.repeat(64) },
-        runExpiresAt: new Date(Date.now() + 3_600_000),
+        runExpiresAt: ends,
         createdAt: new Date(),
-        expiresAt: new Date(Date.now() + 3_600_000),
+        expiresAt: ends,
         ...extra,
       })
       const fk = { code: '23503' }
@@ -306,6 +309,67 @@ describe.skipIf(NO_TEST_DATABASE)('play sessions against a disposable Postgres',
       expect(await count('play_sessions', 'revoked_at IS NOT NULL')).toBe(1)
       env.p.setStatus(INSTALLATION_A, 'active')
       await expect(readCity(env.sessions, opened.token)).rejects.toMatchObject({ code: 'play_session_required' })
+    })
+  })
+
+  describe('who may act (F6): the session the page drew, and Play saying active now', () => {
+    const expectedOf = (opened: Awaited<ReturnType<PlaySessionService['open']>>) => ({ sessionRef: opened.response.viewer.session.ref, worldId: opened.response.world.id, discordUserId: opened.response.viewer.player.discordUserId })
+
+    it('accepts exactly the session, world and player the page drew', async () => {
+      const env = await setup()
+      const opened = await env.open(INSTALLATION_A, 'a')
+      const row = (await t.db.query<{ id: string }>('SELECT id FROM play_sessions')).rows[0]
+      expect(opened.response.viewer.session.ref).toBe(row.id)
+      expect((await env.sessions.requireActor(opened.token, expectedOf(opened))).id).toBe(row.id)
+      // The city read names the same session.
+      expect((await readCity(env.sessions, opened.token)).viewer.session.ref).toBe(row.id)
+    })
+
+    it('refuses a stale tab: after another launch in the browser, nothing is done as whoever holds the cookie now', async () => {
+      const env = await setup()
+      const ada = await env.open(INSTALLATION_A, 'a', ADA)
+      const staleTab = expectedOf(ada)
+      // Another tab of the same browser launches as Bea, in the same city: the cookie is Bea's now.
+      const bea = await env.open(INSTALLATION_A, 'b', BEA, ada.token)
+      await expect(env.sessions.requireActor(bea.token, staleTab)).rejects.toMatchObject({ status: 409, code: 'play_actor_mismatch' })
+      // Each part is checked: the session, the world and the player.
+      const fresh = expectedOf(bea)
+      const other = await env.open(INSTALLATION_B, 'c', BEA)
+      await expect(env.sessions.requireActor(bea.token, { ...fresh, worldId: other.response.world.id })).rejects.toMatchObject({ code: 'play_actor_mismatch' })
+      await expect(env.sessions.requireActor(bea.token, { ...fresh, discordUserId: ADA.discordUserId })).rejects.toMatchObject({ code: 'play_actor_mismatch' })
+      await expect(env.sessions.requireActor(bea.token, { ...fresh, sessionRef: expectedOf(other).sessionRef })).rejects.toMatchObject({ code: 'play_actor_mismatch' })
+      // The old cookie is no session at all.
+      await expect(env.sessions.requireActor(ada.token, staleTab)).rejects.toMatchObject({ status: 401, code: 'play_session_required' })
+      expect((await env.sessions.requireActor(bea.token, fresh)).player).toEqual(BEA)
+    })
+
+    it('never acts on a cached or unknown status: it asks Play every time, and an outage refuses it while viewing continues', async () => {
+      const env = await setup({ installationCacheMs: 60_000 })
+      const opened = await env.open(INSTALLATION_A, 'a')
+      await readCity(env.sessions, opened.token)
+      const asked = () => env.p.calls.filter((c) => c.startsWith('getInstallation')).length
+      const before = asked()
+      // Viewing uses the cache; acting does not.
+      await readCity(env.sessions, opened.token)
+      expect(asked()).toBe(before)
+      await env.sessions.requireActor(opened.token, expectedOf(opened))
+      await env.sessions.requireActor(opened.token, expectedOf(opened))
+      expect(asked()).toBe(before + 2)
+      env.p.tamper.fail = { method: 'getInstallation', status: 503, code: 'transport_error' }
+      await expect(env.sessions.requireActor(opened.token, expectedOf(opened))).rejects.toMatchObject({ status: 503, code: 'installation_unverified' })
+      expect((await readCity(env.sessions, opened.token)).viewer.status.installationActive.status).toBe('verified')
+      env.p.tamper.fail = { method: 'getInstallation', status: 401, code: 'unauthorized' }
+      await expect(env.sessions.requireActor(opened.token, expectedOf(opened))).rejects.toMatchObject({ status: 403, code: 'play_authorization_refused' })
+      expect(await count('play_sessions', 'revoked_at IS NOT NULL')).toBe(1)
+    })
+
+    it('ends the session when Play says the installation is not active', async () => {
+      const env = await setup()
+      const opened = await env.open(INSTALLATION_A, 'a')
+      env.p.setStatus(INSTALLATION_A, 'suspended')
+      await expect(env.sessions.requireActor(opened.token, expectedOf(opened))).rejects.toMatchObject({ status: 403, code: 'installation_not_active' })
+      env.p.setStatus(INSTALLATION_A, 'active')
+      await expect(env.sessions.requireActor(opened.token, expectedOf(opened))).rejects.toMatchObject({ status: 401 })
     })
   })
 })

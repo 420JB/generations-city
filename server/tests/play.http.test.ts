@@ -5,7 +5,7 @@ import { createApp } from '../src/app'
 import type { PlayCityResponse, PlayEnvironment } from '../src/engine'
 import { playSessionCookie, sessionCookie } from '../src/http'
 import { createLogger } from '../src/log'
-import type { PlayGameReader } from '../src/play/client'
+import { PlayApiError, type PlayGameReader } from '../src/play/client'
 import { createPlayLaunchService, type PlayLaunchService } from '../src/play/launch'
 import { createPlaySessionService, MIN_PLAY_SESSION_MS, PLAY_SESSION_MAX_MS, type PlaySessionService, type PlaySessionStore } from '../src/play/session'
 import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B, memorySessions, memoryWorlds } from './fakePlay'
@@ -25,7 +25,9 @@ async function start(playLaunch: PlayLaunchService | null, rateLimits = false, p
 }
 
 /** Play with installations A and B (each with one active version), an in-memory world and session store, and a server. */
-async function boot(options: { rateLimits?: boolean; now?: () => Date; wrapPlay?: (play: PlayGameReader) => PlayGameReader; environment?: PlayEnvironment; store?: PlaySessionStore; installationCheckMs?: number; logs?: string[] } = {}) {
+async function boot(
+  options: { rateLimits?: boolean; now?: () => Date; wrapPlay?: (play: PlayGameReader) => PlayGameReader; environment?: PlayEnvironment; store?: PlaySessionStore; installationCheckMs?: number; installationCacheMs?: number; graceMs?: number; clock?: () => number; logs?: string[] } = {},
+) {
   const p = fakePlay()
   p.install(INSTALLATION_A, GUILD_A)
   p.install(INSTALLATION_B, GUILD_B)
@@ -35,9 +37,21 @@ async function boot(options: { rateLimits?: boolean; now?: () => Date; wrapPlay?
   const s = memorySessions()
   const play = options.wrapPlay ? options.wrapPlay(p.play) : p.play
   const environment = options.environment ?? 'dev'
-  const launch = createPlayLaunchService({ play, environment, gameKey: 'rare-city', worlds: w.store })
+  const launch = createPlayLaunchService({ play, environment, gameKey: 'rare-city', worlds: w.store, clock: options.clock })
   const log = createLogger((line) => options.logs?.push(line))
-  const sessions = createPlaySessionService({ store: options.store ?? s.store, worlds: w.store, play, environment, gameKey: 'rare-city', log, now: options.now, installationCheckMs: options.installationCheckMs, installationCacheMs: 0 })
+  const sessions = createPlaySessionService({
+    store: options.store ?? s.store,
+    worlds: w.store,
+    play,
+    environment,
+    gameKey: 'rare-city',
+    log,
+    now: options.now,
+    installationCheckMs: options.installationCheckMs,
+    installationCacheMs: options.installationCacheMs ?? 0,
+    graceMs: options.graceMs,
+    clock: options.clock,
+  })
   const base = await start(launch, options.rateLimits ?? false, sessions, options.logs)
   return { p, w, s, base, launch, sessions }
 }
@@ -152,7 +166,7 @@ describe('play sessions over HTTP', () => {
     expect(body.viewer).toEqual({
       authenticated: true,
       player: ADA,
-      session: { expiresAt: expect.any(String), renewal: 'relaunch' },
+      session: { ref: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/), expiresAt: expect.any(String), renewal: 'relaunch' },
       status: {
         guildMember: { status: 'verified', value: true, source: 'proofy-core', basis: 'launch', at: expect.any(String) },
         playEntitled: { status: 'verified', value: true, source: 'proofy-core', basis: 'launch', at: expect.any(String) },
@@ -422,5 +436,182 @@ describe('play sessions over HTTP', () => {
     for (let i = 0; i < 29; i++) await readCity(env.base)
     const limited = await readCity(env.base)
     expect([limited.status, await limited.json()]).toEqual([429, { error: 'rate_limited' }])
+  })
+})
+
+describe('Play\'s authority on every session read (F1, F2, F4)', () => {
+  const CLEARED = 'rc_play=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
+
+  it('ends every session when Play refuses Rare City itself (credential revoked, game retired): never "unknown"', async () => {
+    const env = await boot()
+    const a = await launchAs(env, INSTALLATION_A, 'a')
+    const b = await launchAs(env, INSTALLATION_B, 'b', BEA)
+    for (const [status, code] of [
+      [401, 'unauthorized'],
+      [403, 'play_not_entitled'],
+    ] as const) {
+      env.p.tamper.fail = { method: 'getInstallation', status, code }
+      const res = await readCity(env.base, a.cookie)
+      expect([res.status, res.headers.get('set-cookie'), await res.json()], code).toEqual([403, CLEARED, { error: 'play_authorization_refused' }])
+      env.p.tamper.fail = undefined
+      // Revoked, not refused once: Play answering again does not bring it back.
+      expect((await readCity(env.base, a.cookie)).status).toBe(401)
+      a.cookie = (await launchAs(env, INSTALLATION_A, `a-${code}`)).cookie
+    }
+    // The other installation's session ends on its own next read too: Play refused Rare City, not one installation.
+    env.p.tamper.fail = { method: 'getInstallation', status: 401, code: 'unauthorized' }
+    expect((await readCity(env.base, b.cookie)).status).toBe(403)
+    expect(env.s.rows.filter((r) => !r.revokedAt).length).toBe(1)
+    // A new launch cannot open anything while Play refuses Rare City.
+    env.p.tamper.fail = { method: 'redeemRun', status: 401, code: 'unauthorized' }
+    expect((await post(env.base, { runToken: env.p.launch(INSTALLATION_B, 'b2') })).status).toBe(503)
+  })
+
+  it('ends the session for a suspended, uninstalled or removed installation, and for one shown on another server', async () => {
+    const env = await boot()
+    for (const change of [
+      () => env.p.setStatus(INSTALLATION_A, 'suspended'),
+      () => env.p.setStatus(INSTALLATION_A, 'uninstalled'),
+      () => (env.p.tamper.fail = { method: 'getInstallation', status: 404, code: 'installation_not_found' }),
+      () => (env.p.tamper.fail = { method: 'getInstallation', status: 403, code: 'installation_not_active' }),
+      () => (env.p.tamper.installation = { discordGuildId: GUILD_B }),
+    ]) {
+      env.p.setStatus(INSTALLATION_A, 'active')
+      env.p.tamper.fail = undefined
+      env.p.tamper.installation = undefined
+      const a = await launchAs(env, INSTALLATION_A, `a${env.s.rows.length}`)
+      change()
+      const res = await readCity(env.base, a.cookie)
+      expect([res.status, res.headers.get('set-cookie'), await res.json()]).toEqual([403, CLEARED, { error: 'installation_not_active' }])
+    }
+  })
+
+  it('serves an outage read-only only within the grace period after Play\'s last active, then refuses for now and recovers', async () => {
+    let t = 0
+    let down: 'refuse' | 'malformed' | 'hang' | null = null
+    const env = await boot({
+      clock: () => t,
+      installationCheckMs: 100,
+      graceMs: 60_000,
+      wrapPlay: (play) => ({
+        ...play,
+        getInstallation: (id, o) =>
+          down === 'refuse'
+            ? Promise.reject(new PlayApiError(503, 'transport_error', 'down'))
+            : down === 'malformed'
+              ? Promise.reject(new PlayApiError(502, 'invalid_response', 'garbled'))
+              : down === 'hang'
+                ? new Promise((_, reject) => o?.signal?.addEventListener('abort', () => reject(new PlayApiError(503, 'transport_error', 'aborted'))))
+                : play.getInstallation(id, o),
+      }),
+    })
+    const { cookie } = await launchAs(env, INSTALLATION_A, 'a')
+    // Within the grace period: viewing continues, and says the status is unknown.
+    for (const mode of ['refuse', 'malformed', 'hang'] as const) {
+      down = mode
+      t += 15_000
+      const res = await readCity(env.base, cookie)
+      expect(res.status, mode).toBe(200)
+      expect((await cityOf(res)).viewer.status.installationActive, mode).toEqual({ status: 'unknown', reason: 'authority-unavailable' })
+    }
+    // Past it: refused FOR NOW. The session and its cookie are kept.
+    t += 15_001
+    const refused = await readCity(env.base, cookie)
+    expect([refused.status, refused.headers.get('retry-after'), refused.headers.get('set-cookie'), await refused.json()]).toEqual([503, '5', null, { error: 'installation_unverified' }])
+    expect(env.s.rows[0].revokedAt).toBeNull()
+    // Play answers again: the same session serves, verified.
+    down = null
+    const back = await readCity(env.base, cookie)
+    expect(back.status).toBe(200)
+    expect((await cityOf(back)).viewer.status.installationActive).toMatchObject({ status: 'verified', basis: 'live' })
+  })
+
+  it('asks Play once for 25 simultaneous reads of one installation, and cancels a hung request at the deadline', async () => {
+    let inFlight = 0
+    let peak = 0
+    let calls = 0
+    let hang = false
+    let aborted = 0
+    const env = await boot({
+      installationCheckMs: 150,
+      wrapPlay: (play) => ({
+        ...play,
+        getInstallation: async (id, o) => {
+          calls++
+          inFlight++
+          peak = Math.max(peak, inFlight)
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, hang ? 60_000 : 50)
+              o?.signal?.addEventListener('abort', () => (clearTimeout(timer), aborted++, reject(new PlayApiError(503, 'transport_error', 'aborted'))))
+            })
+            return await play.getInstallation(id)
+          } finally {
+            inFlight--
+          }
+        },
+      }),
+    })
+    const players = Array.from({ length: 25 }, (_, i) => ({ discordUserId: String(300000000000000000n + BigInt(i)), coreUserId: `core-${i}`, displayName: `P${i}` }))
+    const cookies = []
+    for (const [i, player] of players.entries()) cookies.push((await launchAs(env, INSTALLATION_A, `p${String(i).padStart(3, '0')}`, player)).cookie)
+    calls = 0
+    peak = 0
+    const reads = await Promise.all(cookies.map((c) => readCity(env.base, c)))
+    expect(reads.map((r) => r.status)).toEqual(cookies.map(() => 200))
+    expect([calls, peak]).toEqual([1, 1])
+    const seen = new Set(await Promise.all(reads.map(async (r) => (await cityOf(r)).viewer.player.discordUserId)))
+    expect(seen.size).toBe(25)
+    // Play hangs: one request, aborted at the deadline, nothing left running; the reads are answered within grace.
+    hang = true
+    calls = 0
+    const started = performance.now()
+    const hung = await Promise.all(cookies.map((c) => readCity(env.base, c)))
+    expect(performance.now() - started).toBeLessThan(3_000)
+    expect(hung.map((r) => r.status)).toEqual(cookies.map(() => 200))
+    expect([calls, aborted, inFlight]).toEqual([1, 1, 0])
+  })
+})
+
+describe('a launch never changes who a signed-in browser is (F5)', () => {
+  it('opens nothing for a run minted for another player, keeps the session, and spends the link', async () => {
+    const env = await boot()
+    const victim = await launchAs(env, INSTALLATION_A, 'victim', ADA)
+    // An attacker launches as themselves and hands the victim the link.
+    const attackerToken = env.p.launch(INSTALLATION_B, 'attacker', { player: BEA })
+    const res = await post(env.base, { runToken: attackerToken }, TEST_ORIGIN, victim.cookie)
+    expect([res.status, res.headers.get('set-cookie'), res.headers.get('cache-control'), await res.json()]).toEqual([409, null, 'no-store', { error: 'play_session_other_player', session: { displayName: ADA.displayName } }])
+    // The victim is still themselves, in their own city, and no session was opened for the attacker.
+    expect((await cityOf(await readCity(env.base, victim.cookie))).viewer.player).toEqual(ADA)
+    expect(env.s.rows.filter((r) => r.player.discordUserId === BEA.discordUserId)).toEqual([])
+    // Play redeems once: the link is dead, in this browser or any other.
+    expect([(await post(env.base, { runToken: attackerToken })).status]).toEqual([409])
+    expect(env.s.rows.filter((r) => r.player.discordUserId === BEA.discordUserId)).toEqual([])
+  })
+
+  it('lets the same player launch again (their own session is replaced), and asks nothing of a browser without a live session', async () => {
+    const env = await boot()
+    const first = await launchAs(env, INSTALLATION_A, 'first', ADA)
+    const again = await launchAs(env, INSTALLATION_B, 'again', ADA, first.cookie)
+    expect((await readCity(env.base, first.cookie)).status).toBe(401)
+    expect((await cityOf(await readCity(env.base, again.cookie))).play.installationId).toBe(INSTALLATION_B)
+    // A signed-out browser, a planted value, an expired or revoked session: there is no player to keep, so any launch opens.
+    await logout(env.base, again.cookie)
+    expect((await post(env.base, { runToken: env.p.launch(INSTALLATION_A, 'bea') }, TEST_ORIGIN, again.cookie)).status).toBe(200)
+    expect((await post(env.base, { runToken: env.p.launch(INSTALLATION_A, 'planted', { player: BEA }) }, TEST_ORIGIN, 'rc_play=' + 'P'.repeat(43))).status).toBe(200)
+    // The body is still exactly { runToken }.
+    expect((await post(env.base, { runToken: env.p.launch(INSTALLATION_A, 'extra'), replaceSession: true })).status).toBe(422)
+  })
+
+  it('answers unavailable, not a launch, when the session the browser holds cannot be read', async () => {
+    const s = memorySessions()
+    const env = await boot({ store: s.store })
+    const a = await launchAs(env, INSTALLATION_A, 'a')
+    s.store.fail = new Error('database down')
+    const before = env.p.calls.length
+    const res = await post(env.base, { runToken: env.p.launch(INSTALLATION_A, 'b', { player: BEA }) }, TEST_ORIGIN, a.cookie)
+    expect([res.status, await res.json()]).toEqual([503, { error: 'play_session_unavailable' }])
+    // Play was not asked: the token is not spent.
+    expect(env.p.calls.slice(before)).toEqual([])
   })
 })

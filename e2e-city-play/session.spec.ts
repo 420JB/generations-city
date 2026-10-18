@@ -285,3 +285,74 @@ test('a launch that Play refuses opens no session', async ({ browser }) => {
   expect((await context.request.get('/v1/play/city')).status()).toBe(401)
   await context.close()
 })
+
+test.describe('identity switches are never silent', () => {
+  test('a launch link minted for someone else does not sign a signed-in browser in as them (login CSRF)', async ({ browser }) => {
+    const a = await installed(BRAND_A)
+    const b = await installed(BRAND_B)
+    const victim = snowflake()
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    await arrive(page, launchHref(await launch(a.guild, 'rare-city', 'Ada', victim)))
+    await expect(await cityOn(page)).toHaveAttribute('data-player', victim)
+    const before = (await playCookie(context))!.value
+
+    // The attacker launches as themselves, on their own server, and sends the victim the link.
+    const attacker = snowflake()
+    const link = launchHref(await launch(b.guild, 'rare-city', 'Mallory', attacker))
+    await arrive(page, link)
+    await expect(page.getByTestId('play-gate')).toHaveAttribute('data-phase', 'other-player')
+    await expect(page.getByTestId('play-current-player')).toHaveText('Ada')
+    await page.screenshot({ path: `${SHOTS}/session-5-login-csrf-refused.png` })
+    // Nothing changed: the same cookie, still Ada, in Ada's city.
+    expect((await playCookie(context))!.value).toBe(before)
+    expect((await (await context.request.get('/v1/play/city')).json()).viewer.player.discordUserId).toBe(victim)
+    await page.getByTestId('play-keep-session').click()
+    await expect(await cityOn(page)).toHaveAttribute('data-player', victim)
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-installation', a.installation)
+
+    // The link is spent: opened again, even in a browser with no session, it opens nothing.
+    const other = await browser.newContext()
+    const p2 = await other.newPage()
+    await arrive(p2, link)
+    await expect(p2.getByTestId('play-gate')).toHaveAttribute('data-code', 'run_already_used')
+    expect(await playCookie(other)).toBeUndefined()
+    await other.close()
+
+    // Switching players is deliberate: sign out, then launch as the other player.
+    await page.getByTestId('play-signout').click()
+    await expect(page.getByTestId('play-gate')).toHaveAttribute('data-phase', 'signed-out')
+    await arrive(page, launchHref(await launch(b.guild, 'rare-city', 'Bea', snowflake())))
+    await expect(page.getByTestId('play-player')).toHaveText('Bea')
+    await context.close()
+  })
+
+  test('a tab whose session another tab replaced or ended says so, and is not the browser\'s session any more', async ({ browser }) => {
+    const a = await installed(BRAND_A)
+    const b = await installed(BRAND_B)
+    const ada = snowflake()
+    const context = await browser.newContext()
+    const tab1 = await context.newPage()
+    await arrive(tab1, launchHref(await launch(a.guild, 'rare-city', 'Ada', ada)))
+    const shown = await (await cityOn(tab1)).getAttribute('data-session-ref')
+
+    // Another tab of the same browser launches into another server: a new session, another world.
+    const tab2 = await context.newPage()
+    await arrive(tab2, launchHref(await launch(b.guild, 'rare-city', 'Ada', ada)))
+    await expect(await cityOn(tab2)).toHaveAttribute('data-installation', b.installation)
+    const now = (await (await context.request.get('/v1/play/city')).json()).viewer.session.ref
+    expect(now).not.toBe(shown)
+    await expect(tab2.getByTestId('play-city')).toHaveAttribute('data-session-ref', now)
+
+    // Tab 1 no longer presents server A's city as the browser's session.
+    await expect(tab1.getByTestId('play-gate')).toHaveAttribute('data-phase', 'superseded')
+    await tab1.screenshot({ path: `${SHOTS}/session-6-stale-tab.png` })
+    await tab1.reload()
+    await expect(await cityOn(tab1)).toHaveAttribute('data-installation', b.installation)
+
+    // Signing out in one tab: the other says so too.
+    await tab2.getByTestId('play-signout').click()
+    await expect(tab1.getByTestId('play-gate')).toHaveAttribute('data-phase', 'superseded')
+    await context.close()
+  })
+})

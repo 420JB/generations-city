@@ -25,7 +25,10 @@ import { parseWorldCityState, type WorldCityState } from '../world/cityState'
  *   `GET  /v1/play/city`    the session's player, city, sequence, state and governing configuration
  *   `POST /v1/play/logout`  `{}`: end the session
  *
- * Neither takes anything that names a city: the session alone says which one. A session ends
+ * Neither takes anything that names a city: the session alone says which one. A launch never
+ * changes WHO a browser is signed in as: a run for another player than the browser's live session
+ * opens nothing (`play_session_other_player`) and the session is kept. To switch players, sign out
+ * first. A session ends
  * when Play's run does (or sooner, see the server's PLAY_SESSION_MAX_MS), on logout, on a newer
  * launch in the same browser, and when Play says the installation is no longer active. It is
  * never extended: launching again from Proofy Play is how a player is re-authorized, and that
@@ -82,8 +85,12 @@ export interface PlayViewer {
   authenticated: true
   /** From Play's redeemed run. The Discord user id is the canonical Proofy player identity; the Core user id is opaque. */
   player: { discordUserId: string; coreUserId: string; displayName: string }
-  /** The session never extends: past `expiresAt`, launch again from Proofy Play. */
-  session: { expiresAt: string; renewal: 'relaunch' }
+  /**
+   * `ref` identifies the session this answer was drawn for (it authorizes nothing). Anything that acts names it,
+   * and is refused if the browser's session is no longer that one. The session never extends: past
+   * `expiresAt`, launch again from Proofy Play.
+   */
+  session: { ref: string; expiresAt: string; renewal: 'relaunch' }
   status: {
     /** Proofy Core checked live Discord membership before it signed the launch context. */
     guildMember: PlayFact<true>
@@ -172,10 +179,20 @@ export type PlayErrorCode =
   | 'play_session_required'
   /** The session could not be read or written just now. */
   | 'play_session_unavailable'
+  /** Proofy Play refused Rare City itself (its credential or the game). The session is over. */
+  | 'play_authorization_refused'
+  /** Proofy Play has not confirmed the installation recently enough to show the city. The session is kept: try again. */
+  | 'installation_unverified'
+  /** The launch was for another player than the one this browser is signed in as. Nothing was opened; the session is kept. */
+  | 'play_session_other_player'
+  /** The page acted for a session this browser no longer holds. Nothing was done. */
+  | 'play_actor_mismatch'
 
 export interface PlayErrorBody {
   error: PlayErrorCode
   problems?: { path: string; detail: string }[]
+  /** With `play_session_other_player`: who this browser is still signed in as. */
+  session?: { displayName: string }
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -219,6 +236,7 @@ export function parsePlayViewer(v: unknown): PlayViewer | null {
   const { player, session, status, permissions } = v
   if (typeof player.discordUserId !== 'string' || !GUILD.test(player.discordUserId) || typeof player.coreUserId !== 'string' || !CORE_ID.test(player.coreUserId)) return null
   if (typeof player.displayName !== 'string' || player.displayName.length === 0) return null
+  if (typeof session.ref !== 'string' || !UUID.test(session.ref)) return null
   if (typeof session.expiresAt !== 'string' || Number.isNaN(Date.parse(session.expiresAt)) || session.renewal !== 'relaunch') return null
   const guildMember = parseFact(status.guildMember, isTrue)
   const playEntitled = parseFact(status.playEntitled, isTrue)
@@ -231,7 +249,7 @@ export function parsePlayViewer(v: unknown): PlayViewer | null {
   return {
     authenticated: true,
     player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
-    session: { expiresAt: session.expiresAt, renewal: 'relaunch' },
+    session: { ref: session.ref, expiresAt: session.expiresAt, renewal: 'relaunch' },
     status: { guildMember, playEntitled, installationActive, brandAdmin, districtRules },
     permissions: { viewCity: true, claim: false, build: false },
   }

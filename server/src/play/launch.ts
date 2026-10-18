@@ -34,6 +34,11 @@ export interface PlayLaunch {
   play: PlaySessionResponse['play']
   /** Play's redeemed run's player: the identity a play session is opened for. */
   player: PlayRun['player']
+  /**
+   * When Rare City asked Play the question it answered "active" to, on the launch service's `clock`:
+   * where a play session's freshness starts (`session.ts`). Never later than Play's own check.
+   */
+  installationVerifiedAt: number
   world: PlayWorld
   config: Record<string, unknown>
 }
@@ -53,6 +58,8 @@ export interface PlayLaunchOptions {
   worlds: WorldStore
   /** Tests only: the deadline for Play's confirmation under the world's lock. */
   activeConfirmMs?: number
+  /** A monotonic clock in milliseconds, the same one the play session service reads. Tests may replace it. */
+  clock?: () => number
 }
 
 /** Play's answers to a redemption, as the city states them. Anything else is Play being unavailable. */
@@ -117,16 +124,18 @@ const mismatch = (what: string) => new PlayLaunchError(502, 'config_binding_mism
  * Any failure refuses the launch. Nothing is substituted: there is no sample city, no
  * "last good" configuration, no default, and never a second city.
  */
-export function createPlayLaunchService({ play, environment, gameKey, worlds, activeConfirmMs = ACTIVE_CONFIRM_MS }: PlayLaunchOptions): PlayLaunchService {
+export function createPlayLaunchService({ play, environment, gameKey, worlds, activeConfirmMs = ACTIVE_CONFIRM_MS, clock = () => performance.now() }: PlayLaunchOptions): PlayLaunchService {
   /** The store's one question to Play under its lock: still this installation's, still active, and which version? */
   function confirmActive(installationId: string, discordGuildId: string): ConfirmActive {
     let asked = false
     return async () => {
       if (asked) return null
       asked = true
+      // Past the deadline the request is abandoned, not left to run on behind a launch that has moved on.
+      const cancel = new AbortController()
       let timer: NodeJS.Timeout | undefined
-      const deadline = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), activeConfirmMs)))
-      const answer = play.getInstallation(installationId).then(
+      const deadline = new Promise<null>((resolve) => (timer = setTimeout(() => (cancel.abort(), resolve(null)), activeConfirmMs)))
+      const answer = play.getInstallation(installationId, { signal: cancel.signal }).then(
         (i) => (i.id === installationId && i.gameKey === gameKey && i.discordGuildId === discordGuildId && i.status === 'active' ? { version: i.activeConfigVersion, configHash: i.activeConfigHash } : null),
         () => null,
       )
@@ -158,6 +167,8 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
       if (run.gameKey !== gameKey) throw mismatch('the run is for another game')
 
       // A run's installation is its own; it is still read back, so a run and an installation that disagree are caught.
+      // Timed before the question, so the freshness it starts is never longer than Play's answer supports.
+      const installationVerifiedAt = clock()
       const installation = await ask(play.getInstallation(run.installationId), (err) =>
         err.code === 'installation_not_found' ? mismatch('the run names an installation Play does not show to Rare City') : null,
       )
@@ -213,6 +224,7 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
           schemaVersion: version.schemaVersion,
         },
         player: run.player,
+        installationVerifiedAt,
         world: opened.world,
         config: version.config,
       }

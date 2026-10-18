@@ -13,6 +13,7 @@ import {
   runTokenFromFragment,
   type PlayCityResponse,
   type PlayErrorCode,
+  type PlaySessionRequest,
 } from '../../protocol/play'
 
 /** Where the city on the page came from: a launch just now, or this browser's play session. */
@@ -22,6 +23,10 @@ type Phase =
   | { kind: 'no-token' }
   | { kind: 'opening'; source: Source }
   | { kind: 'signed-out' }
+  /** A launch link for another player arrived in a browser signed in as `current`: nothing was opened, they still are. */
+  | { kind: 'other-player'; current: string }
+  /** Another tab of this browser launched or signed out: this tab's city is not the browser's session any more. */
+  | { kind: 'superseded' }
   | { kind: 'refused'; code: PlayErrorCode | 'unreadable'; problems: ConfigProblem[] }
   | { kind: 'ready'; source: Source; city: PlayCityResponse; loaded: LoadedBrandCity }
 
@@ -50,7 +55,28 @@ const REFUSALS: Record<PlayErrorCode | 'unreadable', string> = {
   play_unavailable: 'Proofy Play could not be reached. Launch again in a moment.',
   play_session_required: 'Your Rare City session has ended. Launch Rare City again from Proofy Play.',
   play_session_unavailable: 'Your Rare City session could not be checked just now. Try again in a moment.',
+  play_authorization_refused: 'Proofy Play no longer authorizes Rare City, so your session has ended.',
+  installation_unverified: 'Proofy Play has not confirmed Rare City on this server recently, so the city is not shown just now. You are still signed in: try again in a moment.',
+  play_session_other_player: 'This launch was for another Proofy player, so it was not opened.',
+  play_actor_mismatch: 'This page is out of date: this browser is now signed in to another session. Reload the page.',
   unreadable: 'Rare City answered with something this page cannot read.',
+}
+
+/**
+ * Tabs of one browser share one play session. A tab that launches or signs out says so here, and a tab showing another
+ * session stops showing it as if it were still the browser's. (The server is what refuses an action from a stale tab:
+ * this only keeps the page honest.)
+ */
+const SESSION_CHANNEL = 'rare-city-play-session'
+/** This tab, so it never takes its own notice for another tab's. */
+const TAB = Math.random().toString(36).slice(2)
+type SessionNotice = { ref: string | null; tab: string }
+
+function announce(ref: string | null) {
+  if (typeof BroadcastChannel === 'undefined') return
+  const channel = new BroadcastChannel(SESSION_CHANNEL)
+  channel.postMessage({ ref, tab: TAB } satisfies SessionNotice)
+  channel.close()
 }
 
 /** Read the run token from the fragment once, and take it out of the address bar and history. */
@@ -89,10 +115,18 @@ function draw(source: Source, city: PlayCityResponse): Phase {
   return { kind: 'ready', source, city, loaded: loaded.city }
 }
 
-/** A launch: the run token, once, for the city and this browser's play session (an HttpOnly cookie this page never sees). */
+/**
+ * A launch: the run token, once, for the city and this browser's play session (an HttpOnly cookie this page never sees).
+ * A launch link can carry anyone's run token, so one for another player than the browser is signed in as opens nothing.
+ */
 async function openLaunch(runToken: string): Promise<Phase> {
-  const answer = await ask(PLAY_SESSION_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runToken }) })
+  const request: PlaySessionRequest = { runToken }
+  const answer = await ask(PLAY_SESSION_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) })
   if (!answer) return { kind: 'refused', code: 'play_unavailable', problems: [] }
+  const held = answer.body as { error?: unknown; session?: { displayName?: unknown } }
+  if (answer.response.status === 409 && held?.error === 'play_session_other_player' && typeof held.session?.displayName === 'string') {
+    return { kind: 'other-player', current: held.session.displayName }
+  }
   if (!answer.response.ok) return refusal(answer.body)
   const session = parsePlaySessionResponse(answer.body)
   return session ? draw('launch', session) : { kind: 'refused', code: 'unreadable', problems: [] }
@@ -129,17 +163,39 @@ export function PlayCityApp() {
     return () => window.removeEventListener('hashchange', relaunch)
   }, [])
 
+  /** Show a phase; a launch that opened a session tells the other tabs. */
+  const show = (p: Phase) => {
+    if (p.kind === 'ready' && p.source === 'launch') announce(p.city.viewer.session.ref)
+    setPhase(p)
+  }
+
   useEffect(() => {
     let live = true
-    void (runToken ? openLaunch(runToken) : readSession()).then((p) => live && setPhase(p))
+    void (runToken ? openLaunch(runToken) : readSession()).then((p) => live && show(p))
     return () => {
       live = false
     }
   }, [runToken])
 
+  const shownRef = phase.kind === 'ready' ? phase.city.viewer.session.ref : null
+  useEffect(() => {
+    if (!shownRef || typeof BroadcastChannel === 'undefined') return
+    const channel = new BroadcastChannel(SESSION_CHANNEL)
+    channel.onmessage = (e: MessageEvent<SessionNotice>) => {
+      if (e.data?.tab !== TAB && e.data?.ref !== shownRef) setPhase({ kind: 'superseded' })
+    }
+    return () => channel.close()
+  }, [shownRef])
+
   async function signOut() {
     const answer = await ask(PLAY_LOGOUT_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    if (answer?.response.ok) announce(null)
     setPhase(answer?.response.ok ? { kind: 'signed-out' } : { kind: 'refused', code: 'play_session_unavailable', problems: [] })
+  }
+
+  async function keepSession() {
+    setPhase({ kind: 'opening', source: 'session' })
+    show(await readSession())
   }
 
   if (phase.kind === 'ready') return <PlayCity source={phase.source} city={phase.city} loaded={phase.loaded} onSignOut={signOut} />
@@ -162,6 +218,30 @@ export function PlayCityApp() {
           <>
             <h2>You have left the city</h2>
             <p className="muted">This browser is no longer signed in to Rare City. Launch Rare City from Proofy Play to come back.</p>
+          </>
+        )}
+        {phase.kind === 'other-player' && (
+          <>
+            <h2>This launch was for someone else</h2>
+            <p>
+              This browser is signed in to Rare City as <b data-testid="play-current-player">{phase.current}</b>, and the launch link it was sent to was made for another Proofy player, so
+              nothing was opened. The link cannot be used again.
+            </p>
+            <p className="muted small">To play as someone else on this browser, sign out first, then launch Rare City from Proofy Play.</p>
+            <div className="play-choices">
+              <button type="button" className="chip" data-testid="play-keep-session" onClick={() => void keepSession()}>
+                Continue as {phase.current}
+              </button>
+              <button type="button" className="chip" data-testid="play-signout-other" onClick={() => void signOut()}>
+                Sign out
+              </button>
+            </div>
+          </>
+        )}
+        {phase.kind === 'superseded' && (
+          <>
+            <h2>This tab is out of date</h2>
+            <p className="muted">This browser has launched, or left, Rare City in another tab, so this tab no longer shows its session. Reload to see where you are signed in now.</p>
           </>
         )}
         {phase.kind === 'refused' && (
@@ -215,6 +295,7 @@ function PlayCity({ source, city: response, loaded: city, onSignOut }: { source:
       data-governing-version={world.definition.governingConfigVersion}
       data-buildings={buildings}
       data-player={player.discordUserId}
+      data-session-ref={viewer.session.ref}
       data-installation-status={viewer.status.installationActive.status}
     >
       <BrandCityPreview
