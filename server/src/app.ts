@@ -27,15 +27,18 @@ import {
   type CityResponse,
   type FriendsResponse,
   type IdentityErrorCode,
+  PLAY_CITY_ENDPOINT,
+  PLAY_LOGOUT_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
   type PlayErrorBody,
   type PlayErrorCode,
 } from './engine'
-import { assertSameOrigin, HttpError, readJsonBody, sessionCookie } from './http'
+import { assertSameOrigin, HttpError, playSessionCookie, readJsonBody, sessionCookie } from './http'
 import { errorFields, type Logger } from './log'
 import { OwnershipError } from './ownership/provider'
 import type { FriendsReader } from './ownership/reader'
 import { PlayLaunchError, type PlayLaunchService } from './play/launch'
+import { PlaySessionError, type PlaySessionService } from './play/session'
 import { createRateLimiter, LIMITS, unlimited, type RateLimiter, type RateRule } from './rateLimit'
 import { buildSecurityHeaders } from './securityHeaders'
 import type { StaticFile, StaticSite } from './static'
@@ -58,6 +61,8 @@ export interface AppDeps {
   activation?: ActivationService | null
   /** Opening brand cities from Proofy Play launches. null = not connected to Play (`play_disabled`). */
   playLaunch?: PlayLaunchService | null
+  /** Play sessions: what a launch leaves this browser signed in to. Needed with `playLaunch`; without it, Play is `play_disabled`. */
+  playSessions?: PlaySessionService | null
   /** Which Friends already have a property, for the My Friends annotation. null = not available. */
   properties?: PropertyReader | null
   /** The built client, served from this origin. null = API only. */
@@ -165,17 +170,20 @@ interface PostRoute {
 }
 
 /**
- * The HTTP surface of the service: diagnostics, the public city read, identity, and (when
- * a client build is present) the Rare City app itself.
+ * The HTTP surface of the service: diagnostics, the public city read, identity, Proofy Play
+ * launches and play sessions, and (when a client build is present) the Rare City app itself.
  *
  * Reads are GET/HEAD and never look at a request body. The requests that change anything
  * are POSTs declared in `posts`: the three sign-in routes, which change sessions and never
- * the city, and the two activation routes, which are the only way the city itself changes
- * and which refuse outright unless `config.activationEnabled` is set.
+ * the city; the two activation routes, which are the only way the city itself changes
+ * and which refuse outright unless `config.activationEnabled` is set; and the Play launch
+ * and logout routes, which open and end play sessions (a launch may also found a brand
+ * city's world, see `world/store.ts`).
  */
 export function createApp(deps: AppDeps): RequestListener {
-  const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null, playLaunch = null } = deps
+  const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null, playLaunch = null, playSessions = null } = deps
   const cookie = sessionCookie(config.mode)
+  const playCookie = playSessionCookie(config.mode)
   const security = buildSecurityHeaders(config)
   const limiter = deps.limiter ?? (config.rateLimits ? createRateLimiter() : unlimited)
   /** Keys the client tag in the request log. Random per process, so a tag cannot be turned back into an address. */
@@ -314,6 +322,31 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /**
+   * The play session's city. Which city is the SESSION's alone: nothing in the request (no parameter, no header
+   * but the cookie) names an installation or a world. A cookie that is no longer a live session is cleared.
+   */
+  async function servePlayCity(req: IncomingMessage, res: ServerResponse, client: ClientKey) {
+    // Before the session is looked up: an anonymous flood is stopped without touching the database.
+    if (!withinClientLimit(res, PLAY_CITY_ENDPOINT, client, LIMITS.playCity.client)) return
+    if (!playLaunch || !playSessions) return identityError(res, 403, 'play_disabled')
+    const presented = playCookie.read(req)
+    try {
+      const session = await playSessions.session(presented)
+      // Keyed by the player, from the session, before the city is read or Play asked: one player's reloads never use up another's.
+      if (!withinLimit(res, `${PLAY_CITY_ENDPOINT}:user`, `${session.scope.environment}:${session.player.discordUserId}`, LIMITS.playCity.user)) return
+      return send(res, 200, await playSessions.city(session), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) {
+        const ended = presented !== null && (err.status === 401 || err.status === 403)
+        const headers: Record<string, string> = { ...(ended ? { 'set-cookie': playCookie.clear() } : {}), ...(err.status === 503 ? { 'retry-after': '5' } : {}) }
+        return identityError(res, err.status, err.code, headers)
+      }
+      log.error('play city read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
   /** A sign-in route: the common boundary, then the auth service if there is one to ask. */
   const signIn = (limit: PostRoute['limit'], handle: (service: AuthService, ctx: PostContext) => Promise<void>): PostRoute => ({
     limit,
@@ -363,14 +396,27 @@ export function createApp(deps: AppDeps): RequestListener {
     }),
     [ACTIVATION_INTENTS_ENDPOINT]: activationRoute(ACTIVATION_INTENTS_ENDPOINT, LIMITS.activationIntent, (service, session, body) => service.issueIntent(session, body)),
     [ACTIVATIONS_ENDPOINT]: activationRoute(ACTIVATIONS_ENDPOINT, LIMITS.activationCommit, (service, session, body) => service.commit(session, body)),
-    // A Proofy Play launch: the run token in, the installation's persistent city out. No session: Play says which
-    // installation and configuration this is; the world store, from its own bindings, which city.
+    // A Proofy Play launch: the run token in, the installation's persistent city out. Play says which installation,
+    // configuration and player this is; the world store, from its own bindings, which city. Only once both have
+    // accepted it is a play session opened, and its credential leaves the service exactly here, in a cookie script
+    // cannot read. It is never in a body, a URL or a log.
     [PLAY_SESSION_ENDPOINT]: {
       limit: LIMITS.playSession.client,
       failure: { code: 'play_unavailable', log: 'play launch failed' },
-      async handle({ res, body }) {
-        if (!playLaunch) return identityError(res, 403, 'play_disabled')
-        send(res, 200, await playLaunch.open(body), PRIVATE)
+      async handle({ req, res, body }) {
+        if (!playLaunch || !playSessions) return identityError(res, 403, 'play_disabled')
+        const launched = await playLaunch.open(body)
+        const opened = await playSessions.open(launched, playCookie.read(req))
+        send(res, 200, opened.response, { ...PRIVATE, 'set-cookie': playCookie.set(opened.token, opened.maxAgeSeconds) })
+      },
+    },
+    // Ends the play session only. A wallet session in the same browser is a different cookie and is not touched.
+    [PLAY_LOGOUT_ENDPOINT]: {
+      limit: null,
+      failure: { code: 'play_session_unavailable', log: 'play logout failed' },
+      async handle({ req, res }) {
+        if (playSessions) await playSessions.logout(playCookie.read(req))
+        send(res, 200, { authenticated: false }, { ...PRIVATE, 'set-cookie': playCookie.clear() })
       },
     },
   }
@@ -393,6 +439,8 @@ export function createApp(deps: AppDeps): RequestListener {
       if (err instanceof AuthError) return identityError(res, err.status, err.code)
       // A refusal the activation service decided on. A 503 among them is an authority that could not answer just now.
       if (err instanceof ActivationError) return identityError(res, err.status, err.code, err.status === 503 ? { 'retry-after': '10' } : {})
+      // The session layer refused (a run that already has a session, or one about to end) or could not store it.
+      if (err instanceof PlaySessionError) return identityError(res, err.status, err.code, err.status === 503 ? { 'retry-after': '5' } : {})
       // A launch the Play path refused. Problems are only ever the configuration's, never Play's internals.
       if (err instanceof PlayLaunchError) {
         if (err.status >= 500) log.warn('play launch refused', { code: err.code, reason: err.message })
@@ -428,6 +476,8 @@ export function createApp(deps: AppDeps): RequestListener {
         return serveViewer(req, res)
       case FRIENDS_ENDPOINT:
         return serveFriends(req, res, client)
+      case PLAY_CITY_ENDPOINT:
+        return servePlayCity(req, res, client)
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.
     if (!site || isReserved(path)) return send(res, 404, { error: 'not_found' })

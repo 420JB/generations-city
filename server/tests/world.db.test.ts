@@ -385,6 +385,7 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
       const arrival = new Promise<void>((r) => (arrived = r))
       let holding = true
       const wrap = (inner: WorldStore): WorldStore => ({
+        read: (scope) => inner.read(scope),
         async open(launch, confirmActive) {
           if (holding && which(launch)) {
             holding = false
@@ -770,7 +771,7 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
     it('verifies a database from before migration 0005 exactly as it always did', async () => {
       const dir = await t.migrationsPlus([])
       const { readdir, rm } = await import('node:fs/promises')
-      for (const f of await readdir(dir)) if (f.startsWith('0005')) await rm(`${dir}/${f}`)
+      for (const f of await readdir(dir)) if (Number(f.slice(0, 4)) >= 5) await rm(`${dir}/${f}`)
       await migrate(t.db, { dir, environment: 'staging' })
       await installDemoFixture(t.db, 'staging')
       expect(await verifyCity(t.db)).toMatchObject({ ok: true, city: { id: 'main', mode: 'demo-fixture' }, worlds: [], violations: [] })

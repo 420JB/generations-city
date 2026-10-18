@@ -38,7 +38,8 @@ describe('opening a city from a Play run', () => {
     expect(a.world).toMatchObject({ provisioned: true, created: true, sequence: 1, state: { version: 1, buildings: {}, openWards: {} } })
     expect(a.world.id).toMatch(UUID_V7)
     expect(b.world.id).not.toBe(a.world.id)
-    expect(a.player).toEqual({ displayName: 'Ada' })
+    // The player exactly as Play's redeemed run named them: the identity a play session is opened for.
+    expect(a.player).toEqual({ discordUserId: '111111111111111111', coreUserId: 'core-ada', displayName: 'Ada' })
     // The same installation opens the same world again.
     const again = await service.open({ runToken: p.launch(INSTALLATION_A, 'a2') })
     expect([again.world.id, again.world.created]).toEqual([a.world.id, false])

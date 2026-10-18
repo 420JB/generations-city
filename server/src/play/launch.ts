@@ -4,10 +4,11 @@ import {
   type PlayEnvironment,
   type PlayErrorCode,
   type PlaySessionResponse,
+  type PlayWorld,
 } from '../engine'
 import { WorldRefusal, type ConfirmActive, type WorldRefusalCode, type WorldStore } from '../world/store'
 import { canonicalHash } from './canonical'
-import { PlayApiError, type PlayGameReader } from './client'
+import { PlayApiError, type PlayGameReader, type PlayRun } from './client'
 
 /** A refusal the launch path decided on. `problems` is set only for `config_invalid`. */
 export class PlayLaunchError extends Error {
@@ -24,9 +25,22 @@ export class PlayLaunchError extends Error {
   }
 }
 
+/**
+ * What a launch established, every part of it from Play and checked against the run: the city it
+ * opened and the player the run names. Server-side: the session layer (`session.ts`) opens a play
+ * session from it and decides what the browser is told.
+ */
+export interface PlayLaunch {
+  play: PlaySessionResponse['play']
+  /** Play's redeemed run's player: the identity a play session is opened for. */
+  player: PlayRun['player']
+  world: PlayWorld
+  config: Record<string, unknown>
+}
+
 export interface PlayLaunchService {
   /** Open the city a Play run token was issued for. The body is untrusted. */
-  open(body: Record<string, unknown>): Promise<PlaySessionResponse>
+  open(body: Record<string, unknown>): Promise<PlayLaunch>
 }
 
 export interface PlayLaunchOptions {
@@ -198,7 +212,7 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
           configHash: version.configHash,
           schemaVersion: version.schemaVersion,
         },
-        player: { displayName: run.player.displayName },
+        player: run.player,
         world: opened.world,
         config: version.config,
       }

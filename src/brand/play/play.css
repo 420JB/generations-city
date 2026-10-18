@@ -10,6 +10,12 @@
 .play-facts code {
   color: var(--ink);
 }
+.play-viewer b {
+  color: var(--ink);
+}
+.play-signout {
+  margin-left: 8px;
+}
 
 .play-gate {
   display: grid;

@@ -113,9 +113,9 @@ export interface Launch {
   run: { runId: string; installationId: string; configVersion: number; configHash: string }
 }
 
-/** A player launches a game on their server, exactly as the Proofy lobby will. */
-export async function launch(guild: string, gameKey = 'rare-city', displayName = 'Local Player'): Promise<Launch> {
-  const a = await call('POST', '/v1/play/launch', contextToken({ guild, user: snowflake(), displayName }), { gameKey })
+/** A player launches a game on their server, exactly as the Proofy lobby will. A new Discord user each time unless `user` says who. */
+export async function launch(guild: string, gameKey = 'rare-city', displayName = 'Local Player', user = snowflake()): Promise<Launch> {
+  const a = await call('POST', '/v1/play/launch', contextToken({ guild, user, displayName }), { gameKey })
   if (a.status !== 201) throw new Error(`launch failed: ${a.status} ${JSON.stringify(a.body)}`)
   return a.body as unknown as Launch
 }

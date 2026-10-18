@@ -41,7 +41,7 @@ describe('the Play game-service client', () => {
   it('redeems with the service credential and reads the run', async () => {
     const { seen, client } = stub(() => json(200, { ok: true, run: RUN }))
     const run = await client.redeemRun('t.o.k')
-    expect(run).toEqual({ runId: RUN.runId, installationId: RUN.installationId, gameKey: 'rare-city', discordGuildId: RUN.discordGuildId, player: { discordUserId: RUN.player.discordUserId, displayName: 'Ada' }, configVersion: 1, configHash: RUN.configHash, runExpiresAt: RUN.runExpiresAt })
+    expect(run).toEqual({ runId: RUN.runId, installationId: RUN.installationId, gameKey: 'rare-city', discordGuildId: RUN.discordGuildId, player: { discordUserId: RUN.player.discordUserId, coreUserId: 'u1', displayName: 'Ada' }, configVersion: 1, configHash: RUN.configHash, runExpiresAt: RUN.runExpiresAt })
     expect(seen[0].url).toBe('http://play.test/v1/game/runs/redeem')
     expect(seen[0].init.method).toBe('POST')
     expect((seen[0].init.headers as Record<string, string>).authorization).toBe(`Bearer ${CREDENTIAL}`)
@@ -68,7 +68,17 @@ describe('the Play game-service client', () => {
   })
 
   it('treats a body outside the contract as invalid, never as data', async () => {
-    for (const body of [{ ok: true }, { ok: true, run: { ...RUN, installationId: 'nope' } }, { ok: true, run: { ...RUN, configHash: 'A'.repeat(64) } }, { ok: false }, [1]]) {
+    // A run without the player Play pins to it (contract §4.7) is not one a session can be opened for.
+    const players = [
+      { discordUserId: RUN.player.discordUserId, displayName: 'Ada' },
+      { ...RUN.player, coreUserId: '' },
+      { ...RUN.player, coreUserId: 'not/opaque' },
+      { ...RUN.player, coreUserId: 'x'.repeat(65) },
+      { ...RUN.player, discordUserId: 'ada' },
+      { ...RUN.player, displayName: '' },
+      { ...RUN.player, displayName: 'x'.repeat(101) },
+    ].map((player) => ({ ok: true, run: { ...RUN, player } }))
+    for (const body of [{ ok: true }, { ok: true, run: { ...RUN, installationId: 'nope' } }, { ok: true, run: { ...RUN, configHash: 'A'.repeat(64) } }, { ok: true, run: { ...RUN, runExpiresAt: 'soon' } }, ...players, { ok: false }, [1]]) {
       const { client } = stub(() => json(200, body))
       expect((await failure(client.redeemRun('t.o.k'))).code).toBe('invalid_response')
     }

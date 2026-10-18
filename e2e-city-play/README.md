@@ -7,6 +7,15 @@ service credential, loads the configuration version the run was pinned to, check
 the run (installation, server, version, hash), validates it, and returns it. The page draws it
 with the standard renderer. The browser never names an installation.
 
+That launch also opens a **play session**: an HttpOnly, SameSite=Strict cookie for this origin
+(`rc_play`; `__Host-rc_play` outside local mode) naming the player Play's redeemed run named and
+the city the launch opened (`play_sessions`, migration 0006; only the cookie value's SHA-256 is
+stored). With it a reload or a new tab reads the city again from `GET /v1/play/city` without
+another launch, and `POST /v1/play/logout` ends it. A session ends with Play's run (Rare City's
+registered `maxRunSeconds`, at most 12 hours), on logout, on a newer launch in the same browser,
+and when Play says the installation is no longer active. It is never renewed: launching again
+from Proofy Play is how a player is re-authorized. See `server/src/play/session.ts`.
+
 Proofy Core's context-token issuer is not deployed, so locally Core is stood in for by Play's
 own dev issuer key. Everything else is the real Play service and contract (1.1.0).
 
@@ -63,3 +72,44 @@ The server reads `PLAY_API_URL`, `PLAY_SERVICE_CREDENTIAL` and optionally `PLAY_
 persistent city (migration 0005 must be applied). The credential's Play environment must match `APP_MODE`
 (local → dev/test, staging → staging, production → live). Register the schema once per Play
 environment with `npm run play:register-schema`.
+
+**Play sessions are NOT approved for live deployment.** They allow read-only viewing only: the
+server answers every session with `permissions: { viewCity: true, claim: false, build: false }`,
+no route accepts a play session for any change to a city, and the page refuses a viewer that
+says otherwise. An independent security audit (2026-10-17) passed this slice for a feature-branch
+checkpoint and left these gates open. None is fixed here.
+
+Required before live:
+
+- **F1. A definite refusal from Play must not be read as "unknown".** A city read asks Play
+  whether the installation is still active (`installation()` in `server/src/play/session.ts`).
+  Today every Play error except `installation_not_found` counts as no answer, so when Play
+  refuses Rare City's own credential (`401 unauthorized`: the credential revoked or the game
+  retired) the session keeps reading its city, reported as `installationActive: unknown`, until
+  it expires (Play's run, at most 12 hours).
+- **F2. "Unknown" needs a bounded freshness policy.** A session can live its whole life without
+  one successful installation check, and a suspension during a Play outage takes effect only on
+  the first read after Play answers again. Decide how long a session may go unverified.
+- **F4. The installation check needs in-flight de-duplication and real cancellation.**
+  Concurrent reads of one installation each ask Play until the first answer is cached (the cache
+  is per process), and the 3-second deadline stops waiting without aborting the request, which
+  runs on to the Play client's 10-second timeout.
+
+Required before any player mutation (claim, build, economy):
+
+- **F5. Login CSRF.** A run token is a bearer token: a link to the launch page carrying someone
+  else's `#runToken=` signs this browser in as that player, replacing its session. A launch must
+  be bound to the browser that started it (or the switch confirmed) before a session can act.
+- **F6. Stale tabs after an identity switch.** A newer launch in another tab replaces the
+  browser's session; an older tab still shows the earlier player, and its next request carries
+  the new cookie. A mutation must name the session or player it expects and be refused otherwise.
+
+Needs a verified Proofy Core / Play contract:
+
+- **F3. Game status.** Play's installation answer does not include the game's status: while
+  Play refuses launches for an inactive game (`game_not_active`), existing sessions still read
+  the installation as active.
+- **F7. Mid-session membership and entitlement.** Core checks Discord membership and the
+  server's Play entitlement only when it signs the launch context. No Core or Play contract lets
+  Rare City re-check either during a session, which is why the viewer reports both as verified
+  at launch, never now.

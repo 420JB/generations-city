@@ -131,4 +131,7 @@ export const LIMITS = {
   activationCommit: { client: [perMinute(10)], user: [perMinute(6)] },
   // Each allowed request costs up to three Play reads. A player opens a city once per launch.
   playSession: { client: [perMinute(20)] },
+  // A session's city read costs a database snapshot and at most one Play read per installation every few seconds.
+  // Reloads and a few tabs, not a poll.
+  playCity: { client: [perMinute(60)], user: [perMinute(30)] },
 } as const satisfies Record<string, { client: readonly RateRule[]; user?: readonly RateRule[] }>

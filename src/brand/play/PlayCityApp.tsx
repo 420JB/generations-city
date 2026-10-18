@@ -4,13 +4,26 @@ import type { PreviewMember } from '../core/eligibility'
 import type { ConfigProblem } from '../core/config'
 import { loadPersistedBrandCity, type LoadedBrandCity } from '../load'
 import { BrandCityPreview } from '../preview/PreviewApp'
-import { parsePlaySessionResponse, PLAY_SESSION_ENDPOINT, runTokenFromFragment, type PlayErrorCode, type PlaySessionResponse } from '../../protocol/play'
+import {
+  parsePlayCityResponse,
+  parsePlaySessionResponse,
+  PLAY_CITY_ENDPOINT,
+  PLAY_LOGOUT_ENDPOINT,
+  PLAY_SESSION_ENDPOINT,
+  runTokenFromFragment,
+  type PlayCityResponse,
+  type PlayErrorCode,
+} from '../../protocol/play'
+
+/** Where the city on the page came from: a launch just now, or this browser's play session. */
+type Source = 'launch' | 'session'
 
 type Phase =
   | { kind: 'no-token' }
-  | { kind: 'opening' }
+  | { kind: 'opening'; source: Source }
+  | { kind: 'signed-out' }
   | { kind: 'refused'; code: PlayErrorCode | 'unreadable'; problems: ConfigProblem[] }
-  | { kind: 'ready'; session: PlaySessionResponse; city: LoadedBrandCity }
+  | { kind: 'ready'; source: Source; city: PlayCityResponse; loaded: LoadedBrandCity }
 
 const OPEN_TIMEOUT_MS = 20_000
 
@@ -21,7 +34,7 @@ const REFUSALS: Record<PlayErrorCode | 'unreadable', string> = {
   unsupported_media_type: 'This launch link is malformed. Launch Rare City again from Proofy Play.',
   payload_too_large: 'This launch link is malformed. Launch Rare City again from Proofy Play.',
   origin_mismatch: 'This page is not being served from Rare City’s own address.',
-  rate_limited: 'Too many launches from this network just now. Wait a minute and launch again.',
+  rate_limited: 'Too many requests from this network just now. Wait a minute and try again.',
   play_disabled: 'This Rare City deployment is not connected to Proofy Play.',
   run_token_refused: 'Proofy Play did not confirm this launch for Rare City.',
   run_already_used: 'This launch was already opened. Each launch opens the city once: launch Rare City again from Proofy Play.',
@@ -33,8 +46,10 @@ const REFUSALS: Record<PlayErrorCode | 'unreadable', string> = {
   config_incompatible: 'This server’s new city configuration would move its districts or drop a collection, so it was not applied. The city is unchanged; a server admin must keep its districts and collections in Proofy Play.',
   config_superseded: 'This server’s city configuration changed after this launch. Launch Rare City again from Proofy Play.',
   world_binding_conflict: 'This Discord server’s city belongs to another Rare City installation, so it was not opened.',
-  world_unavailable: 'The city could not be loaded just now. Launch again in a moment.',
+  world_unavailable: 'The city could not be loaded just now. Try again in a moment.',
   play_unavailable: 'Proofy Play could not be reached. Launch again in a moment.',
+  play_session_required: 'Your Rare City session has ended. Launch Rare City again from Proofy Play.',
+  play_session_unavailable: 'Your Rare City session could not be checked just now. Try again in a moment.',
   unreadable: 'Rare City answered with something this page cannot read.',
 }
 
@@ -45,49 +60,66 @@ function takeRunToken(): string | null {
   return token
 }
 
-async function openSession(runToken: string): Promise<Phase> {
-  let response: Response
-  let body: unknown
+/** A refusal body, as this page states it. */
+function refusal(body: unknown): Phase {
+  const b = body as { error?: unknown; problems?: unknown }
+  const code = typeof b?.error === 'string' && Object.hasOwn(REFUSALS, b.error) ? (b.error as PlayErrorCode) : 'unreadable'
+  const problems = Array.isArray(b?.problems) ? (b.problems as ConfigProblem[]).filter((p) => typeof p?.path === 'string' && typeof p?.detail === 'string').slice(0, 20) : []
+  return { kind: 'refused', code, problems }
+}
+
+/** The page's one way to ask the server anything. Same origin only: the session cookie goes nowhere else. */
+async function ask(path: string, init: RequestInit = {}): Promise<{ response: Response; body: unknown } | null> {
   try {
-    response = await fetch(PLAY_SESSION_ENDPOINT, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ runToken }),
-      credentials: 'same-origin',
-      signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
-    })
-    body = await response.json()
+    const response = await fetch(path, { ...init, credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(OPEN_TIMEOUT_MS) })
+    return { response, body: await response.json() }
   } catch {
-    return { kind: 'refused', code: 'play_unavailable', problems: [] }
+    return null
   }
-  if (!response.ok) {
-    const b = body as { error?: unknown; problems?: unknown }
-    const code = typeof b?.error === 'string' && Object.hasOwn(REFUSALS, b.error) ? (b.error as PlayErrorCode) : 'unreadable'
-    const problems = Array.isArray(b?.problems) ? (b.problems as ConfigProblem[]).filter((p) => typeof p?.path === 'string' && typeof p?.detail === 'string').slice(0, 20) : []
-    return { kind: 'refused', code, problems }
-  }
-  const session = parsePlaySessionResponse(body)
-  if (!session) return { kind: 'refused', code: 'unreadable', problems: [] }
-  // The server validated this configuration for this world; the page validates it again with the same code, and
-  // draws the city as stored, on the geometry it was founded on.
-  const parsed = parsePlayCityConfig(session.config, session.world.id)
+}
+
+/** Draw a city the server answered with, after validating its configuration again with the same code. */
+function draw(source: Source, city: PlayCityResponse): Phase {
+  // The server validated this configuration for this world; the page validates it again, and draws the city as
+  // stored, on the geometry it was founded on.
+  const parsed = parsePlayCityConfig(city.config, city.world.id)
   if (!parsed.ok) return { kind: 'refused', code: 'config_invalid', problems: parsed.problems }
-  const loaded = loadPersistedBrandCity(parsed.config, session.world.state, session.world.definition.geometryFingerprint)
+  const loaded = loadPersistedBrandCity(parsed.config, city.world.state, city.world.definition.geometryFingerprint)
   if (!loaded.ok) return { kind: 'refused', code: 'config_invalid', problems: loaded.problems }
-  return { kind: 'ready', session, city: loaded.city }
+  return { kind: 'ready', source, city, loaded: loaded.city }
+}
+
+/** A launch: the run token, once, for the city and this browser's play session (an HttpOnly cookie this page never sees). */
+async function openLaunch(runToken: string): Promise<Phase> {
+  const answer = await ask(PLAY_SESSION_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runToken }) })
+  if (!answer) return { kind: 'refused', code: 'play_unavailable', problems: [] }
+  if (!answer.response.ok) return refusal(answer.body)
+  const session = parsePlaySessionResponse(answer.body)
+  return session ? draw('launch', session) : { kind: 'refused', code: 'unreadable', problems: [] }
+}
+
+/** A reload or a new tab: the city of this browser's play session, if it has one. No session is not an error. */
+async function readSession(): Promise<Phase> {
+  const answer = await ask(PLAY_CITY_ENDPOINT)
+  if (!answer) return { kind: 'refused', code: 'play_session_unavailable', problems: [] }
+  if (answer.response.status === 401) return { kind: 'no-token' }
+  if (!answer.response.ok) return refusal(answer.body)
+  const city = parsePlayCityResponse(answer.body)
+  return city ? draw('session', city) : { kind: 'refused', code: 'unreadable', problems: [] }
 }
 
 /**
  * THE PROOFY PLAY LAUNCH PAGE: Rare City's registered launch URL. Proofy Play sends the
  * player here with a run token in the fragment; the Rare City server redeems it with Play,
- * opens the installation's persistent city (founding it on the first launch) and returns it
- * with the pinned, hash-checked configuration. The standard city renderer draws exactly what
- * is stored. Anything else (no token, a refused token, a configuration the city cannot take)
- * is said plainly and nothing is drawn.
+ * opens the installation's persistent city (founding it on the first launch), opens a play
+ * session for this browser and returns the city with the pinned, hash-checked configuration.
+ * Without a run token (a reload, a new tab) the page reads the city of that session, if there
+ * is one. The standard city renderer draws exactly what is stored. Anything else (no session,
+ * a refused token, a configuration the city cannot take) is said plainly and nothing is drawn.
  */
 export function PlayCityApp() {
   const [runToken] = useState(takeRunToken)
-  const [phase, setPhase] = useState<Phase>(() => (runToken ? { kind: 'opening' } : { kind: 'no-token' }))
+  const [phase, setPhase] = useState<Phase>(() => ({ kind: 'opening', source: runToken ? 'launch' : 'session' }))
 
   // A new launch into an open page changes only the fragment, which does not reload the document.
   // Start over from a fresh page, so nothing of the previous city survives into the next one.
@@ -98,15 +130,19 @@ export function PlayCityApp() {
   }, [])
 
   useEffect(() => {
-    if (!runToken) return
     let live = true
-    void openSession(runToken).then((p) => live && setPhase(p))
+    void (runToken ? openLaunch(runToken) : readSession()).then((p) => live && setPhase(p))
     return () => {
       live = false
     }
   }, [runToken])
 
-  if (phase.kind === 'ready') return <PlayCity session={phase.session} city={phase.city} />
+  async function signOut() {
+    const answer = await ask(PLAY_LOGOUT_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    setPhase(answer?.response.ok ? { kind: 'signed-out' } : { kind: 'refused', code: 'play_session_unavailable', problems: [] })
+  }
+
+  if (phase.kind === 'ready') return <PlayCity source={phase.source} city={phase.city} loaded={phase.loaded} onSignOut={signOut} />
   return (
     <div className="app play-gate" data-testid="play-gate" data-phase={phase.kind} data-code={phase.kind === 'refused' ? phase.code : ''}>
       <div className="sky" aria-hidden="true">
@@ -120,6 +156,12 @@ export function PlayCityApp() {
           <>
             <h2>Launch Rare City from Proofy Play</h2>
             <p className="muted">This page opens the city of the Discord server you launch it from. Open Proofy Play in your server and choose Rare City.</p>
+          </>
+        )}
+        {phase.kind === 'signed-out' && (
+          <>
+            <h2>You have left the city</h2>
+            <p className="muted">This browser is no longer signed in to Rare City. Launch Rare City from Proofy Play to come back.</p>
           </>
         )}
         {phase.kind === 'refused' && (
@@ -142,8 +184,12 @@ export function PlayCityApp() {
   )
 }
 
-function PlayCity({ session, city }: { session: PlaySessionResponse; city: LoadedBrandCity }) {
-  const { play, player, world } = session
+/** How a viewer fact reads on the page: what is known, and how. Unknown is said as unknown, never as no. */
+const fact = (f: { status: 'verified'; basis: 'launch' | 'live' } | { status: 'unknown' }) => (f.status === 'unknown' ? 'unknown' : f.basis === 'live' ? 'verified now' : 'verified at launch')
+
+function PlayCity({ source, city: response, loaded: city, onSignOut }: { source: Source; city: PlayCityResponse; loaded: LoadedBrandCity; onSignOut: () => void }) {
+  const { play, viewer, world } = response
+  const player = viewer.player
   const buildings = Object.keys(city.state.buildings).length
   const members = useMemo<(PreviewMember | null)[]>(
     () => [
@@ -158,6 +204,7 @@ function PlayCity({ session, city }: { session: PlaySessionResponse; city: Loade
     <div
       className="play-city"
       data-testid="play-city"
+      data-source={source}
       data-installation={play.installationId}
       data-guild={play.discordGuildId}
       data-config-version={play.configVersion}
@@ -167,6 +214,8 @@ function PlayCity({ session, city }: { session: PlaySessionResponse; city: Loade
       data-world-sequence={world.sequence}
       data-governing-version={world.definition.governingConfigVersion}
       data-buildings={buildings}
+      data-player={player.discordUserId}
+      data-installation-status={viewer.status.installationActive.status}
     >
       <BrandCityPreview
         city={city}
@@ -181,6 +230,14 @@ function PlayCity({ session, city }: { session: PlaySessionResponse; city: Loade
             <span className="play-facts small" data-testid="play-facts">
               city <code data-testid="play-world" title={world.id}>{world.id.slice(0, 8)}</code> · server <code data-testid="play-guild">{play.discordGuildId}</code> · config{' '}
               <code data-testid="play-config-version">v{play.configVersion}</code> · <code data-testid="play-config-hash" title={play.configHash}>{play.configHash.slice(0, 12)}</code>
+            </span>
+            <span className="play-facts play-viewer small" data-testid="play-viewer">
+              signed in as <b data-testid="play-player">{player.displayName}</b> · member {fact(viewer.status.guildMember)} · installation{' '}
+              <span data-testid="play-installation-status">{fact(viewer.status.installationActive)}</span> · until{' '}
+              <time dateTime={viewer.session.expiresAt}>{new Date(viewer.session.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+              <button type="button" className="chip play-signout" onClick={onSignOut} data-testid="play-signout">
+                Sign out
+              </button>
             </span>
           </div>
         }

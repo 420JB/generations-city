@@ -2,7 +2,8 @@ import { emptyWorldCityState, judgeWorldConfig } from '../src/engine'
 import { canonicalHash } from '../src/play/canonical'
 import { PlayApiError, type PlayConfigVersion, type PlayGameReader, type PlayInstallation, type PlayRun } from '../src/play/client'
 import { uuidv7 } from '../src/world/ids'
-import { WorldRefusal, type ConfirmActive, type VerifiedLaunch, type WorldStore } from '../src/world/store'
+import { WorldRefusal, type ConfirmActive, type VerifiedLaunch, type WorldScope, type WorldStore } from '../src/world/store'
+import { PlaySessionError, type LivePlaySession, type NewPlaySession, type PlaySessionStore } from '../src/play/session'
 
 /** Two brand documents in Rare City's Play schema v1 (a small one and the reference one). */
 export const DOC_A = {
@@ -23,6 +24,9 @@ export const INSTALLATION_A = '01a14800-0000-7000-8000-00000000000a'
 export const INSTALLATION_B = '01a14800-0000-7000-8000-00000000000b'
 export const GUILD_A = '900000000000000001'
 export const GUILD_B = '900000000000000002'
+/** Two Discord users. Ada is who a fake launch is for unless it says otherwise. */
+export const ADA = { discordUserId: '111111111111111111', coreUserId: 'core-ada', displayName: 'Ada' }
+export const BEA = { discordUserId: '222222222222222222', coreUserId: 'core-bea', displayName: 'Bea' }
 /** Shaped like a Play run token; the fake only looks it up. */
 export const token = (name: string) => `eyJhbGciOiJFZERTQSJ9.${Buffer.from(name).toString('base64url').padEnd(12, 'x')}.c2lnbmF0dXJlLXNpZ25hdHVyZQ`
 
@@ -113,7 +117,7 @@ export function fakePlay() {
       installations.get(id)!.status = status
     },
     /** A player launches: the run is pinned to the active version now. */
-    launch(id: string, name: string, options: { gameKey?: string; expired?: boolean } = {}) {
+    launch(id: string, name: string, options: { gameKey?: string; expired?: boolean; player?: PlayRun['player']; runExpiresAt?: string } = {}) {
       const i = installations.get(id)!
       const runToken = token(name)
       runs.set(runToken, {
@@ -121,10 +125,11 @@ export function fakePlay() {
         installationId: id,
         gameKey: options.gameKey ?? 'rare-city',
         discordGuildId: i.discordGuildId,
-        player: { discordUserId: '111111111111111111', displayName: 'Ada' },
+        player: options.player ?? ADA,
         configVersion: i.activeConfigVersion!,
         configHash: i.activeConfigHash!,
-        runExpiresAt: '2026-10-17T12:00:00.000Z',
+        // Two hours from now, like Play's default maxRunSeconds.
+        runExpiresAt: options.runExpiresAt ?? new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
         redeemed: false,
         expired: options.expired,
       })
@@ -141,9 +146,21 @@ export function fakePlay() {
  */
 export function memoryWorlds() {
   const worlds = new Map<string, string>()
+  /** world id -> the launch that last opened it, and the world it got. */
+  const byWorld = new Map<string, { launch: VerifiedLaunch; world: Awaited<ReturnType<WorldStore['open']>>['world'] }>()
   const opened: VerifiedLaunch[] = []
+  const read: WorldScope[] = []
   const confirms: ConfirmActive[] = []
   const store: WorldStore & { fail?: Error } = {
+    async read(scope) {
+      read.push(structuredClone(scope))
+      if (store.fail) throw store.fail
+      const known = byWorld.get(scope.worldId)
+      const l = known?.launch
+      if (!known || !l || l.environment !== scope.environment || l.gameKey !== scope.gameKey || l.installationId !== scope.installationId || l.discordGuildId !== scope.discordGuildId)
+        throw new WorldRefusal('world_unavailable', 'not bound')
+      return { world: { ...known.world, created: false }, governing: { version: l.pinned.version, schemaVersion: l.pinned.schemaVersion, configHash: l.pinned.configHash, config: structuredClone(l.pinned.config) } }
+    },
     async open(launch, confirmActive) {
       opened.push(structuredClone(launch))
       confirms.push(confirmActive)
@@ -153,7 +170,7 @@ export function memoryWorlds() {
       const judged = judgeWorldConfig(launch.pinned.config, id, null)
       if (judged.verdict === 'rejected') throw new WorldRefusal(judged.code, 'refused', judged.problems)
       worlds.set(launch.installationId, id)
-      return {
+      const result: Awaited<ReturnType<WorldStore['open']>> = {
         cityId: `world:${id}`,
         instance: '00000000-0000-4000-8000-000000000000',
         accepted: judged,
@@ -167,7 +184,36 @@ export function memoryWorlds() {
           state: emptyWorldCityState(),
         },
       }
+      byWorld.set(id, { launch: structuredClone(launch), world: result.world })
+      return result
     },
   }
-  return { store, opened, confirms, worlds }
+  return { store, opened, read, confirms, worlds }
+}
+
+/**
+ * Play sessions kept in memory, for HTTP tests that need no database. The same rules as the Postgres store
+ * (one session per run, retire on relaunch, live by expiry and revocation, scoped to environment and game);
+ * the Postgres store itself is tested in play.session.db.test.ts.
+ */
+export function memorySessions() {
+  const rows: (NewPlaySession & { id: string; revokedAt: Date | null })[] = []
+  const store: PlaySessionStore & { fail?: Error } = {
+    async insert(s, retiring) {
+      if (store.fail) throw store.fail
+      if (rows.some((r) => r.scope.environment === s.scope.environment && r.runId === s.runId)) throw new PlaySessionError(409, 'run_already_used')
+      if (retiring) for (const r of rows) if (r.tokenHash.equals(retiring) && !r.revokedAt) r.revokedAt = s.createdAt
+      rows.push({ ...s, id: uuidv7(), revokedAt: null })
+    },
+    async find(hash, at, environment, gameKey): Promise<LivePlaySession | null> {
+      if (store.fail) throw store.fail
+      const r = rows.find((x) => x.tokenHash.equals(hash) && !x.revokedAt && x.expiresAt > at && x.expiresAt.getTime() > Date.now() && x.scope.environment === environment && x.scope.gameKey === gameKey)
+      return r ? { id: r.id, scope: structuredClone(r.scope), player: { ...r.player }, createdAt: r.createdAt, expiresAt: r.expiresAt } : null
+    },
+    async revoke(by, at) {
+      for (const r of rows) if (!r.revokedAt && ('id' in by ? r.id === by.id : r.tokenHash.equals(by.tokenHash))) r.revokedAt = at
+    },
+    async tidy() {},
+  }
+  return { store, rows }
 }

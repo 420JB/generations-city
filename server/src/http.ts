@@ -93,7 +93,7 @@ export function assertSameOrigin(req: IncomingMessage, publicOrigin: string): vo
 }
 
 /**
- * The session cookie. Outside local mode it is `__Host-` prefixed, which a browser only
+ * A session cookie. Outside local mode it is `__Host-` prefixed, which a browser only
  * accepts when it is Secure, has Path=/ and has no Domain: it cannot be set or overwritten
  * from another host or over plain HTTP. Local mode serves http://, where Secure cookies
  * are not reliably stored, so there it is a plain host-only cookie.
@@ -110,9 +110,18 @@ export interface SessionCookie {
 
 const strip = (value: string) => value.replace(/^[ \t]+|[ \t]+$/g, '')
 
-export function sessionCookie(mode: AppMode): SessionCookie {
+/** The wallet session cookie (`auth/service.ts`). */
+export const sessionCookie = (mode: AppMode): SessionCookie => hostCookie(mode, 'rc_session')
+
+/**
+ * The play session cookie (`play/session.ts`). Its own name, so a Proofy Play launch and a wallet
+ * sign-in in one browser never replace, read or end each other's session.
+ */
+export const playSessionCookie = (mode: AppMode): SessionCookie => hostCookie(mode, 'rc_play')
+
+function hostCookie(mode: AppMode, base: string): SessionCookie {
   const secure = mode !== 'local'
-  const name = secure ? '__Host-rc_session' : 'rc_session'
+  const name = secure ? `__Host-${base}` : base
   const attributes = `Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`
   return {
     name,

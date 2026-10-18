@@ -215,19 +215,21 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
   /** The columns of a legacy Rare Friends intent naming `cityId` instead of the Rare Friends city. */
   const intentIn = (identity: Awaited<ReturnType<typeof addIdentity>>, cityId: string, instance: string) => intentColumns({ identity, instance, tokenId: 812, familyId: 2, ward: 0, plot: 1, override: { city_id: cityId } })
 
+  // These are 0005's own tests: they apply the migrations up to and including it, whatever comes after.
   describe('applying the migration', () => {
     it('builds a fresh database 0001 -> 0005 with the four world tables and no rows', async () => {
-      const result = await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })
+      const result = await migrate(t.db, { dir: await migrationsThrough(5), environment: 'staging' })
       expect(result).toEqual({ applied: [1, 2, 3, 4, 5], current: 5 })
       expect(await t.tables()).toEqual(expect.arrayContaining(WORLD_TABLES))
       for (const table of WORLD_TABLES) expect(await count(table), table).toBe(0)
-      expect((await loadMigrations(MIGRATIONS_DIR)).map((m) => `${m.version}:${m.name}`)).toEqual(['1:foundation', '2:city', '3:identity', '4:activation', '5:world_core'])
+      expect((await loadMigrations(MIGRATIONS_DIR)).slice(0, 5).map((m) => `${m.version}:${m.name}`)).toEqual(['1:foundation', '2:city', '3:identity', '4:activation', '5:world_core'])
     })
 
     it('is a no-op when run again', async () => {
-      await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })
+      const through5 = await migrationsThrough(5)
+      await migrate(t.db, { dir: through5, environment: 'staging' })
       const before = await legacySnapshot()
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })).toEqual({ applied: [], current: 5 })
+      expect(await migrate(t.db, { dir: through5, environment: 'staging' })).toEqual({ applied: [], current: 5 })
       expect(await versions()).toEqual([1, 2, 3, 4, 5])
       expect(await legacySnapshot()).toEqual(before)
     })
@@ -241,14 +243,15 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
       const cityText = (await t.db.query('SELECT state::text AS state FROM city')).rows
       const applied = (await t.db.query('SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version')).rows
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })).toEqual({ applied: [5], current: 5 })
+      const through5 = await migrationsThrough(5)
+      expect(await migrate(t.db, { dir: through5, environment: 'staging' })).toEqual({ applied: [5], current: 5 })
 
       expect(await legacySnapshot()).toEqual(before)
       expect((await t.db.query('SELECT state::text AS state FROM city')).rows).toEqual(cityText)
       expect((await t.db.query('SELECT version, checksum, applied_at FROM schema_migrations WHERE version <= 4 ORDER BY version')).rows).toEqual(applied)
       for (const table of WORLD_TABLES) expect(await count(table), table).toBe(0)
       expect(await verifyCity(t.db)).toEqual(report)
-      expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })).applied).toEqual([])
+      expect((await migrate(t.db, { dir: through5, environment: 'staging' })).applied).toEqual([])
       expect(await legacySnapshot()).toEqual(before)
     })
 
@@ -264,7 +267,7 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
       expect(await t.tables()).toEqual(tablesBefore)
       expect(await triggers()).toEqual(triggersBefore)
       expect(await functions()).toEqual([])
-      expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })).applied).toEqual([5])
+      expect((await migrate(t.db, { dir: await migrationsThrough(5), environment: 'staging' })).applied).toEqual([5])
       expect((await functions()).map((f) => f.proname)).toEqual(WORLD_FUNCTIONS)
       expect((await triggers()).map((r) => r.tgname)).toEqual(expect.arrayContaining(['activation_intents_world_guard', 'app_meta_world_guard', 'city_world_founding_guard', 'properties_world_guard']))
     })

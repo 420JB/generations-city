@@ -35,7 +35,12 @@ export interface PlayRun {
   installationId: string
   gameKey: string
   discordGuildId: string
-  player: { discordUserId: string; displayName: string }
+  /**
+   * The player, as Play pinned them to the run from the Proofy Core context it was launched with: the
+   * Discord user id (Core's own, from its Discord sign-in) is the canonical identity, the Core user id
+   * an opaque companion (contract §2, §3.3, §4.7).
+   */
+  player: { discordUserId: string; coreUserId: string; displayName: string }
   configVersion: number
   configHash: string
   runExpiresAt: string
@@ -76,6 +81,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const HASH = /^[0-9a-f]{64}$/
 const GUILD = /^[0-9]{15,25}$/
 const GAME_KEY = /^[a-z][a-z0-9-]{1,62}[a-z0-9]$/
+/** Core's opaque ids (contract §2). */
+const CORE_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const posInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1
@@ -100,14 +107,15 @@ function readConfigVersion(v: unknown): PlayConfigVersion {
 
 function readRun(v: unknown): PlayRun {
   if (!isRecord(v) || !str(v.runId, UUID) || !str(v.installationId, UUID) || !str(v.gameKey, GAME_KEY) || !str(v.discordGuildId, GUILD)) invalid()
-  if (!isRecord(v.player) || !str(v.player.discordUserId, GUILD) || !str(v.player.displayName)) invalid()
-  if (!posInt(v.configVersion) || !str(v.configHash, HASH) || !str(v.runExpiresAt)) invalid()
+  if (!isRecord(v.player) || !str(v.player.discordUserId, GUILD) || !str(v.player.coreUserId, CORE_ID) || !str(v.player.displayName)) invalid()
+  if (v.player.displayName.length < 1 || v.player.displayName.length > 100) invalid()
+  if (!posInt(v.configVersion) || !str(v.configHash, HASH) || !str(v.runExpiresAt) || Number.isNaN(Date.parse(v.runExpiresAt))) invalid()
   return {
     runId: v.runId,
     installationId: v.installationId,
     gameKey: v.gameKey,
     discordGuildId: v.discordGuildId,
-    player: { discordUserId: v.player.discordUserId, displayName: v.player.displayName },
+    player: { discordUserId: v.player.discordUserId, coreUserId: v.player.coreUserId, displayName: v.player.displayName },
     configVersion: v.configVersion,
     configHash: v.configHash,
     runExpiresAt: v.runExpiresAt,

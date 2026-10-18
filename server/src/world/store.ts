@@ -46,6 +46,10 @@ import { uuidv7 } from './ids'
  * govern. Either way the world is not changed, replaced or reset. Nothing here ever updates or
  * deletes a city.
  *
+ * A play session reads its world back with `read` (`play/session.ts`): one read-only snapshot of
+ * the city, its founding record and the version that governs it now, through the exact binding
+ * the session names. It asks Play nothing, takes no lock and writes nothing.
+ *
  * Adoption follows what Play reports as active. The launch path asks Play before the
  * transaction, and that report can be overtaken by the time the transaction runs: an admin
  * re-activates another version and another launch sees it. So a founding or an adoption is
@@ -103,9 +107,29 @@ export interface OpenedWorld {
  */
 export type ConfirmActive = () => Promise<{ version: number | null; configHash: string | null } | null>
 
+/** Exactly which world a play session names, and the binding it was opened through (migration 0006). */
+export interface WorldScope {
+  worldId: string
+  environment: PlayEnvironment
+  gameKey: string
+  installationId: string
+  discordGuildId: string
+}
+
+/** A world as stored, with the accepted configuration version that governs it now. */
+export interface ReadWorld {
+  world: PlayWorld
+  governing: { version: number; schemaVersion: number; configHash: string; config: Record<string, unknown> }
+}
+
 export interface WorldStore {
   /** The installation's world, founded now if it has none. */
   open(launch: VerifiedLaunch, confirmActive: ConfirmActive): Promise<OpenedWorld>
+  /**
+   * A world, read and nothing else: no Play, no lock, nothing written. The binding must still be exactly
+   * `scope`'s. Everything comes from one snapshot, so the state, sequence and governing version agree.
+   */
+  read(scope: WorldScope): Promise<ReadWorld>
 }
 
 /** Points in founding at which a test may make it fail, to prove nothing is left half-written. */
@@ -137,6 +161,7 @@ interface BindingRow {
 
 interface VersionRow {
   version: number
+  schema_version: number
   config_hash: string
   verdict: 'accepted' | 'rejected'
   rejection: { code?: unknown; problems?: unknown } | null
@@ -264,33 +289,10 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       throw new WorldRefusal('world_binding_conflict', 'This installation\'s city is bound to another game or Discord server.')
 
     // The lock every change to this city takes: launches of one installation queue here, so versions and adoptions are written in order.
-    const city = (
-      await client.query<{ instance_id: string; sequence: string; state_version: number; state: unknown }>('SELECT instance_id, sequence, state_version, state FROM city WHERE id = $1 FOR UPDATE', [bound.city_id])
-    ).rows[0]
-    if (!city || city.instance_id !== bound.city_instance_id) throw unavailable(`world ${worldId} has no city ${bound.city_id}`)
-    const sequence = Number(city.sequence)
-    const state = city.state_version === WORLD_CITY_STATE_VERSION ? parseWorldCityState(city.state) : null
-    // This build reads exactly one kind of world city: as founded. Anything else is refused, not drawn in part.
-    if (!state || sequence !== 1) throw unavailable(`world ${worldId} holds a city this build cannot read (state version ${city.state_version}, sequence ${sequence})`)
+    const { instance, sequence, state, foundation, foundingVersion } = await readFounded(client, bound, true)
 
-    const founding = (await client.query<{ type: string; payload: { world?: { id?: unknown; foundingConfig?: { version?: unknown }; foundation?: unknown } } }>('SELECT type, payload FROM city_events WHERE city_id = $1 AND sequence = 1', [bound.city_id])).rows[0]
-    const foundation = parseWorldFoundation(founding?.payload?.world?.foundation)
-    const foundingVersion = founding?.payload?.world?.foundingConfig?.version
-    if (!founding || founding.type !== 'city.initialized' || founding.payload.world?.id !== worldId || !foundation || typeof foundingVersion !== 'number')
-      throw unavailable(`world ${worldId} has no readable founding record`)
-
-    const versions = (await client.query<VersionRow>('SELECT version, config_hash, verdict, rejection, config_canonical FROM world_config_versions WHERE world_id = $1 ORDER BY version', [worldId])).rows
-    const read = new Map<number, AcceptedJudgement>()
-    /** An accepted version, read again: still a valid city on the world's geometry, or the world is unreadable. */
-    const accepted = (row: VersionRow): AcceptedJudgement => {
-      let j = read.get(row.version)
-      if (!j) {
-        const again = judgeWorldConfig(JSON.parse(row.config_canonical), worldId, null)
-        if (row.verdict !== 'accepted' || again.verdict !== 'accepted' || !sameGeometry(again.foundation, foundation)) throw unavailable(`world ${worldId} holds an accepted configuration this build no longer reads as the same city`)
-        read.set(row.version, (j = again))
-      }
-      return j
-    }
+    const versions = (await client.query<VersionRow>('SELECT version, schema_version, config_hash, verdict, rejection, config_canonical FROM world_config_versions WHERE world_id = $1 ORDER BY version', [worldId])).rows
+    const accepted = acceptedReader(worldId, foundation)
 
     let judged: AcceptedJudgement
     const recorded = versions.find((v) => v.version === pinned.version)
@@ -337,7 +339,7 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
 
     return {
       cityId: bound.city_id,
-      instance: city.instance_id,
+      instance,
       accepted: judged,
       world: {
         id: worldId,
@@ -351,7 +353,75 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
     }
   }
 
+  /**
+   * A world's city and its founding record, checked: the bound city row, as founded (sequence 1, the one kind of
+   * world city this build reads), and the `city.initialized` event that fixed its foundation. `lock` takes the
+   * lock every change to the city takes; a read takes none.
+   */
+  async function readFounded(client: PoolClient, bound: Pick<BindingRow, 'world_id' | 'city_id' | 'city_instance_id'>, lock: boolean) {
+    const worldId = bound.world_id
+    const city = (
+      await client.query<{ instance_id: string; sequence: string; state_version: number; state: unknown }>(`SELECT instance_id, sequence, state_version, state FROM city WHERE id = $1${lock ? ' FOR UPDATE' : ''}`, [bound.city_id])
+    ).rows[0]
+    if (!city || city.instance_id !== bound.city_instance_id) throw unavailable(`world ${worldId} has no city ${bound.city_id}`)
+    const sequence = Number(city.sequence)
+    const state = city.state_version === WORLD_CITY_STATE_VERSION ? parseWorldCityState(city.state) : null
+    // This build reads exactly one kind of world city: as founded. Anything else is refused, not drawn in part.
+    if (!state || sequence !== 1) throw unavailable(`world ${worldId} holds a city this build cannot read (state version ${city.state_version}, sequence ${sequence})`)
+
+    const founding = (await client.query<{ type: string; payload: { world?: { id?: unknown; foundingConfig?: { version?: unknown }; foundation?: unknown } } }>('SELECT type, payload FROM city_events WHERE city_id = $1 AND sequence = 1', [bound.city_id])).rows[0]
+    const foundation = parseWorldFoundation(founding?.payload?.world?.foundation)
+    const foundingVersion = founding?.payload?.world?.foundingConfig?.version
+    if (!founding || founding.type !== 'city.initialized' || founding.payload.world?.id !== worldId || !foundation || typeof foundingVersion !== 'number')
+      throw unavailable(`world ${worldId} has no readable founding record`)
+    return { instance: city.instance_id, sequence, state, foundation, foundingVersion }
+  }
+
+  /** Read a world in one read-only snapshot. */
+  async function readWorld(scope: WorldScope): Promise<ReadWorld> {
+    return withTransaction(db, isRefusal, async (client) => {
+      await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+      await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`)
+      const stamp = await environmentStamp(client)
+      if (stamp !== mode) throw unavailable(`the database is stamped "${stamp ?? 'unstamped'}", not "${mode}"`)
+      if (!PLAY_ENVIRONMENTS_FOR_MODE[mode].includes(scope.environment)) throw unavailable(`Play environment ${scope.environment} is not served by APP_MODE=${mode}`)
+
+      // The whole binding must match, not only the world: a session names a world through the binding it was opened by.
+      const bound = (
+        await client.query<BindingRow>(
+          `SELECT b.world_id, b.play_installation_id, b.play_game_key, b.discord_guild_id, w.city_id, w.city_instance_id, w.created_at
+             FROM world_play_bindings b JOIN worlds w ON w.id = b.world_id
+            WHERE b.world_id = $1 AND b.play_environment = $2 AND b.play_game_key = $3 AND b.play_installation_id = $4 AND b.discord_guild_id = $5`,
+          [scope.worldId, scope.environment, scope.gameKey, scope.installationId, scope.discordGuildId],
+        )
+      ).rows[0]
+      if (!bound) throw unavailable(`world ${scope.worldId} is not bound to the installation that names it`)
+      const { sequence, state, foundation, foundingVersion } = await readFounded(client, bound, false)
+
+      const latest = (await client.query<{ version: number }>('SELECT version FROM world_config_adoptions WHERE world_id = $1 ORDER BY adoption_seq DESC LIMIT 1', [scope.worldId])).rows[0]
+      if (!latest) throw unavailable(`world ${scope.worldId} has no adopted configuration`)
+      const row = (await client.query<VersionRow>('SELECT version, schema_version, config_hash, verdict, rejection, config_canonical FROM world_config_versions WHERE world_id = $1 AND version = $2', [scope.worldId, latest.version])).rows[0]
+      if (!row) throw unavailable(`world ${scope.worldId} adopted version ${latest.version}, which it has no copy of`)
+      // Read again exactly as a launch would: still an accepted city on the world's geometry, or the world is unreadable.
+      acceptedReader(scope.worldId, foundation)(row)
+      const config = JSON.parse(row.config_canonical) as Record<string, unknown>
+      return {
+        governing: { version: row.version, schemaVersion: row.schema_version, configHash: row.config_hash, config },
+        world: {
+          id: scope.worldId,
+          provisioned: true,
+          created: false,
+          foundedAt: bound.created_at.toISOString(),
+          sequence,
+          definition: { foundingConfigVersion: foundingVersion, governingConfigVersion: row.version, layoutKey: foundation.layout.key, geometryFingerprint: foundation.layout.geometryFingerprint },
+          state,
+        },
+      }
+    })
+  }
+
   return {
+    read: readWorld,
     async open(launch, confirmActive) {
       for (let attempt = 1; ; attempt++) {
         const notes: [string, LogFields][] = []
@@ -384,6 +454,20 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
         }
       }
     },
+  }
+}
+
+/** Reads accepted versions again, once each: still a valid city on the world's geometry, or the world is unreadable. */
+function acceptedReader(worldId: string, foundation: WorldFoundation): (row: VersionRow) => AcceptedJudgement {
+  const read = new Map<number, AcceptedJudgement>()
+  return (row) => {
+    let j = read.get(row.version)
+    if (!j) {
+      const again = judgeWorldConfig(JSON.parse(row.config_canonical), worldId, null)
+      if (row.verdict !== 'accepted' || again.verdict !== 'accepted' || !sameGeometry(again.foundation, foundation)) throw unavailable(`world ${worldId} holds an accepted configuration this build no longer reads as the same city`)
+      read.set(row.version, (j = again))
+    }
+    return j
   }
 }
 

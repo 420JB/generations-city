@@ -16,14 +16,29 @@ import { parseWorldCityState, type WorldCityState } from '../world/cityState'
  * Rare City's service credential, then loads the configuration version the run was pinned
  * to and checks it against the run before anything is drawn.
  *
- * Redemption is single use (Play `run_already_redeemed`), so a launch link opens the city
- * once; reloading means launching again from Proofy Play. The run token is never a session:
- * everything the page needs comes back in this one answer, and there is no other read.
+ * Redemption is single use (Play `run_already_redeemed`), so a run token opens the city once
+ * and is never kept. A launch that opens the city also opens a PLAY SESSION: the server sets
+ * an HttpOnly cookie, scoped to this origin, naming the player Play's run named and the city
+ * the launch opened. With it the same browser reads the city again (a reload, a new tab)
+ * without another launch:
+ *
+ *   `GET  /v1/play/city`    the session's player, city, sequence, state and governing configuration
+ *   `POST /v1/play/logout`  `{}`: end the session
+ *
+ * Neither takes anything that names a city: the session alone says which one. A session ends
+ * when Play's run does (or sooner, see the server's PLAY_SESSION_MAX_MS), on logout, on a newer
+ * launch in the same browser, and when Play says the installation is no longer active. It is
+ * never extended: launching again from Proofy Play is how a player is re-authorized, and that
+ * is when Proofy Core checks their Discord membership and Play entitlement again.
  *
  * The city is PERSISTENT: one world per installation, founded by the installation's first
  * launch and returned by every launch after it, whatever configuration version it runs.
  */
 export const PLAY_SESSION_ENDPOINT = '/v1/play/session'
+/** The session's city, read again. GET, no body, no parameters. */
+export const PLAY_CITY_ENDPOINT = '/v1/play/city'
+/** End the session. POST `{}`. */
+export const PLAY_LOGOUT_ENDPOINT = '/v1/play/logout'
 
 /** URL fragment parameter that carries the run token. */
 export const RUN_TOKEN_FRAGMENT_PARAM = 'runToken'
@@ -36,28 +51,73 @@ export interface PlaySessionRequest {
 /** A JWS compact token, bounded. Play's run tokens are a few hundred characters. */
 export const RUN_TOKEN_PATTERN = /^[A-Za-z0-9_-]{8,1024}\.[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{8,1024}$/
 
-export interface PlaySessionResponse {
-  /** Where the city's configuration came from, as Play reported it and Rare City checked it. */
-  play: {
-    environment: 'dev' | 'test' | 'staging' | 'live'
-    gameKey: string
-    installationId: string
-    discordGuildId: string
-    runId: string
-    runExpiresAt: string
-    configVersion: number
-    configHash: string
-    schemaVersion: number
+/** Where the city's configuration came from, as Play reported it and Rare City checked it. */
+export interface PlayCitySource {
+  environment: 'dev' | 'test' | 'staging' | 'live'
+  gameKey: string
+  installationId: string
+  discordGuildId: string
+  /** On a launch, the version the run is pinned to. On a session read, the version that governs the city. */
+  configVersion: number
+  configHash: string
+  schemaVersion: number
+}
+
+/**
+ * Something about the viewer, and how it is known. `verified` says who established it and when:
+ * `launch` means at the launch that opened this session (Proofy Core signed it into the context
+ * the run was started from, at most a few minutes before), `live` means asked of Play for this
+ * answer. `unknown` is never a no: it is a question no authority answered.
+ */
+export type PlayFact<T> =
+  | { status: 'verified'; value: T; source: 'proofy-core' | 'proofy-play'; basis: 'launch' | 'live'; at: string }
+  | {
+      status: 'unknown'
+      /** `not-in-contract`: no authority tells Rare City this. `authority-unavailable`: the authority did not answer in time. `not-checked`: Rare City does not ask yet. */
+      reason: 'not-in-contract' | 'authority-unavailable' | 'not-checked'
+    }
+
+/** The player a play session belongs to, as Proofy established them, and what they may do. */
+export interface PlayViewer {
+  authenticated: true
+  /** From Play's redeemed run. The Discord user id is the canonical Proofy player identity; the Core user id is opaque. */
+  player: { discordUserId: string; coreUserId: string; displayName: string }
+  /** The session never extends: past `expiresAt`, launch again from Proofy Play. */
+  session: { expiresAt: string; renewal: 'relaunch' }
+  status: {
+    /** Proofy Core checked live Discord membership before it signed the launch context. */
+    guildMember: PlayFact<true>
+    /** Core said the server is entitled to Play, and Play refuses a launch otherwise. */
+    playEntitled: PlayFact<true>
+    /** Whether Play has the installation active. */
+    installationActive: PlayFact<true>
+    /** Core tells Play, but Play's run does not tell the game. */
+    brandAdmin: PlayFact<boolean>
+    /** Whether the player meets the city's Proofy verification rules. Not asked yet. */
+    districtRules: PlayFact<Record<string, boolean>>
   }
-  /** The player Play launched. Presentation only. */
-  player: { displayName: string }
+  /** What the session allows. Only viewing is open. */
+  permissions: { viewCity: true; claim: false; build: false }
+}
+
+/** `GET /v1/play/city`: the session's city, as stored, with the configuration that governs it. */
+export interface PlayCityResponse {
+  play: PlayCitySource
+  viewer: PlayViewer
   /** The installation's persistent city, as stored. */
   world: PlayWorld
   /**
-   * The configuration document of the pinned version, exactly as Play served it (hash-checked)
-   * and as the world accepted it: its presentation is drawn, on the world's fixed geometry.
+   * The configuration document the city is drawn with, exactly as the world accepted it: on a
+   * launch the pinned version (hash-checked against Play), on a session read the governing one.
    */
   config: unknown
+}
+
+/** `POST /v1/play/session`: the city a launch opened, and the session it opened for this browser. */
+export interface PlaySessionResponse extends PlayCityResponse {
+  play: PlayCitySource & { runId: string; runExpiresAt: string }
+  /** The player Play launched. Presentation only (the same as `viewer.player.displayName`). */
+  player: { displayName: string }
 }
 
 /** The persistent city of an installation (a `worlds` row and its city, migration 0005). */
@@ -108,6 +168,10 @@ export type PlayErrorCode =
   | 'world_unavailable'
   /** Proofy Play could not be reached, or answered outside its contract. */
   | 'play_unavailable'
+  /** No live play session: none was opened in this browser, or it expired, was revoked, or ended. Launch from Proofy Play. */
+  | 'play_session_required'
+  /** The session could not be read or written just now. */
+  | 'play_session_unavailable'
 
 export interface PlayErrorBody {
   error: PlayErrorCode
@@ -125,34 +189,72 @@ const ENVIRONMENTS = ['dev', 'test', 'staging', 'live'] as const
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const posInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1
 
-/** The response body, or null if it is not one. The configuration itself is validated separately. */
-export function parsePlaySessionResponse(body: unknown): PlaySessionResponse | null {
-  if (!isRecord(body) || !isRecord(body.play) || !isRecord(body.player) || !isRecord(body.world) || !isRecord(body.config)) return null
-  const { play, player, world } = body
-  if (!(ENVIRONMENTS as readonly unknown[]).includes(play.environment)) return null
+const CORE_ID = /^[A-Za-z0-9_-]{1,64}$/
+const FACT_SOURCES = ['proofy-core', 'proofy-play'] as const
+const FACT_BASES = ['launch', 'live'] as const
+const UNKNOWN_REASONS = ['not-in-contract', 'authority-unavailable', 'not-checked'] as const
+const isIn = <T extends string>(list: readonly T[], v: unknown): v is T => (list as readonly unknown[]).includes(v)
+
+function parseSource(play: Record<string, unknown>): PlayCitySource | null {
+  if (!isIn(ENVIRONMENTS, play.environment)) return null
   if (typeof play.gameKey !== 'string' || typeof play.installationId !== 'string' || !UUID.test(play.installationId)) return null
   if (typeof play.discordGuildId !== 'string' || !GUILD.test(play.discordGuildId)) return null
-  if (typeof play.runId !== 'string' || !UUID.test(play.runId) || typeof play.runExpiresAt !== 'string') return null
   if (!posInt(play.configVersion) || !posInt(play.schemaVersion) || typeof play.configHash !== 'string' || !HASH.test(play.configHash)) return null
-  if (typeof player.displayName !== 'string') return null
-  const parsedWorld = parsePlayWorld(world)
-  if (!parsedWorld) return null
+  return { environment: play.environment, gameKey: play.gameKey, installationId: play.installationId, discordGuildId: play.discordGuildId, configVersion: play.configVersion, configHash: play.configHash, schemaVersion: play.schemaVersion }
+}
+
+function parseFact<T>(v: unknown, value: (x: unknown) => x is T): PlayFact<T> | null {
+  if (!isRecord(v)) return null
+  if (v.status === 'unknown') return isIn(UNKNOWN_REASONS, v.reason) ? { status: 'unknown', reason: v.reason } : null
+  if (v.status !== 'verified' || !value(v.value) || !isIn(FACT_SOURCES, v.source) || !isIn(FACT_BASES, v.basis) || typeof v.at !== 'string' || Number.isNaN(Date.parse(v.at))) return null
+  return { status: 'verified', value: v.value, source: v.source, basis: v.basis, at: v.at }
+}
+
+const isTrue = (x: unknown): x is true => x === true
+const isBool = (x: unknown): x is boolean => typeof x === 'boolean'
+const isAnswers = (x: unknown): x is Record<string, boolean> => isRecord(x) && Object.values(x).every(isBool)
+
+export function parsePlayViewer(v: unknown): PlayViewer | null {
+  if (!isRecord(v) || v.authenticated !== true || !isRecord(v.player) || !isRecord(v.session) || !isRecord(v.status) || !isRecord(v.permissions)) return null
+  const { player, session, status, permissions } = v
+  if (typeof player.discordUserId !== 'string' || !GUILD.test(player.discordUserId) || typeof player.coreUserId !== 'string' || !CORE_ID.test(player.coreUserId)) return null
+  if (typeof player.displayName !== 'string' || player.displayName.length === 0) return null
+  if (typeof session.expiresAt !== 'string' || Number.isNaN(Date.parse(session.expiresAt)) || session.renewal !== 'relaunch') return null
+  const guildMember = parseFact(status.guildMember, isTrue)
+  const playEntitled = parseFact(status.playEntitled, isTrue)
+  const installationActive = parseFact(status.installationActive, isTrue)
+  const brandAdmin = parseFact(status.brandAdmin, isBool)
+  const districtRules = parseFact(status.districtRules, isAnswers)
+  if (!guildMember || !playEntitled || !installationActive || !brandAdmin || !districtRules) return null
+  // Only viewing is open: a page that is told otherwise is talking to something else.
+  if (permissions.viewCity !== true || permissions.claim !== false || permissions.build !== false) return null
   return {
-    play: {
-      environment: play.environment as PlaySessionResponse['play']['environment'],
-      gameKey: play.gameKey,
-      installationId: play.installationId,
-      discordGuildId: play.discordGuildId,
-      runId: play.runId,
-      runExpiresAt: play.runExpiresAt,
-      configVersion: play.configVersion,
-      configHash: play.configHash,
-      schemaVersion: play.schemaVersion,
-    },
-    player: { displayName: player.displayName },
-    world: parsedWorld,
-    config: body.config,
+    authenticated: true,
+    player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
+    session: { expiresAt: session.expiresAt, renewal: 'relaunch' },
+    status: { guildMember, playEntitled, installationActive, brandAdmin, districtRules },
+    permissions: { viewCity: true, claim: false, build: false },
   }
+}
+
+/** `GET /v1/play/city`'s body, or null if it is not one. The configuration itself is validated separately. */
+export function parsePlayCityResponse(body: unknown): PlayCityResponse | null {
+  if (!isRecord(body) || !isRecord(body.play) || !isRecord(body.world) || !isRecord(body.config)) return null
+  const play = parseSource(body.play)
+  const viewer = parsePlayViewer(body.viewer)
+  const world = parsePlayWorld(body.world)
+  if (!play || !viewer || !world) return null
+  return { play, viewer, world, config: body.config }
+}
+
+/** `POST /v1/play/session`'s body, or null if it is not one. The configuration itself is validated separately. */
+export function parsePlaySessionResponse(body: unknown): PlaySessionResponse | null {
+  const city = parsePlayCityResponse(body)
+  if (!city || !isRecord(body) || !isRecord(body.play) || !isRecord(body.player)) return null
+  const { runId, runExpiresAt } = body.play
+  if (typeof runId !== 'string' || !UUID.test(runId) || typeof runExpiresAt !== 'string') return null
+  if (typeof body.player.displayName !== 'string') return null
+  return { ...city, play: { ...city.play, runId, runExpiresAt }, player: { displayName: body.player.displayName } }
 }
 
 function parsePlayWorld(world: Record<string, unknown>): PlayWorld | null {

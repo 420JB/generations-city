@@ -15,6 +15,7 @@ import { createGenerationsOwnershipProvider } from './ownership/generations'
 import { createFriendsReader } from './ownership/reader'
 import { createPlayClient } from './play/client'
 import { createPlayLaunchService } from './play/launch'
+import { createPlaySessionService, createPlaySessionStore } from './play/session'
 import { loadStaticSite } from './static'
 import { createWorldStore } from './world/store'
 
@@ -40,6 +41,9 @@ async function main() {
   // Ownership is read from the chain. The fixture is a labelled stand-in that config only allows in local mode.
   const ownership =
     config.ownership === 'fixture' ? createFixtureOwnershipProvider() : createGenerationsOwnershipProvider({ transport: http(config.rpcUrl, { timeout: RPC_TIMEOUT_MS, retryCount: 1, retryDelay: 250 }) })
+  // Config refuses Play without a database: every launch opens the installation's persistent city, and a play session to read it again.
+  const play = config.play && db ? createPlayClient({ baseUrl: config.play.apiUrl, credential: config.play.credential }) : null
+  const worlds = config.play && db ? createWorldStore(db, { mode: config.mode, log }) : null
   const server = createServer(
     createApp({
       config,
@@ -52,15 +56,10 @@ async function main() {
       // Built whenever there is a database, and inert unless ACTIVATION_ENABLED=true: the routes and the service both refuse first.
       activation: db ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
       properties: db ? createPropertyReader(db) : null,
-      // Config refuses Play without a database: every launch opens the installation's persistent city.
-      playLaunch:
-        config.play && db
-          ? createPlayLaunchService({
-              play: createPlayClient({ baseUrl: config.play.apiUrl, credential: config.play.credential }),
-              environment: config.play.environment,
-              gameKey: config.play.gameKey,
-              worlds: createWorldStore(db, { mode: config.mode, log }),
-            })
+      playLaunch: config.play && play && worlds ? createPlayLaunchService({ play, environment: config.play.environment, gameKey: config.play.gameKey, worlds }) : null,
+      playSessions:
+        config.play && play && worlds && db
+          ? createPlaySessionService({ store: createPlaySessionStore(db), worlds, play, environment: config.play.environment, gameKey: config.play.gameKey, log })
           : null,
       site,
     }),
