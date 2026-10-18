@@ -11,14 +11,15 @@
  *   plots       plot ids, world-scoped plot keys, occupancy validation, availability, plot choice
  *   property    world-scoped property and building identity (V1 legacy, V2 brand worlds)
  *   rareCity    the legacy Rare Friends city as the first compatibility fixture
- *   cityState   the stored state of a world's city (version 1: founded empty, nothing else)
+ *   cityState   the stored state of a world's city (version 1: founded empty; version 2: with properties)
+ *   gameplay    pure property activation on an exact plot: discover, validate, propose, replay
  *
  * What does not, on purpose:
- *   - No live route, service or database write uses this yet. The legacy engine in
- *     `src/game` remains the authority for the Rare Friends city.
- *   - No state model for populated worlds. `WorldCityState` version 1 is an empty city and
- *     nothing more; `WorldOccupancy` is the read boundary an adapter fills, and a state that
- *     holds buildings waits on claims, layout, gameplay and economy decisions.
+ *   - No live route writes through this yet. The server's world property store (migration
+ *     0007) persists `gameplay` proposals for internal test harnesses only. The legacy engine
+ *     in `src/game` remains the authority for the Rare Friends city.
+ *   - A populated world (`WorldCityState` version 2) records properties and wards only: no
+ *     progress, ownership, economy or time, which wait on their own product decisions.
  *   - No allocator: nothing here assigns an NFT to a district or chooses a plot for anyone.
  *   - No district count, layout topology, or district/collection assignment rule.
  *   - No persistence: geometry fingerprints and property ids are computed, never stored, here.
@@ -26,6 +27,7 @@
 export * from './asset'
 export * from './cityState'
 export * from './definition'
+export * from './gameplay'
 export * from './identity'
 export * from './layout'
 export * from './plots'

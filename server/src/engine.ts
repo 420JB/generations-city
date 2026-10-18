@@ -66,7 +66,24 @@ export {
   type PlaySessionResponse,
   type PlayViewer,
   type PlayWorld,
+  type PlayWorldDistrict,
+  projectWorldDistricts,
 } from '../../src/protocol/play'
 // Persistent brand cities: how a world's configuration may change, and the state its city is stored with.
 export { establishedCollections, foundationOf, governingProblems, judgeWorldConfig, parseWorldFoundation, sameFoundation, WORLD_CONFIG_JUDGE, type FoundationCollection, type WorldConfigJudgement, type WorldFoundation } from '../../src/brand/core/evolution'
-export { emptyWorldCityState, parseWorldCityState, WORLD_CITY_STATE_VERSION, type WorldCityState } from '../../src/world/cityState'
+export { emptyWorldCityState, parseWorldCityState, POPULATED_WORLD_CITY_STATE_VERSION, WORLD_CITY_STATE_VERSION, worldBuildingId, worldCityStateText, type WorldBuildingRecord, type WorldCityState } from '../../src/world/cityState'
+// Persistent city gameplay, pure: discover plots, validate and propose a property activation on an exact plot, replay a city.
+export {
+  PROPERTY_ACTIVATED_EVENT,
+  proposePropertyActivation,
+  replayPropertyActivations,
+  worldCityProblems,
+  type PropertyActivatedEvent,
+  type PropertyActivationRefusal,
+  type PropertyActivationRequest,
+  type PropertyTransition,
+  type RecordedActivation,
+} from '../../src/world/gameplay'
+export { assetKey, nftAsset, parseAssetKey, type NftAsset } from '../../src/world/asset'
+export { worldProperty, type WorldProperty } from '../../src/world/property'
+export type { World } from '../../src/world/definition'

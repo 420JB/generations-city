@@ -71,11 +71,12 @@ describe.skipIf(NO_TEST_DATABASE)('play sessions against a disposable Postgres',
       const rows = await before0006()
       const applied = (await t.db.query('SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version')).rows
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [6], current: 6 })
+      const through6 = await migrationsThrough(6)
+      expect(await migrate(t.db, { dir: through6, environment: 'local' })).toEqual({ applied: [6], current: 6 })
       expect(await before0006()).toEqual(rows)
       expect((await t.db.query('SELECT version, checksum, applied_at FROM schema_migrations WHERE version <= 5 ORDER BY version')).rows).toEqual(applied)
       expect(await count('play_sessions')).toBe(0)
-      expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([])
+      expect((await migrate(t.db, { dir: through6, environment: 'local' })).applied).toEqual([])
     })
 
     it('pins its guard to its own schema', async () => {

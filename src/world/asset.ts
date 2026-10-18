@@ -47,3 +47,14 @@ export function sameAsset(a: NftAsset, b: NftAsset): boolean {
 export function contractRefOf(asset: Pick<NftAsset, 'chain' | 'standard' | 'contract'>): string {
   return `${asset.chain}/${asset.standard}:${asset.contract}`
 }
+
+const ASSET_KEY = /^(eip155:[1-9][0-9]{0,15})\/(erc721):(0x[0-9a-f]{40})\/(0|[1-9][0-9]{0,77})$/
+
+/** The asset a CAIP-19 key (as `assetKey` spells it) names, or null. Only the canonical spelling parses. */
+export function parseAssetKey(input: unknown): NftAsset | null {
+  if (typeof input !== 'string') return null
+  const match = ASSET_KEY.exec(input)
+  if (!match) return null
+  const asset = nftAsset({ chain: match[1], standard: match[2], contract: match[3], tokenId: match[4] })
+  return asset && assetKey(asset) === input ? asset : null
+}

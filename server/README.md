@@ -59,6 +59,7 @@ server/
     genesis-cli.ts     `npm run city:genesis -- <command>`
     verify-cli.ts      `npm run city:verify`
     world/store.ts     persistent brand cities: founding, configuration versions, adoption, loading
+    world/properties.ts  INTERNAL ONLY: authoritative world property activation (migration 0007); no route uses it
     world/verify.ts    the world half of `city:verify`
     world/ids.ts       UUIDv7 world ids
     db/pool.ts         pg pool
@@ -731,16 +732,23 @@ It is world-aware (migration 0005). A persistent brand city's city row and event
 its world, not to the Rare Friends city, and each world is checked on its own: exactly one
 Play binding, for a Play environment this database serves; a city `world:<id>` of the kind
 0005 founds a world on here (canonical in production, a rehearsal elsewhere) holding no Rare
-Friends records; a state this build reads (version 1, empty) at sequence 1; one
+Friends records; a state this build writes (version 1, empty, at sequence 1; version 2, with
+properties, after it); one
 `city.initialized` event whose founding record agrees with the binding and with the city row
-(origin, canonical, rehearsal flag, state version), the database's environment stamp and the
+(origin, canonical, rehearsal flag), the founding state version, the database's environment stamp and the
 founding copy (version, hash, schema version); every configuration copy stored as Play's
 canonical text of itself and hashing to its hash; every accepted copy a valid city on the
 founding geometry that keeps the founding collections; every rejected copy judged by this
 build's rules (`judged_by` = `rare-city/play-config-v1+world-evolution-v2`) carrying the
 verdict they give it; adoptions numbered from 1, adoption 1 the
 founding version, never re-adopting the version that governs, and each keeping every
-collection the adoptions before it established. Across worlds, no
+collection the adoptions before it established. From migration 0007, every later event is
+`world.property.activated` and every later sequence has exactly one `world_properties` row that
+is exactly a building of the state: the V2 property id of its NFT in this world, from a collection
+of the version that governed the world when it was activated, on a district with the founding
+geometry. The verifier then REPLAYS every activation, in order, through the engine's own
+proposal from the empty founded city, and requires each to be valid, each event to record what
+the engine made, and the result to be the stored state byte for byte. Across worlds, no
 installation, Discord server or city belongs to two. A city row that is neither `main` nor a
 world's is reported. A database before 0005 is verified exactly as before.
 

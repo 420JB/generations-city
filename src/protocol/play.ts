@@ -1,4 +1,6 @@
 import { parseWorldCityState, type WorldCityState } from '../world/cityState'
+import type { World } from '../world/definition'
+import { plotCandidatesOf } from '../world/gameplay'
 
 /**
  * Wire contract for opening a brand city from a Proofy Play launch. Used by the server and
@@ -35,7 +37,10 @@ import { parseWorldCityState, type WorldCityState } from '../world/cityState'
  * is when Proofy Core checks their Discord membership and Play entitlement again.
  *
  * The city is PERSISTENT: one world per installation, founded by the installation's first
- * launch and returned by every launch after it, whatever configuration version it runs.
+ * launch and returned by every launch after it, whatever configuration version it runs. Both
+ * answers carry the city as stored (its sequence, state and properties) and a read-only projection
+ * of its districts: open wards and the plots a joining NFT could choose. Nothing here claims,
+ * reserves or builds anything; no route does yet.
  */
 export const PLAY_SESSION_ENDPOINT = '/v1/play/session'
 /** The session's city, read again. GET, no body, no parameters. */
@@ -139,8 +144,50 @@ export interface PlayWorld {
   sequence: number
   /** What the city was founded on and which accepted configuration version governs it now. */
   definition: { foundingConfigVersion: number; governingConfigVersion: number; layoutKey: string; geometryFingerprint: string }
-  /** The stored state. Version 1 is an empty city: nothing has been claimed or built. */
+  /**
+   * The stored state. Version 1 is the city as founded, empty; version 2 holds its properties, each
+   * on its exact plot, and the wards they opened. Nothing in it is simulated.
+   */
   state: WorldCityState
+  /**
+   * Every district, in configuration order, as the engine reads the stored state on the city's own
+   * geometry: its wedge, its open wards and the plots a joining NFT could choose now. READ ONLY:
+   * nothing is reserved or claimable through this, and the page computes the same answer itself.
+   */
+  districts: PlayWorldDistrict[]
+}
+
+/** One district of a persistent city, projected from the stored state. */
+export interface PlayWorldDistrict {
+  key: string
+  /** The engine's district geometry fingerprint (fixed when the city was founded). */
+  geometryFingerprint: string
+  centerDeg: number
+  spanDeg: number
+  openWards: number
+  /** Each open ward: its plots, and how many hold a building. */
+  wards: { ward: number; capacity: number; occupied: number }[]
+  /**
+   * The exact plots a joining NFT could choose: every free plot of the open wards or, when all are
+   * full, every plot of the next ward (`newWard`). Empty when the layout allows no more.
+   */
+  candidates: { plotIds: string[]; newWard: boolean }
+}
+
+/** The district projection of a stored state on a compiled world. Throws on a state impossible for the world. */
+export function projectWorldDistricts(world: World, state: WorldCityState): PlayWorldDistrict[] {
+  return plotCandidatesOf(world, state).map((d) => {
+    const district = world.districts.find((x) => x.key === d.districtKey)!
+    return {
+      key: d.districtKey,
+      geometryFingerprint: district.geometryFingerprint,
+      centerDeg: district.centerDeg,
+      spanDeg: district.spanDeg,
+      openWards: d.openWards,
+      wards: d.wards,
+      candidates: { plotIds: d.candidates.map((c) => c.plotId), newWard: d.candidates.some((c) => c.newWard) },
+    }
+  })
 }
 
 /** Error bodies are `{ "error": <code> }`, plus `problems` for `config_invalid`. */
@@ -281,7 +328,8 @@ function parsePlayWorld(world: Record<string, unknown>): PlayWorld | null {
   if (typeof world.foundedAt !== 'string' || Number.isNaN(Date.parse(world.foundedAt)) || !posInt(world.sequence)) return null
   if (!isRecord(d) || !posInt(d.foundingConfigVersion) || !posInt(d.governingConfigVersion) || typeof d.layoutKey !== 'string' || !KEY.test(d.layoutKey) || typeof d.geometryFingerprint !== 'string' || !HASH.test(d.geometryFingerprint)) return null
   const state = parseWorldCityState(world.state)
-  if (!state) return null
+  const districts = parseDistricts(world.districts)
+  if (!state || !districts) return null
   return {
     id: world.id,
     provisioned: true,
@@ -290,7 +338,31 @@ function parsePlayWorld(world: Record<string, unknown>): PlayWorld | null {
     sequence: world.sequence,
     definition: { foundingConfigVersion: d.foundingConfigVersion, governingConfigVersion: d.governingConfigVersion, layoutKey: d.layoutKey, geometryFingerprint: d.geometryFingerprint },
     state,
+    districts,
   }
+}
+
+const PLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-w(?:0|[1-9][0-9]{0,5})-p(?:0|[1-9][0-9]{0,5})$/
+const nonNegInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/** Shape only: the page checks the values against its own engine. */
+function parseDistricts(value: unknown): PlayWorldDistrict[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64) return null
+  const out: PlayWorldDistrict[] = []
+  for (const d of value) {
+    if (!isRecord(d) || typeof d.key !== 'string' || !KEY.test(d.key) || typeof d.geometryFingerprint !== 'string' || !HASH.test(d.geometryFingerprint)) return null
+    if (!finite(d.centerDeg) || !finite(d.spanDeg) || !posInt(d.openWards) || !Array.isArray(d.wards) || !isRecord(d.candidates)) return null
+    const wards: PlayWorldDistrict['wards'] = []
+    for (const w of d.wards) {
+      if (!isRecord(w) || !nonNegInt(w.ward) || !nonNegInt(w.capacity) || !nonNegInt(w.occupied)) return null
+      wards.push({ ward: w.ward, capacity: w.capacity, occupied: w.occupied })
+    }
+    const { plotIds, newWard } = d.candidates
+    if (!Array.isArray(plotIds) || plotIds.length > 100_000 || !plotIds.every((p) => typeof p === 'string' && PLOT_ID.test(p)) || typeof newWard !== 'boolean') return null
+    out.push({ key: d.key, geometryFingerprint: d.geometryFingerprint, centerDeg: d.centerDeg, spanDeg: d.spanDeg, openWards: d.openWards, wards, candidates: { plotIds: [...(plotIds as string[])], newWard } })
+  }
+  return out
 }
 
 /** The run token in a launch URL fragment (`#runToken=…`), or null. */

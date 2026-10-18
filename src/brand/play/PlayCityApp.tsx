@@ -10,6 +10,7 @@ import {
   PLAY_CITY_ENDPOINT,
   PLAY_LOGOUT_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
+  projectWorldDistricts,
   runTokenFromFragment,
   type PlayCityResponse,
   type PlayErrorCode,
@@ -112,6 +113,8 @@ function draw(source: Source, city: PlayCityResponse): Phase {
   if (!parsed.ok) return { kind: 'refused', code: 'config_invalid', problems: parsed.problems }
   const loaded = loadPersistedBrandCity(parsed.config, city.world.state, city.world.definition.geometryFingerprint)
   if (!loaded.ok) return { kind: 'refused', code: 'config_invalid', problems: loaded.problems }
+  // The server's read-only projection of districts, wards and plot candidates must be exactly what this page's engine computes.
+  if (JSON.stringify(projectWorldDistricts(loaded.city.world, city.world.state)) !== JSON.stringify(city.world.districts)) return { kind: 'refused', code: 'unreadable', problems: [{ path: 'world.districts', detail: 'the city’s districts and plots do not match its stored state' }] }
   return { kind: 'ready', source, city, loaded: loaded.city }
 }
 
@@ -294,6 +297,7 @@ function PlayCity({ source, city: response, loaded: city, onSignOut }: { source:
       data-world-sequence={world.sequence}
       data-governing-version={world.definition.governingConfigVersion}
       data-buildings={buildings}
+      data-candidates={world.districts.reduce((n, d) => n + d.candidates.plotIds.length, 0)}
       data-player={player.discordUserId}
       data-session-ref={viewer.session.ref}
       data-installation-status={viewer.status.installationActive.status}
@@ -306,7 +310,7 @@ function PlayCity({ source, city: response, loaded: city, onSignOut }: { source:
             <span className="preview-flag play-flag">PROOFY PLAY · {play.environment.toUpperCase()}</span>
             <span className="preview-note" data-testid="play-world-note">
               {world.created ? 'This server’s city was just founded. ' : 'This server’s city. '}
-              {buildings === 0 ? 'Nothing has been claimed or built yet.' : `${buildings} buildings.`} Claims are not open; the simulated viewers only preview district rules.
+              {buildings === 0 ? 'Nothing has been claimed or built yet.' : `${buildings} ${buildings === 1 ? 'property' : 'properties'}, nothing built yet.`} Claims are not open; the simulated viewers only preview district rules.
             </span>
             <span className="play-facts small" data-testid="play-facts">
               city <code data-testid="play-world" title={world.id}>{world.id.slice(0, 8)}</code> · server <code data-testid="play-guild">{play.discordGuildId}</code> · config{' '}

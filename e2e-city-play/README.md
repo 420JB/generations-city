@@ -136,6 +136,29 @@ Required before any player mutation (claim, build, economy):
   checks it against that secret before opening a session. Rare City cannot invent this on its own,
   because nothing the trusted issuer signs would vouch for it.
 
+**Persistent gameplay foundation (P1-C2-B2A): built, NOT reachable.** A world's city can now
+hold properties (migration 0007, `world_properties`; city state version 2), each one NFT on the
+exact plot a player chose, written by `server/src/world/properties.ts` in one transaction with
+the city's next sequence and its `world.property.activated` event. Every city answer carries the
+stored properties and a read-only projection of each district (open wards, plot candidates), and
+`city:verify` replays every activation through the engine. But:
+
+- no route, CLI or development endpoint can activate a property; only test harnesses call the
+  property store (`server/tests/worldProperties.db.test.ts`, `persistent.spec.ts` here), and a
+  test pins that nothing else in `server/src` reaches it;
+- the store refuses unless it is configured `local` AND the database is stamped `local`, and the
+  database itself refuses a world property anywhere else (`world_properties_guard`), so no staging
+  or production world city can advance at all;
+- the composition a future route must use, `createPropertyActivationService`, calls
+  `requireActor` first, and the database refuses a property whose play session is not live and of
+  its world;
+- nothing checks that the player holds the NFT or meets a district's Proofy rule, no player
+  identity is stored on a property, and there is no district ticket, allocator, points or
+  building progress.
+
+Lifting the hold is a new migration replacing `world_properties_guard`, after F5, F7, F3 and a
+fresh Core NFT/role/verification eligibility contract exist.
+
 Needs a verified Proofy Core / Play contract:
 
 - **F3. Game status.** Play's installation answer does not include the game's status. While

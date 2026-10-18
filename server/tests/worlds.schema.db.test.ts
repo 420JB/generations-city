@@ -495,7 +495,8 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
     })
 
     it('1 -> 2 -> 1: a city advances once and never goes back, and a city that has advanced is not a world', async () => {
-      await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })
+      // 0005's rules alone: from 0007 on, a world's city advances only by activating a property (worldProperties.db.test.ts).
+      await migrate(t.db, { dir: await migrationsThrough(6), environment: 'staging' })
       const city = await addCity(t.db, 'staging')
       // The legitimate first change of a city: sequence 1 to 2.
       await t.db.query('UPDATE city SET sequence = 2 WHERE id = $1', [city.cityId])
@@ -516,7 +517,7 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
           await insertWorld(client, randomUUID(), fresh.cityId, fresh.instance)
         }),
       ).rejects.toThrow('a world is founded on a newly installed city')
-      // A world's city makes its first change like any other city.
+      // Under 0005 a world's city makes its first change like any other city.
       const world = await addWorld('staging')
       await t.db.query('UPDATE city SET sequence = 2 WHERE id = $1', [world.cityId])
       await t.db.query(`INSERT INTO city_events (city_id, sequence, type) VALUES ($1, 2, 'world.test')`, [world.cityId])

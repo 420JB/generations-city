@@ -26,6 +26,7 @@ const BODY = {
     sequence: 1,
     definition: { foundingConfigVersion: 1, governingConfigVersion: 2, layoutKey: 'standard-radial-even', geometryFingerprint: 'a'.repeat(64) },
     state: { version: 1, buildings: {}, openWards: {} },
+    districts: [{ key: 'north', geometryFingerprint: 'b'.repeat(64), centerDeg: -135, spanDeg: 120, openWards: 1, wards: [{ ward: 0, capacity: 2, occupied: 0 }], candidates: { plotIds: ['north-w0-p0', 'north-w0-p1'], newWard: false } }],
   },
   config: { cityName: 'X' },
 }

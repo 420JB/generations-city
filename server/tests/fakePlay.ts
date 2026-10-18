@@ -1,4 +1,4 @@
-import { emptyWorldCityState, judgeWorldConfig } from '../src/engine'
+import { emptyWorldCityState, judgeWorldConfig, projectWorldDistricts } from '../src/engine'
 import { canonicalHash } from '../src/play/canonical'
 import { PlayApiError, type PlayConfigVersion, type PlayGameReader, type PlayInstallation, type PlayRun } from '../src/play/client'
 import { uuidv7 } from '../src/world/ids'
@@ -182,6 +182,7 @@ export function memoryWorlds() {
           sequence: 1,
           definition: { foundingConfigVersion: 1, governingConfigVersion: launch.pinned.version, layoutKey: judged.foundation.layout.key, geometryFingerprint: judged.foundation.layout.geometryFingerprint },
           state: emptyWorldCityState(),
+          districts: projectWorldDistricts(judged.world, emptyWorldCityState()),
         },
       }
       byWorld.set(id, { launch: structuredClone(launch), world: result.world })
