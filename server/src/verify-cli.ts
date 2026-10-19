@@ -35,7 +35,7 @@ async function main(): Promise<number> {
     const report = await verifyCity(db)
     const summary = { mode: config.mode, worlds: report.worlds.length, ...(report.city ? { city: report.city.id, instance: report.city.instance, sequence: report.city.sequence, stateVersion: report.city.stateVersion, cityMode: report.city.mode ?? 'unknown', canonical: report.city.canonical, origin: report.city.origin, activationRehearsal: report.city.activationRehearsal } : {}), ...report.counts }
     for (const w of report.worlds)
-      log.info('world', { world: w.id, city: w.city, sequence: w.sequence, ...(w.play ? { playEnvironment: w.play.environment, gameKey: w.play.gameKey, installation: w.play.installationId, guild: w.play.discordGuildId } : {}), foundingConfigVersion: w.foundingConfigVersion, governingConfigVersion: w.governingConfigVersion, acceptedVersions: w.configVersions.accepted, rejectedVersions: w.configVersions.rejected, properties: w.properties })
+      log.info('world', { world: w.id, city: w.city, sequence: w.sequence, ...(w.play ? { playEnvironment: w.play.environment, gameKey: w.play.gameKey, installation: w.play.installationId, guild: w.play.discordGuildId } : {}), foundingConfigVersion: w.foundingConfigVersion, governingConfigVersion: w.governingConfigVersion, acceptedVersions: w.configVersions.accepted, rejectedVersions: w.configVersions.rejected, properties: w.properties, propertiesWithoutActivator: w.propertiesWithoutActivator, geometryFrozenAt: w.geometryFrozenAt })
     if (report.ok) {
       log.info('city verified', summary)
       return 0

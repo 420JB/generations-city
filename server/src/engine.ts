@@ -80,7 +80,24 @@ export {
   type RehearsalRouteErrorCode,
 } from '../../src/protocol/playRehearsal'
 // Persistent brand cities: how a world's configuration may change, and the state its city is stored with.
-export { establishedCollections, foundationOf, governingProblems, judgeWorldConfig, parseWorldFoundation, sameFoundation, WORLD_CONFIG_JUDGE, type FoundationCollection, type WorldConfigJudgement, type WorldFoundation } from '../../src/brand/core/evolution'
+export {
+  establishedCollections,
+  foundationOf,
+  geometryOf,
+  governingProblems,
+  judgeWorldConfig,
+  judgeWorldConfigAs,
+  parseWorldFoundation,
+  parseWorldGeometry,
+  sameFoundation,
+  sameGeometry,
+  WORLD_CONFIG_JUDGE,
+  WORLD_CONFIG_JUDGE_V2,
+  type FoundationCollection,
+  type WorldConfigJudgement,
+  type WorldFoundation,
+  type WorldGeometry,
+} from '../../src/brand/core/evolution'
 export { emptyWorldCityState, parseWorldCityState, POPULATED_WORLD_CITY_STATE_VERSION, WORLD_CITY_STATE_VERSION, worldBuildingId, worldCityStateText, type WorldBuildingRecord, type WorldCityState } from '../../src/world/cityState'
 // Persistent city gameplay, pure: discover plots, validate and propose a property activation on an exact plot, replay a city.
 export {

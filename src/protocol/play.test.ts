@@ -17,6 +17,7 @@ const BODY = {
       districtRules: { status: 'unknown', reason: 'not-checked' },
     },
     permissions: { viewCity: true, claim: false, build: false },
+    originalActivations: [] as string[],
   },
   world: {
     id: '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1b',
@@ -24,7 +25,7 @@ const BODY = {
     created: false,
     foundedAt: '2026-10-17T06:00:00.000Z',
     sequence: 1,
-    definition: { foundingConfigVersion: 1, governingConfigVersion: 2, layoutKey: 'standard-radial-even', geometryFingerprint: 'a'.repeat(64) },
+    definition: { foundingConfigVersion: 1, governingConfigVersion: 2, layoutKey: 'standard-radial-even', geometryFingerprint: 'a'.repeat(64), districtGeometry: { frozen: false } },
     state: { version: 1, buildings: {}, openWards: {} },
     districts: [{ key: 'north', geometryFingerprint: 'b'.repeat(64), centerDeg: -135, spanDeg: 120, openWards: 1, wards: [{ ward: 0, capacity: 2, occupied: 0 }], candidates: { plotIds: ['north-w0-p0', 'north-w0-p1'], newWard: false } }],
   },
@@ -50,6 +51,10 @@ describe('Play session response', () => {
     expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, id: '65f52587-14b5-8a6e-aae7-faf8ea5651ec' } })).toBeNull()
     expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, sequence: 0 } })).toBeNull()
     expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, definition: { ...BODY.world.definition, geometryFingerprint: 'x' } } })).toBeNull()
+    // Whether the district geometry is frozen, exactly: never for a city without a property, never in another shape.
+    expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, definition: { ...BODY.world.definition, districtGeometry: undefined } } })).toBeNull()
+    expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, definition: { ...BODY.world.definition, districtGeometry: { frozen: true, atSequence: 2, configVersion: 1 } } } })).toBeNull()
+    expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, definition: { ...BODY.world.definition, districtGeometry: { frozen: false, atSequence: 2 } } } })).toBeNull()
     // A stored state this page cannot read is refused, never drawn in part.
     expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, state: { version: 1, buildings: { 'b-1': {} }, openWards: {} } } })).toBeNull()
     expect(parsePlaySessionResponse({ ...BODY, world: { ...BODY.world, state: { version: 5, buildings: {}, users: {} } } })).toBeNull()
@@ -87,5 +92,10 @@ describe('Play session viewer and city read', () => {
     expect(parsePlayViewer({ ...v, session: { ...v.session, ref: 'not-a-session' } })).toBeNull()
     expect(parsePlayViewer({ ...v, player: { ...v.player, discordUserId: 'ada' } })).toBeNull()
     expect(parsePlayViewer({ ...v, authenticated: false })).toBeNull()
+    // The viewer's own original activations: property ids, nothing else, and never missing.
+    expect(parsePlayViewer({ ...v, originalActivations: ['3f1c2b9a-7d4e-4c8b-9a21-5e6f7a8b9c0d'] })?.originalActivations).toEqual(['3f1c2b9a-7d4e-4c8b-9a21-5e6f7a8b9c0d'])
+    expect(parsePlayViewer({ ...v, originalActivations: undefined })).toBeNull()
+    expect(parsePlayViewer({ ...v, originalActivations: ['ada'] })).toBeNull()
+    expect(parsePlayViewer({ ...v, originalActivations: [{ id: '3f1c2b9a-7d4e-4c8b-9a21-5e6f7a8b9c0d' }] })).toBeNull()
   })
 })

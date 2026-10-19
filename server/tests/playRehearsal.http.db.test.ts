@@ -101,6 +101,7 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     // No session reference or player in the answer: provenance stays on the server.
     expect(JSON.stringify(body)).not.toContain(ada.actor.sessionRef)
     expect(JSON.stringify(body)).not.toContain(ADA.discordUserId)
+    expect(JSON.stringify(body)).not.toContain(ADA.coreUserId)
 
     // Another player of the same server sees the same city, with exactly that building.
     const bea = await launchAs(INSTALLATION_A, BEA)
@@ -109,6 +110,10 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
       expect(c.world.sequence).toBe(2)
       expect(c.world.state.buildings).toEqual({ [body.property.buildingId]: { propertyId: body.property.id, asset: keeper(1), collection: 'harbor-keepers', districtKey: 'tidewater', ward: 0, plot: 3, sequence: 2 } })
       expect(c.world.districts.find((d) => d.key === 'tidewater')!.candidates.plotIds).not.toContain('tidewater-w0-p3')
+      // Each player is told only whether THEY originally activated it; nobody learns who did, or in which session.
+      expect(c.viewer.originalActivations).toEqual(b === ada ? [body.property.id] : [])
+      if (b === bea) for (const secret of [ada.actor.sessionRef, ADA.discordUserId, ADA.coreUserId]) expect(JSON.stringify(c)).not.toContain(secret)
+      expect(c.world.definition.districtGeometry).toEqual({ frozen: true, atSequence: 2, configVersion: 1 })
     }
     expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ sequence: 2, properties: 1 }] })
   })

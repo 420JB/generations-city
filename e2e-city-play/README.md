@@ -171,14 +171,74 @@ the city again, warps to it and shows the stored record. `serve.ts` starts the s
   live city a player's default district is assigned on authenticated, eligible city entry
   (citywide round-robin tickets, abandoned slots reused; matching collection/trait rules override
   it), and the player chooses only the exact plot. Not implemented yet.
-- Locked by the owner, NOT implemented yet (the local rehearsal keeps the checkpointed behavior):
-  district geography freezes at the first permanent property; collections can be disabled and
-  re-enabled for future claims without touching existing properties; the original verified
-  Core/Discord activator is stored permanently on each property, separately from the current owner.
+- The owner's locked world policies apply to it (next section): the first property freezes the
+  district geometry, and every property records its original activator.
 
 Lifting the hold anywhere but local is a new migration replacing `world_properties_guard`, after
-F5, F7, F3, a fresh Core NFT/role/verification eligibility contract, a separate non-owner database
-runtime role and permanent activator provenance exist.
+F5, F7, F3, a fresh Core NFT/role/verification eligibility contract and a separate non-owner database
+runtime role exist. (Permanent activator provenance now exists: migration 0008.)
+
+**Permanent world policies (P1-C2-B2C, migration 0008).** Owner-approved, locked decisions:
+
+- **A. District geometry freezes at the first successful property, not at founding (implemented).**
+  An empty city follows its governing configuration: an admin may change its district count, order
+  and wedges by publishing a new Play version, and the world keeps its id. Each accepted version is
+  recorded with the geometry it draws (`world_config_geometries`). The first successful activation
+  writes `world_geometry_freezes` in its own transaction, under the city row lock that every
+  configuration adoption also takes, so an adoption either governed that activation or comes after
+  it. From then on every property must stand on that geometry and every governing version must draw
+  it exactly (the launch refuses others with `config_incompatible`, and the database refuses such an
+  adoption). Presentation changes and new collections still govern. A refused, failed or rolled-back
+  activation freezes nothing. The founding record (`city.initialized`) is unchanged and stays the
+  founding provenance. The configuration judge is now `world-evolution-v3`: a verdict depends on
+  the document and the founding collections only; geometry is a governing rule. Verdicts recorded by
+  `world-evolution-v2` are never re-judged: a version it rejected for moving districts stays
+  rejected, and a corrected configuration is published as a new Play version. Worlds whose first
+  property predates 0008 are recorded as frozen at their founding geometry (`frozen_by =
+  'migration-0008'`), which is what 0007 enforced.
+- **C. Original activator (implemented).** Each new property records the Core user id and Discord
+  user id of the player of the activating play session (Play's redeemed run, as Proofy Core signed
+  it), read from that session's locked row in the activation's transaction and checked again by the
+  database against that row. Never browser-supplied, never changed, kept when sessions are tidied,
+  and not the NFT's current holder. The same activator repeating an activation from any later
+  session gets the same property back; anyone else, including the same Discord user under another
+  Core user, is refused and told nothing about who placed it. A viewer is told only which properties
+  they themselves activated (`viewer.originalActivations`). Properties written before 0008 have no
+  recorded activator; for them the old rule (the activating session's row, while kept) still applies.
+  Locally this identity comes from Play's dev Core issuer: it is NOT evidence that a production Core
+  identity integration works.
+- **B. Closing and re-opening a collection to new claims (NOT implemented: needs a Play contract
+  change).** See below.
+
+**Collection claim policy: the Play configuration change it needs.** Today Rare City's Play
+configuration schema version 1 (`src/brand/core/playConfig.ts`) describes a collection as exactly
+`{ key, chain, contract, displayName }` (`additionalProperties: false`), and Rare City's rules make
+collections additive: a version that leaves out a collection the world has established cannot
+govern it. So there is no way to say "keep this collection, but take no new claims from it", and
+leaving it out of the document is refused, by design (it would read as deletion). The approved
+behavior (the collection stays in the registry, existing properties stay valid and visible, closing
+and re-opening are explicit and recorded as configuration versions) needs one explicit, required
+field that Play stores and serves:
+
+1. Rare City registers **configuration schema version 2** with Play (`PUT
+   /v1/game/config-schemas/2`, Play contract 1.1.0 §4.3), identical to version 1 except that every
+   collection object also REQUIRES `"claims": { "type": "string", "enum": ["open", "closed"] }`. No
+   default: a version-2 document always states it. Play's existing immutable, numbered configuration
+   versions are the history of every close and re-open.
+2. What Play must authorize, which this repository cannot decide: that an installation's
+   configuration versions may move from schema version 1 to 2 (runs already pin `schemaVersion`);
+   that Play's admin configuration editor lets a server admin set `claims` on each collection; and
+   that Play keeps serving version-1 runs while an installation still has them. Nothing else in Play
+   changes: no new endpoint, field in the run, or Play-side meaning.
+3. Then, in Rare City (a later slice): read schema 2 (`SUPPORTED_PLAY_SCHEMA_VERSIONS`), read every
+   schema-1 document as all claims open, keep collections additive whatever `claims` says, refuse an
+   activation of an NFT whose collection the governing version marks `closed`
+   (`collection-claims-closed`, judged under the same city lock as geometry), keep every existing
+   property valid against the version it was activated under, and verify that each property's
+   collection was open in that version.
+
+Until Play authorizes that change, no client-side or Rare City-only field stands in for it, and a
+collection is never closed by removing it from a configuration.
 
 Needs a verified Proofy Core / Play contract:
 

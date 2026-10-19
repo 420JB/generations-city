@@ -13,7 +13,7 @@ import { createPlayLaunchService } from '../src/play/launch'
 import { createPlaySessionService, createPlaySessionStore, PlaySessionError, type NewPlaySession, type PlaySessionService } from '../src/play/session'
 import { createWorldStore } from '../src/world/store'
 import { addIdentity, snapshot } from './activationFixtures'
-import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
+import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema, withPre0008StandIns } from './dbHarness'
 import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
 
 /** What GET /v1/play/city does: the session behind the cookie, then its city. */
@@ -66,7 +66,7 @@ describe.skipIf(NO_TEST_DATABASE)('play sessions against a disposable Postgres',
       await addIdentity(t.db)
       const { open } = await setup({ migrated: true })
       // No sessions table yet: a launch founds the world, opening a session is what fails.
-      await expect(open(INSTALLATION_A, 'a')).rejects.toMatchObject({ code: 'play_session_unavailable' })
+      await withPre0008StandIns(t.db, () => expect(open(INSTALLATION_A, 'a')).rejects.toMatchObject({ code: 'play_session_unavailable' }))
       expect(await count('worlds')).toBe(1)
       const rows = await before0006()
       const applied = (await t.db.query('SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version')).rows

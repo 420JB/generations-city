@@ -35,14 +35,14 @@ describe('a persistent city as the renderer draws it', () => {
     expect(Object.values(state.monuments).every((m) => m.holder === null)).toBe(true)
   })
 
-  it('is drawn only on the geometry the city was founded on', () => {
+  it('is drawn only on the geometry the city is drawn on (frozen once it has a property)', () => {
     const c = config()
     const compiled = compileBrandWorld(c)
     if (!compiled.ok) throw new Error('world')
     const loaded = loadPersistedBrandCity(c, emptyWorldCityState(), compiled.world.layout.geometryFingerprint)
     expect(loaded.ok).toBe(true)
     if (loaded.ok) expect(Object.keys(loaded.city.state.buildings)).toEqual([])
-    expect(loadPersistedBrandCity(c, emptyWorldCityState(), 'f'.repeat(64))).toEqual({ ok: false, problems: [{ path: 'districts', detail: 'this configuration does not draw the districts this city was founded on' }] })
+    expect(loadPersistedBrandCity(c, emptyWorldCityState(), 'f'.repeat(64))).toEqual({ ok: false, problems: [{ path: 'districts', detail: 'this configuration does not draw this city\'s districts' }] })
   })
 })
 

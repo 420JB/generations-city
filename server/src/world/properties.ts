@@ -16,7 +16,7 @@ import {
 } from '../engine'
 import type { Logger } from '../log'
 import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play/session'
-import { lockWorldForChange, WorldRefusal } from './store'
+import { lockWorldForChange, WorldRefusal, type ActivatorIdentity } from './store'
 
 /**
  * WORLD PROPERTY ACTIVATION, AUTHORITATIVE PERSISTENCE (P1-C2-B2A). LOCAL ONLY.
@@ -37,8 +37,22 @@ import { lockWorldForChange, WorldRefusal } from './store'
  * Steps, each of which the engine keeps pure (`src/world/gameplay.ts`):
  *   discover / validate / propose   the engine, on the city exactly as stored, under its lock;
  *   persist                         here: one transaction that advances the city one sequence,
- *                                   appends its `world.property.activated` event and writes the
- *                                   property, or writes nothing.
+ *                                   appends its `world.property.activated` event, freezes the
+ *                                   world's district geometry if this is its first property, and
+ *                                   writes the property with its original activator, or writes
+ *                                   nothing.
+ *
+ * GEOMETRY FREEZE (migration 0008, locked policy). A world's first successful activation records
+ * the geometry of the configuration version that governed it (`world_geometry_freezes`), in its own
+ * transaction, under the city lock every configuration adoption also takes. A refused, failed or
+ * rolled-back activation freezes nothing. Every later property stands on that geometry, and every
+ * version that governs the world afterwards must draw it (`store.ts`, and the database's guards).
+ *
+ * ORIGINAL ACTIVATOR (migration 0008, locked policy). Each property records, for good, the Core user
+ * id and Discord user id of the player who activated it: read from the activating play session's
+ * own row (Play's redeemed run, signed by Proofy Core), locked in this transaction, never from the
+ * request. It is not the NFT's current holder, and it outlives the session, which is tidied after
+ * its retention.
  *
  * Who may act: `createPropertyActivationService` takes the browser's cookie and the session,
  * world and player the page drew, and goes through `requireActor` (a fresh Play check, no cache,
@@ -47,12 +61,12 @@ import { lockWorldForChange, WorldRefusal } from './store'
  *
  * Idempotency: a property's id is derived from (world, NFT), so the same NFT can never be placed
  * twice. The same player repeating an activation that already happened (same NFT, same plot)
- * changes nothing and is answered with the property as it was (`fresh: false`). Anyone else gets
- * the refusal `asset-already-placed` and learns nothing about who placed it or in which session; so
- * does the same NFT on another plot. "The same player" is the Discord user of the session that
- * activated the property, while that session's row is still kept (`play_sessions`, 30 days after it
- * ends): no permanent activator identity is stored on a property yet (locked policy, not implemented), so once
- * the row is gone nobody can prove they were the activator and everyone is refused.
+ * changes nothing and is answered with the property as it was (`fresh: false`), through any later
+ * legitimate session of theirs. Anyone else gets the refusal `asset-already-placed` and learns
+ * nothing about who placed it or in which session; so does the same NFT on another plot. "The same
+ * player" is the property's original activator: the same Core user id and Discord user id. (A
+ * property written before migration 0008 has no recorded activator; for it, the Discord user of the
+ * activating session counts while that session's row is still kept, as before.)
  *
  * The session is locked (FOR SHARE) right after the city, and must be live then: a sign-out, a
  * newer launch or Play ending the session either came first and the activation is refused
@@ -105,7 +119,10 @@ export interface WorldPropertyRecord {
   /** The adoption that governed the world when the property was activated, and its configuration version. */
   adoption: number
   configVersion: number
+  /** The activating play session. Internal provenance: never answered to a browser. */
   sessionRef: string
+  /** The original activator, permanent (0008). Null only for a property written before 0008. */
+  activator: ActivatorIdentity | null
   activatedAt: string
 }
 
@@ -119,8 +136,11 @@ export interface PropertyActivationResult {
   transition?: PropertyTransition
 }
 
-/** Points inside the write at which a test may make it fail, or act, to prove nothing is left half-written. `locked`: the city is locked, the session not yet. */
-export type ActivationStep = 'locked' | 'city' | 'event' | 'property'
+/**
+ * Points inside the write at which a test may make it fail, or act, to prove nothing is left half-written. `locked`: the
+ * city is locked, the session not yet. `freeze`: only for a world's first property, after its geometry freeze is written.
+ */
+export type ActivationStep = 'locked' | 'city' | 'event' | 'freeze' | 'property'
 
 export interface ActivationOptions {
   /**
@@ -169,6 +189,8 @@ interface StoredPropertyRow {
   activated_adoption_seq: number
   activated_config_version: number
   activated_in_play_session: string
+  activator_core_user_id: string | null
+  activator_discord_user_id: string | null
   activated_at: Date
 }
 
@@ -187,11 +209,12 @@ const recordOf = (r: StoredPropertyRow): WorldPropertyRecord => ({
   adoption: r.activated_adoption_seq,
   configVersion: r.activated_config_version,
   sessionRef: r.activated_in_play_session,
+  activator: r.activator_core_user_id !== null && r.activator_discord_user_id !== null ? { coreUserId: r.activator_core_user_id, discordUserId: r.activator_discord_user_id } : null,
   activatedAt: r.activated_at.toISOString(),
 })
 
 const PROPERTY_COLUMNS =
-  'id, world_id, chain, standard, contract, token_id, collection_key, district_key, ward, plot, plot_id, building_id, district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version, activated_in_play_session, activated_at'
+  'id, world_id, chain, standard, contract, token_id, collection_key, district_key, ward, plot, plot_id, building_id, district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version, activated_in_play_session, activator_core_user_id, activator_discord_user_id, activated_at'
 
 /** Every property of a world, in activation order. Read only; for verification and tests. */
 export async function worldPropertiesOf(client: Pick<PoolClient, 'query'>, worldId: string): Promise<WorldPropertyRecord[]> {
@@ -224,9 +247,16 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
           const read = await lockWorldForChange(client, actor.scope)
           await onStep?.('locked')
           // The session, locked until this transaction ends (as the database's guard locks it): whatever ends it either
-          // came first and is seen here, or waits for this activation to commit.
-          const live = await client.query('SELECT 1 FROM play_sessions WHERE id = $1 AND world_id = $2 AND revoked_at IS NULL AND expires_at > clock_timestamp() FOR SHARE', [actor.id, actor.scope.worldId])
-          if (live.rowCount !== 1) throw new WorldPropertyRefusal('session_ended', 'The play session ended before the activation was written.')
+          // came first and is seen here, or waits for this activation to commit. Its row names the player, as Proofy
+          // Play's redeemed run named them: the only source of the original activator.
+          const live = (
+            await client.query<{ core_user_id: string; discord_user_id: string }>(
+              'SELECT core_user_id, discord_user_id FROM play_sessions WHERE id = $1 AND world_id = $2 AND revoked_at IS NULL AND expires_at > clock_timestamp() FOR SHARE',
+              [actor.id, actor.scope.worldId],
+            )
+          ).rows
+          if (live.length !== 1) throw new WorldPropertyRefusal('session_ended', 'The play session ended before the activation was written.')
+          const activator: ActivatorIdentity = { coreUserId: live[0].core_user_id, discordUserId: live[0].discord_user_id }
 
           const property = worldProperty(read.world, asset)
           if (!property) throw new WorldPropertyRefusal('asset-not-in-world')
@@ -235,8 +265,13 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
           const existing = (await client.query<StoredPropertyRow>(`SELECT ${PROPERTY_COLUMNS} FROM world_properties WHERE id = $1`, [property.propertyId])).rows[0]
           if (existing) {
             if (existing.world_id !== actor.scope.worldId || existing.plot_id !== plotId) throw new WorldPropertyRefusal('asset-already-placed')
-            const activator = (await client.query<{ discord_user_id: string }>('SELECT discord_user_id FROM play_sessions WHERE id = $1 AND world_id = $2', [existing.activated_in_play_session, actor.scope.worldId])).rows[0]
-            if (activator?.discord_user_id !== actor.player.discordUserId) throw new WorldPropertyRefusal('asset-already-placed')
+            if (existing.activator_core_user_id !== null || existing.activator_discord_user_id !== null) {
+              if (existing.activator_core_user_id !== activator.coreUserId || existing.activator_discord_user_id !== activator.discordUserId) throw new WorldPropertyRefusal('asset-already-placed')
+            } else {
+              // Written before 0008: no recorded activator, so the activating session's player, while its row is kept.
+              const session = (await client.query<{ discord_user_id: string }>('SELECT discord_user_id FROM play_sessions WHERE id = $1 AND world_id = $2', [existing.activated_in_play_session, actor.scope.worldId])).rows[0]
+              if (session?.discord_user_id !== activator.discordUserId) throw new WorldPropertyRefusal('asset-already-placed')
+            }
             return { fresh: false, property: recordOf(existing), sequence: read.sequence }
           }
 
@@ -253,11 +288,23 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
           await onStep?.('city')
           await client.query('INSERT INTO city_events (city_id, sequence, type, payload) VALUES ($1, $2, $3, $4::jsonb)', [read.cityId, t.to, PROPERTY_ACTIVATED_EVENT, JSON.stringify({ ...t.event, configVersion: read.governingVersion, adoption: read.governingAdoption })])
           await onStep?.('event')
+          // The world's first property freezes the geometry it stands on: the governing version's, as recorded for it.
+          if (!read.freeze) {
+            if (t.from !== 1) throw new WorldPropertyRefusal('world_unavailable', `world ${actor.scope.worldId} is at sequence ${t.from} without a geometry freeze`)
+            await client.query(
+              `INSERT INTO world_geometry_freezes (world_id, city_id, frozen_at_sequence, adoption_seq, config_version, layout_key, layout_geometry_fingerprint, districts, frozen_by)
+               SELECT g.world_id, $2, $3, $4, g.version, g.layout_key, g.layout_geometry_fingerprint, g.districts, 'first-property'
+                 FROM world_config_geometries g WHERE g.world_id = $1 AND g.version = $5`,
+              [actor.scope.worldId, read.cityId, t.to, read.governingAdoption, read.governingVersion],
+            )
+            await onStep?.('freeze')
+          }
           const row = (
             await client.query<StoredPropertyRow>(
               `INSERT INTO world_properties (id, world_id, city_id, city_instance_id, chain, standard, contract, token_id, collection_key, district_key, ward, plot, plot_id, building_id,
-                                             district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version, activated_in_play_session)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING ${PROPERTY_COLUMNS}`,
+                                             district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version, activated_in_play_session,
+                                             activator_core_user_id, activator_discord_user_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) RETURNING ${PROPERTY_COLUMNS}`,
               [
                 property.propertyId,
                 actor.scope.worldId,
@@ -278,6 +325,8 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
                 read.governingAdoption,
                 read.governingVersion,
                 actor.id,
+                activator.coreUserId,
+                activator.discordUserId,
               ],
             )
           ).rows[0]

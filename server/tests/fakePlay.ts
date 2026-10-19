@@ -159,7 +159,7 @@ export function memoryWorlds() {
       const l = known?.launch
       if (!known || !l || l.environment !== scope.environment || l.gameKey !== scope.gameKey || l.installationId !== scope.installationId || l.discordGuildId !== scope.discordGuildId)
         throw new WorldRefusal('world_unavailable', 'not bound')
-      return { world: { ...known.world, created: false }, governing: { version: l.pinned.version, schemaVersion: l.pinned.schemaVersion, configHash: l.pinned.configHash, config: structuredClone(l.pinned.config) } }
+      return { originalActivations: [], world: { ...known.world, created: false }, governing: { version: l.pinned.version, schemaVersion: l.pinned.schemaVersion, configHash: l.pinned.configHash, config: structuredClone(l.pinned.config) } }
     },
     async open(launch, confirmActive) {
       opened.push(structuredClone(launch))
@@ -174,13 +174,14 @@ export function memoryWorlds() {
         cityId: `world:${id}`,
         instance: '00000000-0000-4000-8000-000000000000',
         accepted: judged,
+        originalActivations: [],
         world: {
           id,
           provisioned: true,
           created: !known,
           foundedAt: '2026-10-17T00:00:00.000Z',
           sequence: 1,
-          definition: { foundingConfigVersion: 1, governingConfigVersion: launch.pinned.version, layoutKey: judged.foundation.layout.key, geometryFingerprint: judged.foundation.layout.geometryFingerprint },
+          definition: { foundingConfigVersion: 1, governingConfigVersion: launch.pinned.version, layoutKey: judged.foundation.layout.key, geometryFingerprint: judged.foundation.layout.geometryFingerprint, districtGeometry: { frozen: false } },
           state: emptyWorldCityState(),
           districts: projectWorldDistricts(judged.world, emptyWorldCityState()),
         },

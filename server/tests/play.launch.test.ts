@@ -57,6 +57,8 @@ describe('opening a city from a Play run', () => {
         discordGuildId: GUILD_A,
         active: { version: 2, configHash: expect.stringMatching(/^[0-9a-f]{64}$/),  },
         pinned: { version: 2, schemaVersion: 1, configHash: expect.stringMatching(/^[0-9a-f]{64}$/), config: { ...DOC_A, cityName: 'Harborlight Reach' } },
+        // The player Play's redeemed run named (never the request), only to answer which properties they activated.
+        player: { discordUserId: '111111111111111111', coreUserId: 'core-ada' },
       },
     ])
     expect(w.opened[0].active.configHash).toBe(w.opened[0].pinned.configHash)

@@ -258,7 +258,7 @@ export interface PlaySessionOptions {
 const atLaunch = (source: 'proofy-core' | 'proofy-play', at: Date): PlayFact<true> => ({ status: 'verified', value: true, source, basis: 'launch', at: at.toISOString() })
 
 /** What a session's viewer is told: who Proofy says they are, what was verified when, and what is not known. */
-function viewerOf(ref: string, player: PlayRun['player'], createdAt: Date, expiresAt: Date, installationActive: PlayFact<true>): PlayViewer {
+function viewerOf(ref: string, player: PlayRun['player'], createdAt: Date, expiresAt: Date, installationActive: PlayFact<true>, originalActivations: string[]): PlayViewer {
   return {
     authenticated: true,
     player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
@@ -272,6 +272,7 @@ function viewerOf(ref: string, player: PlayRun['player'], createdAt: Date, expir
       districtRules: { status: 'unknown', reason: 'not-checked' },
     },
     permissions: { viewCity: true, claim: false, build: false },
+    originalActivations,
   }
 }
 
@@ -365,7 +366,7 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
       // The launch asked Play about the installation and it was active: where this installation's freshness starts.
       checker.verified(scope, launch.installationVerifiedAt)
       await tidy(at)
-      const viewer = viewerOf(id, launch.player, at, expiresAt, atLaunch('proofy-play', at))
+      const viewer = viewerOf(id, launch.player, at, expiresAt, atLaunch('proofy-play', at), launch.originalActivations)
       return {
         token,
         maxAgeSeconds: Math.floor((expiresAt.getTime() - at.getTime()) / 1000),
@@ -389,7 +390,7 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
 
       let read
       try {
-        read = await worlds.read(session.scope)
+        read = await worlds.read(session.scope, { discordUserId: session.player.discordUserId, coreUserId: session.player.coreUserId })
       } catch (err) {
         if (err instanceof WorldRefusal) {
           log.error('play session city read refused', { world: session.scope.worldId, code: err.code, reason: err.message })
@@ -402,7 +403,7 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
         verdict.kind === 'active' ? { status: 'verified', value: true, source: 'proofy-play', basis: 'live', at: verdict.verifiedAt.toISOString() } : { status: 'unknown', reason: 'authority-unavailable' }
       return {
         play: { environment: session.scope.environment, gameKey: session.scope.gameKey, installationId: session.scope.installationId, discordGuildId: session.scope.discordGuildId, configVersion: read.governing.version, configHash: read.governing.configHash, schemaVersion: read.governing.schemaVersion },
-        viewer: viewerOf(session.id, session.player, session.createdAt, session.expiresAt, installationActive),
+        viewer: viewerOf(session.id, session.player, session.createdAt, session.expiresAt, installationActive, read.originalActivations),
         world: read.world,
         config: read.governing.config,
       }

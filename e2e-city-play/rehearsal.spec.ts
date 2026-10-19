@@ -125,6 +125,8 @@ test('a player places a test NFT on the exact plot they chose; reload, relaunch 
   await expect(stored).toHaveAttribute('data-asset', nft(BRAND_A, 'harbor-keepers', MAX_UINT256))
   await expect(stored).toHaveAttribute('data-plot-id', 'tidewater-w0-p3')
   await expect(stored).toHaveAttribute('data-sequence', '2')
+  // The permanent original activator, as this player is told it (0008).
+  await expect(building.getByTestId('stored-property-activator')).toHaveAttribute('data-activated-by-viewer', 'true')
   const propertyId = (await stored.getAttribute('data-property-id'))!
   const buildingId = `b-${propertyId}`
   await expect(building).toHaveAttribute('data-building', buildingId)
@@ -163,6 +165,7 @@ test('a player places a test NFT on the exact plot they chose; reload, relaunch 
   await bea.getByTestId('district-label-tidewater').click()
   await bea.getByTestId(`warp-${buildingId}`).click()
   await expect(bea.getByTestId('stored-property')).toHaveAttribute('data-property-id', propertyId)
+  await expect(bea.getByTestId('stored-property-activator')).toHaveAttribute('data-activated-by-viewer', 'false')
   await bea.screenshot({ path: `${SHOTS}/rehearsal-4-other-player.png` })
   expect(await placeByApi(bea, nft(BRAND_A, 'tide-pass', '5'), 'tidewater-w0-p3')).toEqual({ status: 409, body: { error: 'plot_unavailable' } })
   // The occupied plot is not offered to her either.

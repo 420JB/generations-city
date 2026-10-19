@@ -41,6 +41,8 @@ export interface PlayLaunch {
   installationVerifiedAt: number
   world: PlayWorld
   config: Record<string, unknown>
+  /** The properties of this city the run's player originally activated (the world store's answer, in its launch transaction). */
+  originalActivations: string[]
 }
 
 export interface PlayLaunchService {
@@ -203,6 +205,7 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
             discordGuildId: run.discordGuildId,
             active: { version: installation.activeConfigVersion, configHash: installation.activeConfigHash },
             pinned: { version: version.version, schemaVersion: version.schemaVersion, configHash: version.configHash, config: version.config },
+            player: { discordUserId: run.player.discordUserId, coreUserId: run.player.coreUserId },
           },
           confirmActive(run.installationId, run.discordGuildId),
         )
@@ -227,6 +230,7 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
         installationVerifiedAt,
         world: opened.world,
         config: version.config,
+        originalActivations: opened.originalActivations,
       }
     },
   }

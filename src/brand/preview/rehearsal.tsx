@@ -41,6 +41,8 @@ export interface StoredProperty {
   ward: number
   plot: number
   sequence: number
+  /** Whether the viewer is its original activator (the server's permanent record, matched on the viewer's Proofy identity). */
+  activatedByViewer: boolean
 }
 
 /** Says, wherever rehearsal data shows, what it is not. */
@@ -191,7 +193,16 @@ export function StoredPropertyCard({ stored, cityName }: { stored: StoredPropert
       <p className="small mono rehearsal-asset" data-testid="stored-property-asset">
         {stored.asset}
       </p>
-      <p className="muted small">Tier 0, nothing built. Permanent in {cityName}: its identity and plot never change. No owner is recorded on a property yet.</p>
+      <p className="small" data-testid="stored-property-activator" data-activated-by-viewer={String(stored.activatedByViewer)}>
+        {stored.activatedByViewer ? (
+          <>
+            <b>Originally activated by you.</b> This record is permanent and stays yours whoever holds the NFT later.
+          </>
+        ) : (
+          'Its original activator is recorded permanently and privately.'
+        )}
+      </p>
+      <p className="muted small">Tier 0, nothing built. Permanent in {cityName}: its identity and plot never change. Who holds the NFT now is not tracked here.</p>
     </div>
   )
 }

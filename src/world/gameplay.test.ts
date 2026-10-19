@@ -310,6 +310,7 @@ describe('persistent city as drawn and read', () => {
           districtRules: { status: 'unknown', reason: 'not-checked' },
         },
         permissions: { viewCity: true, claim: false, build: false },
+        originalActivations: [Object.values(state.buildings)[0].propertyId],
       },
       world: {
         id: WORLD_4,
@@ -317,7 +318,7 @@ describe('persistent city as drawn and read', () => {
         created: false,
         foundedAt: new Date().toISOString(),
         sequence: 3,
-        definition: { foundingConfigVersion: 1, governingConfigVersion: 1, layoutKey: 'standard-radial-even', geometryFingerprint: W4.world.layout.geometryFingerprint },
+        definition: { foundingConfigVersion: 1, governingConfigVersion: 1, layoutKey: 'standard-radial-even', geometryFingerprint: W4.world.layout.geometryFingerprint, districtGeometry: { frozen: true, atSequence: 2, configVersion: 1 } },
         state: JSON.parse(worldCityStateText(state)),
         districts: projectWorldDistricts(W4.world, state),
       },
@@ -330,6 +331,9 @@ describe('persistent city as drawn and read', () => {
     expect(parsePlayCityResponse({ ...body, world: { ...body.world, districts: [] } })).toBeNull()
     expect(parsePlayCityResponse({ ...body, world: { ...body.world, districts: [{ ...body.world.districts[0], candidates: { plotIds: ['../x'], newWard: false } }] } })).toBeNull()
     expect(parsePlayCityResponse({ ...body, world: { ...body.world, districts: undefined } })).toBeNull()
+    // A city with properties has frozen its geometry; one that says otherwise is not this city.
+    expect(parsePlayCityResponse({ ...body, world: { ...body.world, definition: { ...body.world.definition, districtGeometry: { frozen: false } } } })).toBeNull()
+    expect(parsed?.viewer.originalActivations).toEqual([Object.values(state.buildings)[0].propertyId])
     expect(assetKey(keeper(812))).toBe(state.buildings[Object.keys(state.buildings)[0]].asset)
   })
 })

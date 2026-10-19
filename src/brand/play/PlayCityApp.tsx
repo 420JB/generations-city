@@ -62,7 +62,8 @@ const REFUSALS: Record<PlayErrorCode | 'unreadable', string> = {
   config_binding_mismatch: 'The city configuration Proofy Play returned does not belong to this launch, so it was not used.',
   config_schema_unsupported: 'This server’s city configuration uses a version this build of Rare City cannot read.',
   config_invalid: 'This server’s city configuration is not valid, so the city was not opened. A server admin must correct it in Proofy Play.',
-  config_incompatible: 'This server’s new city configuration would move its districts or drop a collection, so it was not applied. The city is unchanged; a server admin must keep its districts and collections in Proofy Play.',
+  config_incompatible:
+    'This server’s new city configuration would move the districts its properties stand on, or drop a collection, so it was not applied. The city is unchanged; once a city has its first property its districts are fixed, and its collections always stay, in Proofy Play.',
   config_superseded: 'This server’s city configuration changed after this launch. Launch Rare City again from Proofy Play.',
   world_binding_conflict: 'This Discord server’s city belongs to another Rare City installation, so it was not opened.',
   world_unavailable: 'The city could not be loaded just now. Try again in a moment.',
@@ -143,7 +144,7 @@ async function ask(path: string, init: RequestInit = {}): Promise<{ response: Re
 /** Draw a city the server answered with, after validating its configuration again with the same code. */
 function draw(source: Source, city: PlayCityResponse): Phase {
   // The server validated this configuration for this world; the page validates it again, and draws the city as
-  // stored, on the geometry it was founded on.
+  // stored, on the geometry the server says it is drawn on (frozen once it has a property).
   const parsed = parsePlayCityConfig(city.config, city.world.id)
   if (!parsed.ok) return { kind: 'refused', code: 'config_invalid', problems: parsed.problems }
   const loaded = loadPersistedBrandCity(parsed.config, city.world.state, city.world.definition.geometryFingerprint)
@@ -380,8 +381,11 @@ function PlayCity({
   }, [listed, city, world.state.buildings, onPlace])
   const stored = (buildingId: string) => {
     const b = (world.state.buildings as Readonly<Record<string, WorldBuildingRecord>>)[buildingId]
-    return b ? { propertyId: b.propertyId, asset: b.asset, collection: b.collection, districtKey: b.districtKey, ward: b.ward, plot: b.plot, sequence: b.sequence } : null
+    return b
+      ? { propertyId: b.propertyId, asset: b.asset, collection: b.collection, districtKey: b.districtKey, ward: b.ward, plot: b.plot, sequence: b.sequence, activatedByViewer: viewer.originalActivations.includes(b.propertyId) }
+      : null
   }
+  const geometry = world.definition.districtGeometry
   const player = viewer.player
   const buildings = Object.keys(city.state.buildings).length
   const members = useMemo<(PreviewMember | null)[]>(
@@ -406,6 +410,8 @@ function PlayCity({
       data-world-created={String(world.created)}
       data-world-sequence={world.sequence}
       data-governing-version={world.definition.governingConfigVersion}
+      data-geometry-frozen={String(geometry.frozen)}
+      data-original-activations={viewer.originalActivations.length}
       data-buildings={buildings}
       data-candidates={world.districts.reduce((n, d) => n + d.candidates.plotIds.length, 0)}
       data-player={player.discordUserId}
@@ -432,7 +438,17 @@ function PlayCity({
             {rehearsal && <RehearsalFlag />}
             <span className="play-facts small" data-testid="play-facts">
               city <code data-testid="play-world" title={world.id}>{world.id.slice(0, 8)}</code> · server <code data-testid="play-guild">{play.discordGuildId}</code> · config{' '}
-              <code data-testid="play-config-version">v{play.configVersion}</code> · <code data-testid="play-config-hash" title={play.configHash}>{play.configHash.slice(0, 12)}</code>
+              <code data-testid="play-config-version" title={`configuration hash ${play.configHash}`}>
+                v{play.configVersion}
+              </code>{' '}
+              ·{' '}
+              <span
+                data-testid="play-geometry"
+                data-frozen={String(geometry.frozen)}
+                title={geometry.frozen ? `Fixed by the city's first property, at sequence ${geometry.atSequence}, under configuration v${geometry.configVersion}.` : 'The districts can still change until the city has its first property.'}
+              >
+                {geometry.frozen ? 'districts fixed' : 'districts open'}
+              </span>
             </span>
             <span className="play-facts play-viewer small" data-testid="play-viewer">
               signed in as <b data-testid="play-player">{player.displayName}</b> · member {fact(viewer.status.guildMember)} · installation{' '}

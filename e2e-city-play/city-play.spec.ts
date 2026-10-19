@@ -168,19 +168,27 @@ test.describe('one persistent city per installation', () => {
     expect(answers.filter((x) => x.body.world.created)).toHaveLength(1)
   })
 
-  test('a configuration that would move districts is refused, the city is unchanged, and a compatible one governs it', async ({ page }) => {
+  test('a city with no property may still move its districts, and one that drops a collection is refused; the city is unchanged', async ({ page }) => {
     const a = await installed(BRAND_A)
     const first = await session(page.request, await launch(a.guild))
+    // Reordered districts: no property stands anywhere yet, so this governs the same city (0008: geometry freezes at the first property).
     await publish(a.guild, a.installation, { ...BRAND_A, districts: [...BRAND_A.districts].reverse() })
+    await openCity(page, await launch(a.guild))
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-world', first.body.world.id)
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-governing-version', '2')
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-geometry-frozen', 'false')
+    await expect(page.getByTestId('play-geometry')).toHaveText('districts open')
+    // Dropping a founding collection is refused whatever the city holds.
+    await publish(a.guild, a.installation, { ...BRAND_A, collections: [BRAND_A.collections[0]], districts: BRAND_A.districts.map((d) => ({ ...d, monument: d.monument?.collection === 'tide-pass' ? null : d.monument })) })
     await openRefused(page, launchHref(await launch(a.guild)), 'config_incompatible')
     await expect(page.getByTestId('play-refusal')).toContainText('The city is unchanged')
-    await expect(page.getByTestId('play-problems')).toContainText('would move')
+    await expect(page.getByTestId('play-problems')).toContainText('cannot be removed')
     await page.screenshot({ path: `${SHOTS}/incompatible-config-refused.png` })
     await publish(a.guild, a.installation, { ...BRAND_A, cityName: 'Harborlight Bay' })
     await openCity(page, await launch(a.guild))
     await expect(page.getByTestId('city-name')).toHaveText('HARBORLIGHT BAY')
     await expect(page.getByTestId('play-city')).toHaveAttribute('data-world', first.body.world.id)
-    await expect(page.getByTestId('play-city')).toHaveAttribute('data-governing-version', '3')
+    await expect(page.getByTestId('play-city')).toHaveAttribute('data-governing-version', '4')
   })
 
   test('a server\'s launches only ever answer with its own city', async ({ request }) => {

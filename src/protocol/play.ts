@@ -112,6 +112,12 @@ export interface PlayViewer {
   }
   /** What the session allows. Only viewing is open. */
   permissions: { viewCity: true; claim: false; build: false }
+  /**
+   * The properties of this city this player originally activated (their ids, in activation order): the permanent
+   * record of who placed each one, matched on the player Proofy named for this session. It is not who holds those
+   * NFTs now, and nobody is ever told who activated anyone else's property.
+   */
+  originalActivations: string[]
 }
 
 /** `GET /v1/play/city`: the session's city, as stored, with the configuration that governs it. */
@@ -144,8 +150,13 @@ export interface PlayWorld {
   foundedAt: string
   /** Authoritative changes the city has had; 1 = as founded. */
   sequence: number
-  /** What the city was founded on and which accepted configuration version governs it now. */
-  definition: { foundingConfigVersion: number; governingConfigVersion: number; layoutKey: string; geometryFingerprint: string }
+  /**
+   * Which configuration version founded the city and which governs it now, and the geometry it is drawn on: the
+   * drawn version's layout key and layout geometry fingerprint. `districtGeometry` says whether that geometry can
+   * still change: until the city's first property it follows the governing configuration; the first property
+   * freezes it for good (at that sequence, under that configuration version).
+   */
+  definition: { foundingConfigVersion: number; governingConfigVersion: number; layoutKey: string; geometryFingerprint: string; districtGeometry: PlayDistrictGeometry }
   /**
    * The stored state. Version 1 is the city as founded, empty; version 2 holds its properties, each
    * on its exact plot, and the wards they opened. Nothing in it is simulated.
@@ -159,10 +170,13 @@ export interface PlayWorld {
   districts: PlayWorldDistrict[]
 }
 
+/** Whether a city's district geometry is still editable, or frozen by its first property. */
+export type PlayDistrictGeometry = { frozen: false } | { frozen: true; atSequence: number; configVersion: number }
+
 /** One district of a persistent city, projected from the stored state. */
 export interface PlayWorldDistrict {
   key: string
-  /** The engine's district geometry fingerprint (fixed when the city was founded). */
+  /** The engine's district geometry fingerprint (fixed once the city has its first property). */
   geometryFingerprint: string
   centerDeg: number
   spanDeg: number
@@ -295,12 +309,15 @@ export function parsePlayViewer(v: unknown): PlayViewer | null {
   if (!guildMember || !playEntitled || !installationActive || !brandAdmin || !districtRules) return null
   // Only viewing is open: a page that is told otherwise is talking to something else.
   if (permissions.viewCity !== true || permissions.claim !== false || permissions.build !== false) return null
+  const { originalActivations } = v
+  if (!Array.isArray(originalActivations) || originalActivations.length > 100_000 || !originalActivations.every((id) => typeof id === 'string' && UUID.test(id))) return null
   return {
     authenticated: true,
     player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
     session: { ref: session.ref, expiresAt: session.expiresAt, renewal: 'relaunch' },
     status: { guildMember, playEntitled, installationActive, brandAdmin, districtRules },
     permissions: { viewCity: true, claim: false, build: false },
+    originalActivations: [...(originalActivations as string[])],
   }
 }
 
@@ -329,19 +346,29 @@ function parsePlayWorld(world: Record<string, unknown>): PlayWorld | null {
   if (typeof world.id !== 'string' || !UUID_V7.test(world.id) || world.provisioned !== true || typeof world.created !== 'boolean') return null
   if (typeof world.foundedAt !== 'string' || Number.isNaN(Date.parse(world.foundedAt)) || !posInt(world.sequence)) return null
   if (!isRecord(d) || !posInt(d.foundingConfigVersion) || !posInt(d.governingConfigVersion) || typeof d.layoutKey !== 'string' || !KEY.test(d.layoutKey) || typeof d.geometryFingerprint !== 'string' || !HASH.test(d.geometryFingerprint)) return null
+  const districtGeometry = parseDistrictGeometry(d.districtGeometry)
   const state = parseWorldCityState(world.state)
   const districts = parseDistricts(world.districts)
-  if (!state || !districts) return null
+  if (!districtGeometry || !state || !districts) return null
+  // A city with a property has frozen its geometry, and a city without one has not.
+  if (districtGeometry.frozen !== (world.sequence > 1)) return null
   return {
     id: world.id,
     provisioned: true,
     created: world.created,
     foundedAt: world.foundedAt,
     sequence: world.sequence,
-    definition: { foundingConfigVersion: d.foundingConfigVersion, governingConfigVersion: d.governingConfigVersion, layoutKey: d.layoutKey, geometryFingerprint: d.geometryFingerprint },
+    definition: { foundingConfigVersion: d.foundingConfigVersion, governingConfigVersion: d.governingConfigVersion, layoutKey: d.layoutKey, geometryFingerprint: d.geometryFingerprint, districtGeometry },
     state,
     districts,
   }
+}
+
+function parseDistrictGeometry(v: unknown): PlayDistrictGeometry | null {
+  if (!isRecord(v)) return null
+  if (v.frozen === false) return Object.keys(v).length === 1 ? { frozen: false } : null
+  if (v.frozen !== true || !posInt(v.atSequence) || v.atSequence < 2 || !posInt(v.configVersion) || Object.keys(v).length !== 3) return null
+  return { frozen: true, atSequence: v.atSequence, configVersion: v.configVersion }
 }
 
 const PLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-w(?:0|[1-9][0-9]{0,5})-p(?:0|[1-9][0-9]{0,5})$/

@@ -4,7 +4,7 @@ import { verifyCity } from '../src/city/verify'
 import type { AppMode } from '../src/config'
 import { migrate } from '../src/db/migrations'
 import { createPool } from '../src/db/pool'
-import { WORLD_CONFIG_JUDGE, type PlayEnvironment } from '../src/engine'
+import { judgeWorldConfig, WORLD_CONFIG_JUDGE, type PlayEnvironment } from '../src/engine'
 import { installDemoFixture } from '../src/fixtures/demoCity'
 import { createLogger, silentLogger } from '../src/log'
 import { canonicalJson as canonical } from '../src/play/canonical'
@@ -110,8 +110,14 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
       expect(event[0]).toMatchObject({ sequence: '1', type: 'city.initialized', payload: { stateVersion: 1, environment: 'local', activationRehearsal: true, world: { id, play: { environment: 'dev', gameKey: 'rare-city', installationId: INSTALLATION_A, discordGuildId: GUILD_A }, foundingConfig: { version: 1, configHash: a.play.configHash, schemaVersion: 1 } } } })
       expect((event[0].payload.world as { foundation: { districts: { key: string }[] } }).foundation.districts.map((d) => d.key)).toEqual(['lantern-quay', 'tidewater', 'compass-row'])
       const versions = (await t.db.query('SELECT version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by FROM world_config_versions')).rows
-      expect(versions).toEqual([{ version: 1, play_installation_id: INSTALLATION_A, schema_version: 1, config_hash: a.play.configHash, config_canonical: expect.any(String), verdict: 'accepted', rejection: null, judged_by: 'rare-city/play-config-v1+world-evolution-v2' }])
+      expect(versions).toEqual([{ version: 1, play_installation_id: INSTALLATION_A, schema_version: 1, config_hash: a.play.configHash, config_canonical: expect.any(String), verdict: 'accepted', rejection: null, judged_by: 'rare-city/play-config-v1+world-evolution-v3' }])
       expect(sha256(versions[0].config_canonical)).toBe(a.play.configHash)
+      // The accepted version is recorded with the geometry it draws (0008); nothing is frozen until a property exists.
+      expect((await t.db.query('SELECT version, layout_key, layout_geometry_fingerprint, districts, recorded_by FROM world_config_geometries')).rows).toEqual([
+        { version: 1, layout_key: 'standard-radial-even', layout_geometry_fingerprint: a.world.definition.geometryFingerprint, districts: a.world.districts.map((d) => ({ key: d.key, geometryFingerprint: d.geometryFingerprint })), recorded_by: 'rare-city/play-config-v1+world-evolution-v3' },
+      ])
+      expect(a.world.definition.districtGeometry).toEqual({ frozen: false })
+      expect(await count('world_geometry_freezes')).toBe(0)
       expect(await governing(id)).toBe(1)
       expect(await verifyCity(t.db)).toMatchObject({ ok: true, city: null, worlds: [{ id, city: `world:${id}`, sequence: 1, foundingConfigVersion: 1, governingConfigVersion: 1, configVersions: { accepted: 1, rejected: 0 } }], violations: [] })
     })
@@ -247,9 +253,12 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
       const b = await open(INSTALLATION_B, 'b1')
       const bBefore = await worldSnapshot(b.world.id)
       const a = await open(INSTALLATION_A, 'a1')
-      // A publishes B's very document, an incompatible one and an invalid one; none of it touches B.
+      // A publishes B's very document (A has no property yet, so its districts may change: it governs A), an
+      // incompatible one and an invalid one; none of it touches B.
       p.publish(INSTALLATION_A, { ...DOC_B })
-      expect((await refusal(open(INSTALLATION_A, 'a-as-b'))).code).toBe('config_incompatible')
+      expect((await open(INSTALLATION_A, 'a-as-b')).world).toMatchObject({ id: a.world.id, definition: { governingConfigVersion: 2, geometryFingerprint: b.world.definition.geometryFingerprint } })
+      p.publish(INSTALLATION_A, DROPPED)
+      expect((await refusal(open(INSTALLATION_A, 'a-drops'))).code).toBe('config_incompatible')
       p.publish(INSTALLATION_A, { ...DOC_A, worldId: b.world.id })
       expect((await refusal(open(INSTALLATION_A, 'a-names-b'))).code).toBe('config_invalid')
       p.activate(INSTALLATION_A, 1)
@@ -300,10 +309,50 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
       ])
     })
 
-    const incompatible: [string, Record<string, unknown>][] = [
+    const regeometried: [string, Record<string, unknown>][] = [
       ['reordered districts', { ...DOC_A, districts: [...DOC_A.districts].reverse() }],
       ['an added district', { ...DOC_A, districts: [...DOC_A.districts, { key: 'reef', name: 'Reef', accent: '#aaaaaa', monument: null, proofyRule: null }] }],
       ['a renamed district key', { ...DOC_A, districts: DOC_A.districts.map((d, i) => (i === 1 ? { ...d, key: 'tides' } : d)) }],
+    ]
+    for (const [label, document] of regeometried) {
+      it(`lets a city with no property take ${label}: same world, the new geometry governs and is drawn, nothing frozen`, async () => {
+        const { p, open } = await setup()
+        const a = await open(INSTALLATION_A, 'a1')
+        const cityBefore = (await worldSnapshot(a.world.id)).city
+        p.publish(INSTALLATION_A, document)
+        const v2 = await open(INSTALLATION_A, 'regeometried')
+        expect(v2.world).toMatchObject({ id: a.world.id, created: false, sequence: 1, definition: { foundingConfigVersion: 1, governingConfigVersion: 2, districtGeometry: { frozen: false } } })
+        expect(v2.world.definition.geometryFingerprint).not.toBe(a.world.definition.geometryFingerprint)
+        expect(v2.world.districts.map((d) => d.key)).toEqual((document.districts as { key: string }[]).map((d) => d.key))
+        expect((await worldSnapshot(a.world.id)).city).toBe(cityBefore)
+        expect(await verdicts(a.world.id)).toEqual([
+          { version: 1, verdict: 'accepted', code: null },
+          { version: 2, verdict: 'accepted', code: null },
+        ])
+        // The founding record is untouched: it stays the provenance of what the city was founded on.
+        expect((await t.db.query(`SELECT payload #> '{world,foundation}' AS f FROM city_events WHERE city_id = $1 AND sequence = 1`, [`world:${a.world.id}`])).rows[0].f.layout.geometryFingerprint).toBe(a.world.definition.geometryFingerprint)
+        // And it can go back: the founding version, re-activated, governs again.
+        p.activate(INSTALLATION_A, 1)
+        expect((await open(INSTALLATION_A, 'back')).world.definition).toMatchObject({ governingConfigVersion: 1, geometryFingerprint: a.world.definition.geometryFingerprint })
+        expect(await count('world_geometry_freezes')).toBe(0)
+        expect((await verifyCity(t.db)).ok).toBe(true)
+      })
+    }
+
+    it('never draws a run pinned to a version that is not governing on other districts than the governing one', async () => {
+      const { p, open, s } = await setup()
+      const a = await open(INSTALLATION_A, 'a1')
+      const pinnedToV1 = p.launch(INSTALLATION_A, 'old')
+      p.publish(INSTALLATION_A, { ...DOC_A, districts: [...DOC_A.districts, { key: 'reef', name: 'Reef', accent: '#aaaaaa', monument: null, proofyRule: null }] })
+      expect((await open(INSTALLATION_A, 'new')).world.definition.governingConfigVersion).toBe(2)
+      const before = await worldSnapshot(a.world.id)
+      // Version 1 no longer draws the city that is there (version 2 added a district): the run is refused, nothing written.
+      expect((await refusal(s.open({ runToken: pinnedToV1 }))).code).toBe('config_superseded')
+      expect(await worldSnapshot(a.world.id)).toEqual(before)
+      expect(await governing(a.world.id)).toBe(2)
+    })
+
+    const incompatible: [string, Record<string, unknown>][] = [
       ['a removed collection', { ...DOC_A, collections: [{ key: 'gulls', chain: 'eip155:1', contract: '0x000000000000000000000000000000000000b002', displayName: 'Gulls' }], districts: DOC_A.districts.map((d) => ({ ...d, monument: null })) }],
       ['a repointed collection', { ...DOC_A, collections: [{ ...DOC_A.collections[0], contract: '0x000000000000000000000000000000000000a00f' }] }],
     ]
@@ -352,7 +401,7 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
       const { p, s } = await setup({ logs })
       const first = p.launch(INSTALLATION_A, 'a1')
       const a = await s.open({ runToken: first })
-      p.publish(INSTALLATION_A, { ...DOC_A, districts: [...DOC_A.districts].reverse() })
+      p.publish(INSTALLATION_A, DROPPED)
       const second = p.launch(INSTALLATION_A, 'a2')
       await refusal(s.open({ runToken: second }))
       const lines = logs.map((l) => JSON.parse(l) as Record<string, unknown>)
@@ -468,7 +517,7 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
           [2, { ...DOC_A, cityName: 'Presentation only' }],
           [3, WITH_GULLS],
           [4, { ...DOC_A, cityName: 'Without gulls' }],
-          [5, { ...DOC_A, districts: [...DOC_A.districts].reverse() }],
+          [5, DROPPED],
         ] as const) {
           p.publish(installation, document)
           tokens.set(version, p.launch(installation, `p${n}-v${version}`))
@@ -484,7 +533,7 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
         outcomes.add(JSON.stringify({ verdicts: await verdicts(founded.world.id), answers: answers.sort(), adoptions: await rows(founded.world.id) }))
       }
       expect(orders).toHaveLength(24)
-      // One outcome for all 24 orders: every compatible version accepted, the one that moves the districts rejected,
+      // One outcome for all 24 orders: every compatible version accepted, the one that drops the founding collection rejected,
       // nothing adopted (Play's active version, 5, cannot govern), and the city still governed by version 1.
       expect([...outcomes].map((o) => JSON.parse(o))).toEqual([
         {
@@ -779,7 +828,25 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
 
     const corruptions: [string, (ids: { a: string; b: string }) => Promise<unknown>, string][] = [
       ['a configuration copy that is not Play\'s canonical text (though it hashes)', ({ a }) => tamper(`UPDATE world_config_versions SET config_canonical = config_canonical || ' ', config_hash = encode(sha256(convert_to(config_canonical || ' ', 'UTF8')), 'hex') WHERE world_id = $1`, [a]), 'worlds/configs'],
-      ['an accepted copy that would move the districts', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'accepted', 'hand')`, [a, INSTALLATION_A, sha256(canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })), canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })]), 'worlds/geometry'],
+      ['an accepted copy recorded without its geometry', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'accepted', 'hand')`, [a, INSTALLATION_A, sha256(canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })), canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })]), 'worlds/geometry'],
+      ['an accepted copy recorded with a geometry it does not draw', async ({ a }) => {
+        await tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'accepted', 'hand')`, [a, INSTALLATION_A, sha256(canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })), canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })])
+        await tamper(`INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) SELECT world_id, 2, layout_key, layout_geometry_fingerprint, districts, 'hand' FROM world_config_geometries WHERE world_id = $1 AND version = 1`, [a])
+      }, 'worlds/geometry'],
+      ['a copy accepted by world-evolution-v2 that would move the districts (that judge required the founding geometry)', async ({ a }) => {
+        await tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'accepted', 'rare-city/play-config-v1+world-evolution-v2')`, [a, INSTALLATION_A, sha256(canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })), canonical({ ...DOC_A, districts: [...DOC_A.districts].reverse() })])
+        await recordGeometry(a, 2, { ...DOC_A, districts: [...DOC_A.districts].reverse() })
+      }, 'worlds/geometry'],
+      ['a rejected copy recorded with a geometry', async ({ a }) => {
+        await tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'rejected', '{"code":"config_incompatible","problems":[]}', 'hand')`, [a, INSTALLATION_A, sha256(canonical(DROPPED)), canonical(DROPPED)])
+        await t.db.query('ALTER TABLE world_config_geometries DISABLE TRIGGER USER')
+        try {
+          await t.db.query(`INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) SELECT world_id, 2, layout_key, layout_geometry_fingerprint, districts, 'hand' FROM world_config_geometries WHERE world_id = $1 AND version = 1`, [a])
+        } finally {
+          await t.db.query('ALTER TABLE world_config_geometries ENABLE TRIGGER USER')
+        }
+      }, 'worlds/geometry'],
+      ['a rejected copy recorded by world-evolution-v2 that its rules accept', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'rejected', '{"code":"config_incompatible","problems":[]}', 'rare-city/play-config-v1+world-evolution-v2')`, [a, INSTALLATION_A, sha256(canonical({ ...DOC_A, cityName: 'Fine' })), canonical({ ...DOC_A, cityName: 'Fine' })]), 'worlds/verdict'],
       ['an accepted copy that drops a founding collection', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'accepted', 'hand')`, [a, INSTALLATION_A, sha256(canonical(DROPPED)), canonical(DROPPED)]), 'worlds/collections'],
       ['a rejected copy without a reason', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'rejected', '{}', 'hand')`, [a, INSTALLATION_A, sha256(canonical(DOC_A)), canonical(DOC_A)]), 'worlds/configs'],
       ['a world city that has advanced past what this build supports', ({ a }) => tamper(`WITH c AS (UPDATE city SET sequence = 2 WHERE id = $1 RETURNING id) INSERT INTO city_events (city_id, sequence, type) SELECT id, 2, 'test.advance' FROM c`, [`world:${a}`]), 'worlds/state'],
@@ -808,6 +875,27 @@ describe.skipIf(NO_TEST_DATABASE)('persistent brand cities: one world per Play i
       ['a rejected copy this build\'s rules accept', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'rejected', '{"code":"config_incompatible","problems":[]}', $5)`, [a, INSTALLATION_A, sha256(canonical({ ...DOC_A, cityName: 'Fine' })), canonical({ ...DOC_A, cityName: 'Fine' }), WORLD_CONFIG_JUDGE]), 'worlds/verdict'],
       ['a rejected copy recorded with another reason than this build\'s rules give', ({ a }) => tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'rejected', '{"code":"config_invalid","problems":[]}', $5)`, [a, INSTALLATION_A, sha256(canonical(DROPPED)), canonical(DROPPED), WORLD_CONFIG_JUDGE]), 'worlds/verdict'],
     ]
+    /** Record, by hand, exactly the geometry `document` draws for version `version`. */
+    async function recordGeometry(worldId: string, version: number, document: Record<string, unknown>) {
+      const judged = judgeWorldConfig(document, worldId, null)
+      if (judged.verdict !== 'accepted') throw new Error('not a valid city')
+      await t.db.query(`INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) VALUES ($1, $2, $3, $4, $5::jsonb, 'hand')`, [
+        worldId,
+        version,
+        judged.foundation.layout.key,
+        judged.foundation.layout.geometryFingerprint,
+        JSON.stringify(judged.foundation.districts),
+      ])
+    }
+
+    it('passes a copy this build\'s judge accepted on other districts than the founding ones, recorded with the geometry it draws', async () => {
+      const { a } = await founded()
+      const moved = { ...DOC_A, districts: [...DOC_A.districts].reverse() }
+      await tamper(`INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, judged_by) VALUES ($1, 2, $2, 1, $3, $4, 'accepted', $5)`, [a, INSTALLATION_A, sha256(canonical(moved)), canonical(moved), WORLD_CONFIG_JUDGE])
+      await recordGeometry(a, 2, moved)
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true, violations: [] })
+    })
+
     for (const [label, corrupt, expected] of corruptions) {
       it(`reports ${label}`, async () => {
         const ids = await founded()

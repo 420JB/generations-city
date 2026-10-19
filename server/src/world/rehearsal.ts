@@ -22,8 +22,8 @@ import { createPropertyActivationService, WorldPropertyRefusal, type WorldProper
  *
  * Manual district choice is rehearsal-only test behavior: a live city assigns each player's default
  * district (locked policy, not implemented). Still open, and not replaced here: F5 (browser-bound launch), F7 (fresh membership and
- * entitlement), F3 (Play game status), Core NFT eligibility, a separate non-owner database role,
- * and a permanent original-activator identity on properties.
+ * entitlement), F3 (Play game status), Core NFT eligibility and a separate non-owner database role.
+ * (Each property's original activator is recorded permanently since migration 0008.)
  */
 
 /** The rehearsal file's `kind`. */

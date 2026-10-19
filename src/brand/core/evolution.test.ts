@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorldCityState, parseWorldCityState, WORLD_CITY_STATE_VERSION } from '../../world/cityState'
-import { establishedCollections, evolutionProblems, governingProblems, judgeWorldConfig, parseWorldFoundation, sameFoundation, WORLD_CONFIG_JUDGE, type FoundationCollection, type WorldFoundation } from './evolution'
+import {
+  establishedCollections,
+  evolutionProblems,
+  geometryOf,
+  geometryProblems,
+  governingProblems,
+  judgeWorldConfig,
+  judgeWorldConfigAs,
+  parseWorldFoundation,
+  parseWorldGeometry,
+  sameFoundation,
+  sameGeometry,
+  WORLD_CONFIG_JUDGE,
+  WORLD_CONFIG_JUDGE_V2,
+  type FoundationCollection,
+  type WorldFoundation,
+} from './evolution'
 import type { PlayCityDocument } from './playConfig'
 
 const WORLD = '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1b'
@@ -94,11 +110,51 @@ describe('judging a configuration for a world', () => {
     expect(j.verdict).toBe('accepted')
   })
 
-  const incompatible: [string, (d: Doc) => void, string][] = [
+  const moved: [string, (d: Doc) => void, string][] = [
     ['reordered districts', (d) => d.districts.reverse(), 'would move'],
     ['an added district', (d) => d.districts.push({ key: 'reef', name: 'Reef', accent: '#aaaaaa', monument: null, proofyRule: null }), 'cannot be added'],
     ['a removed district', (d) => d.districts.pop(), 'cannot be removed'],
     ['a renamed district key', (d) => (d.districts[1].key = 'tides'), 'cannot be removed or renamed'],
+  ]
+  for (const [label, change, says] of moved) {
+    it(`accepts ${label} (geometry is not part of a verdict), refuses it as governing once a property froze the geometry, and world-evolution-v2 rejected it`, () => {
+      const prior = founded()
+      const j = judgeAgainst(prior, change)
+      expect(j.verdict).toBe('accepted')
+      if (j.verdict !== 'accepted') return
+      expect(sameGeometry(j.foundation, prior.foundation)).toBe(false)
+      // Before any property: nothing is frozen, so it may govern.
+      expect(governingProblems(prior.known, j.foundation, null)).toEqual([])
+      // After the first property: the frozen geometry is the founding one here, and it cannot move.
+      const frozen = governingProblems(prior.known, j.foundation, geometryOf(prior.foundation))
+      expect(frozen.length).toBeGreaterThan(0)
+      expect(frozen.map((p) => p.detail).join(' | ')).toContain(says)
+      expect(frozen.map((p) => p.detail).join(' | ')).toMatch(/first property/)
+      // The old judge's rule, kept to check its recorded verdicts.
+      const d = doc()
+      change(d)
+      expect(judgeWorldConfigAs(WORLD_CONFIG_JUDGE_V2, d, WORLD, prior.foundation)).toMatchObject({ verdict: 'rejected', code: 'config_incompatible' })
+      expect(geometryProblems(prior.foundation, j.foundation, 'founding').map((p) => p.detail).join(' | ')).toContain(says)
+    })
+  }
+
+  it('freezes on whatever geometry governed the first property, not the founding one', () => {
+    const prior = founded()
+    const six = judgeAgainst(prior, (d) => d.districts.push({ key: 'reef', name: 'Reef', accent: '#aaaaaa', monument: null, proofyRule: null }, { key: 'dune', name: 'Dune', accent: '#bbbbbb', monument: null, proofyRule: null }))
+    if (six.verdict !== 'accepted') throw new Error('six districts should be a valid city')
+    expect(six.foundation.districts).toHaveLength(6)
+    const frozen = geometryOf(six.foundation)
+    // The six-district version, renamed and recoloured, still governs; the founding four-district version no longer can.
+    const recoloured = judgeAgainst(prior, (d) => {
+      d.cityName = 'Harborlight Six'
+      d.districts.push({ key: 'reef', name: 'Coral Reef', accent: '#000000', monument: null, proofyRule: null }, { key: 'dune', name: 'Dunes', accent: '#111111', monument: null, proofyRule: null })
+    })
+    if (recoloured.verdict !== 'accepted') throw new Error('invalid')
+    expect(governingProblems(prior.known, recoloured.foundation, frozen)).toEqual([])
+    expect(governingProblems(prior.known, prior.foundation, frozen).map((p) => p.detail)).toContain('the city was fixed by its first property with 6 districts; their number cannot change')
+  })
+
+  const incompatible: [string, (d: Doc) => void, string][] = [
     ['a removed collection', (d) => (d.collections[0] = { key: 'gulls', chain: 'eip155:1', contract: '0x000000000000000000000000000000000000b002', displayName: 'Gulls' }), 'cannot be removed'],
     ['a collection pointed at another contract', (d) => (d.collections[0].contract = '0x000000000000000000000000000000000000a002'), 'cannot be pointed at another contract'],
     ['a collection moved to another chain', (d) => (d.collections[0].chain = 'eip155:1'), 'cannot be pointed at another contract'],
@@ -142,22 +198,41 @@ describe('judging a configuration for a world', () => {
     const established = establishedCollections(prior.foundation, [[...prior.known, gulls]])
     expect(established).toEqual([...prior.known, gulls])
     // The founding document again (an older version re-activated, or the same content re-published) cannot govern.
-    expect(governingProblems(prior.foundation, established, prior.foundation)).toEqual([{ path: 'collections', detail: 'collection gulls is part of this city and cannot be removed' }])
+    expect(governingProblems(established, prior.foundation, null)).toEqual([{ path: 'collections', detail: 'collection gulls is part of this city and cannot be removed' }])
     // Nor can one pointing gulls elsewhere, or naming its contract under another key.
-    expect(governingProblems(prior.foundation, established, { ...prior.foundation, collections: [...prior.known, { ...gulls, contract: '0x000000000000000000000000000000000000b003' }] }).map((p) => p.detail)).toEqual([
+    expect(governingProblems(established, { ...prior.foundation, collections: [...prior.known, { ...gulls, contract: '0x000000000000000000000000000000000000b003' }] }, null).map((p) => p.detail)).toEqual([
       'collection gulls names eip155:1 0x000000000000000000000000000000000000b002 in this city; a collection key cannot be pointed at another contract',
     ])
-    expect(governingProblems(prior.foundation, established, { ...prior.foundation, collections: [...prior.known, gulls, { ...gulls, key: 'terns' }] }).map((p) => p.detail)).toEqual(['this contract is already in this city as collection gulls'])
+    expect(governingProblems(established, { ...prior.foundation, collections: [...prior.known, gulls, { ...gulls, key: 'terns' }] }, null).map((p) => p.detail)).toEqual(['this contract is already in this city as collection gulls'])
     // Keeping it, and adding more, governs.
-    expect(governingProblems(prior.foundation, established, { ...prior.foundation, collections: [...prior.known, gulls, { key: 'terns', chain: 'eip155:1', contract: '0x000000000000000000000000000000000000b004' }] })).toEqual([])
+    expect(governingProblems(established, { ...prior.foundation, collections: [...prior.known, gulls, { key: 'terns', chain: 'eip155:1', contract: '0x000000000000000000000000000000000000b004' }] }, geometryOf(prior.foundation))).toEqual([])
     // A key keeps the first contract the history gave it.
     expect(establishedCollections(prior.foundation, [[gulls], [{ ...gulls, contract: '0x000000000000000000000000000000000000b003' }]])).toEqual([...prior.known, gulls])
   })
 
-  it('names its rules', () => {
+  it('names its rules, and judges again only by rules it has', () => {
     expect(WORLD_CONFIG_JUDGE.length).toBeLessThanOrEqual(100)
-    // v2: verdicts against the foundation alone, governing checked separately against established collections.
-    expect(WORLD_CONFIG_JUDGE).toBe('rare-city/play-config-v1+world-evolution-v2')
+    // v3: verdicts against the founding collections alone; geometry is frozen by the first property and checked when governing.
+    expect(WORLD_CONFIG_JUDGE).toBe('rare-city/play-config-v1+world-evolution-v3')
+    expect(WORLD_CONFIG_JUDGE_V2).toBe('rare-city/play-config-v1+world-evolution-v2')
+    const { foundation } = founded()
+    expect(judgeWorldConfigAs(WORLD_CONFIG_JUDGE, doc(), WORLD, foundation)?.verdict).toBe('accepted')
+    expect(judgeWorldConfigAs(WORLD_CONFIG_JUDGE_V2, doc(), WORLD, foundation)?.verdict).toBe('accepted')
+    expect(judgeWorldConfigAs('hand', doc(), WORLD, foundation)).toBeNull()
+  })
+
+  it('reads a stored geometry back exactly, and compares geometries by layout, districts and order', () => {
+    const { foundation } = founded()
+    const g = geometryOf(foundation)
+    expect(g).toEqual({ layout: foundation.layout, districts: foundation.districts })
+    expect(parseWorldGeometry(JSON.parse(JSON.stringify(g.layout)), JSON.parse(JSON.stringify(g.districts)))).toEqual(g)
+    expect(parseWorldGeometry({ ...g.layout, extra: 1 }, g.districts)).toBeNull()
+    expect(parseWorldGeometry(g.layout, [])).toBeNull()
+    expect(parseWorldGeometry(g.layout, [g.districts[0], g.districts[0]])).toBeNull()
+    expect(parseWorldGeometry(g.layout, [{ ...g.districts[0], geometryFingerprint: 'x' }])).toBeNull()
+    expect(sameGeometry(foundation, g)).toBe(true)
+    expect(sameGeometry(g, { ...g, districts: [...g.districts].reverse() })).toBe(false)
+    expect(sameGeometry(g, { ...g, layout: { ...g.layout, key: 'other' } })).toBe(false)
   })
 })
 

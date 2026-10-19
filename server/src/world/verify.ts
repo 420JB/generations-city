@@ -4,18 +4,22 @@ import { PLAY_ENVIRONMENTS_FOR_MODE, type AppMode } from '../config'
 import {
   cityMode,
   establishedCollections,
+  geometryOf,
   governingProblems,
   judgeWorldConfig,
+  judgeWorldConfigAs,
   parseAssetKey,
   parseWorldCityState,
   parseWorldFoundation,
+  parseWorldGeometry,
   POPULATED_WORLD_CITY_STATE_VERSION,
   PROPERTY_ACTIVATED_EVENT,
   replayPropertyActivations,
   sameFoundation,
+  sameGeometry,
   SUPPORTED_PLAY_SCHEMA_VERSIONS,
   WORLD_CITY_STATE_VERSION,
-  WORLD_CONFIG_JUDGE,
+  WORLD_CONFIG_JUDGE_V2,
   worldCityProblems,
   worldCityStateText,
   worldProperty,
@@ -23,6 +27,7 @@ import {
   type RecordedActivation,
   type World,
   type WorldFoundation,
+  type WorldGeometry,
 } from '../engine'
 import { canonicalJson } from '../play/canonical'
 import { parityProblem, worldCityId, type PropertyRow } from './store'
@@ -47,17 +52,23 @@ import { parityProblem, worldCityId, type PropertyRow } from './store'
  *   properties  (migration 0007) one `world_properties` row per later sequence, each exactly a building
  *               of the state; its id the V2 property id of its NFT in this world; its NFT from a
  *               collection of the version that governed the world when it was activated, under that
- *               key; its district's geometry the founding one; its event exactly the engine's
- *               transition. REPLAY: every activation, in order, from the empty founded city, through
+ *               key; its district's geometry the frozen one; its event exactly the engine's
+ *               transition; (0008) its original activator recorded, unless it was written before
+ *               0008. REPLAY: every activation, in order, from the empty founded city, through
  *               the engine's own proposal on its governing version, must be valid and rebuild the
  *               stored state byte for byte (so plots, ward openings and sequences all agree);
+ *   freeze      (migration 0008) present exactly when the world has a property: at its first
+ *               property's sequence, adoption and version, holding exactly that version's geometry
+ *               (for a freeze 0008 recorded, the founding geometry);
  *   configs     every copy is Play's canonical text of itself and hashes to its hash; every accepted
- *               one is a valid city on the foundation's geometry that keeps every founding
- *               collection and names no founding contract under another key; a rejected one says
- *               why, and one judged by this build's rules has the verdict those rules give it;
+ *               one is a valid city that keeps every founding collection and names no founding
+ *               contract under another key, (0008) recorded with exactly the geometry it draws, and,
+ *               if judged by world-evolution-v2, on the founding geometry; a rejected one says why,
+ *               and one judged by rules this build has (its own, or v2's) has the verdict they give it;
  *   adoptions   numbered 1, 2, 3 ...; adoption 1 is the founding version; only accepted versions
- *               are adopted, never the one already governing; and each keeps every collection the
- *               adoptions before it established (collections are additive).
+ *               are adopted, never the one already governing; each keeps every collection the
+ *               adoptions before it established (collections are additive); and each from the one
+ *               that governed the first property on draws the frozen geometry.
  * Across worlds: no installation, Discord server (per game) or city belongs to two worlds.
  */
 export interface WorldVerifyReport {
@@ -70,6 +81,10 @@ export interface WorldVerifyReport {
   configVersions: { accepted: number; rejected: number }
   /** World properties (migration 0007). */
   properties: number
+  /** Of those, properties written before migration 0008, with no recorded original activator. */
+  propertiesWithoutActivator: number
+  /** The sequence at which the world's first property froze its district geometry (0008), or null. */
+  geometryFrozenAt: number | null
 }
 
 export type AddViolation = (rule: string, detail: string) => void
@@ -105,6 +120,29 @@ interface WorldPropertyRow extends PropertyRow {
   district_geometry_fingerprint: string
   activated_adoption_seq: number
   activated_config_version: number
+  activator_core_user_id: string | null
+  activator_discord_user_id: string | null
+  activated_at: Date
+}
+
+interface FreezeRow {
+  world_id: string
+  city_id: string
+  frozen_at_sequence: string
+  adoption_seq: number
+  config_version: number
+  layout_key: string
+  layout_geometry_fingerprint: string
+  districts: unknown
+  frozen_by: string
+}
+
+interface GeometryRow {
+  world_id: string
+  version: number
+  layout_key: string
+  layout_geometry_fingerprint: string
+  districts: unknown
 }
 
 interface VersionRow {
@@ -148,15 +186,24 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
     await client.query<VersionRow>('SELECT world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by FROM world_config_versions ORDER BY world_id, version')
   ).rows
   const adoptions = (await client.query<{ world_id: string; adoption_seq: number; version: number }>('SELECT world_id, adoption_seq, version FROM world_config_adoptions ORDER BY world_id, adoption_seq')).rows
-  // Before migration 0007 there are no world properties.
-  const properties = (await client.query<{ present: boolean }>(`SELECT to_regclass('world_properties') IS NOT NULL AS present`)).rows[0].present
+  // Before migration 0007 there are no world properties; before 0008 no geometries, freezes or original activators.
+  const present = async (table: string) => (await client.query<{ present: boolean }>(`SELECT to_regclass($1) IS NOT NULL AS present`, [table])).rows[0].present
+  const policies = await present('world_geometry_freezes')
+  const properties = (await present('world_properties'))
     ? (
         await client.query<WorldPropertyRow>(
-          `SELECT world_id, id, chain, standard, contract, token_id, collection_key, district_key, ward, plot, plot_id, building_id, district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version
+          `SELECT world_id, id, chain, standard, contract, token_id, collection_key, district_key, ward, plot, plot_id, building_id, district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version,
+                  ${policies ? 'activator_core_user_id, activator_discord_user_id' : 'NULL AS activator_core_user_id, NULL AS activator_discord_user_id'}, activated_at
              FROM world_properties ORDER BY world_id, activated_sequence`,
         )
       ).rows
     : []
+  const freezes = policies
+    ? (await client.query<FreezeRow>('SELECT world_id, city_id, frozen_at_sequence, adoption_seq, config_version, layout_key, layout_geometry_fingerprint, districts, frozen_by FROM world_geometry_freezes ORDER BY world_id')).rows
+    : []
+  const geometries = policies ? (await client.query<GeometryRow>('SELECT world_id, version, layout_key, layout_geometry_fingerprint, districts FROM world_config_geometries ORDER BY world_id, version')).rows : []
+  // When 0008 was applied: a property written since must name its original activator.
+  const policiesSince = policies ? ((await client.query<{ applied_at: Date }>('SELECT applied_at FROM schema_migrations WHERE version = 8')).rows[0]?.applied_at ?? null) : null
   const legacy = (
     await client.query<{ city_id: string; intents: number; properties: number }>(
       `SELECT w.city_id, (SELECT count(*) FROM activation_intents i WHERE i.city_id = w.city_id)::int AS intents, (SELECT count(*) FROM properties p WHERE p.city_id = w.city_id)::int AS properties FROM worlds w`,
@@ -169,7 +216,18 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
 
   for (const w of worlds) {
     const label = `world ${w.id}`
-    const report: WorldVerifyReport = { id: w.id, city: w.city_id, sequence: null, play: null, foundingConfigVersion: null, governingConfigVersion: null, configVersions: { accepted: 0, rejected: 0 }, properties: 0 }
+    const report: WorldVerifyReport = {
+      id: w.id,
+      city: w.city_id,
+      sequence: null,
+      play: null,
+      foundingConfigVersion: null,
+      governingConfigVersion: null,
+      configVersions: { accepted: 0, rejected: 0 },
+      properties: 0,
+      propertiesWithoutActivator: 0,
+      geometryFrozenAt: null,
+    }
     reports.push(report)
 
     // Binding.
@@ -225,10 +283,17 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
     }
     report.foundingConfigVersion = typeof fConfig.version === 'number' ? fConfig.version : null
 
+    // The geometry freeze (0008), read here and checked against the properties below.
+    const frozenRow = freezes.find((f) => f.world_id === w.id)
+    const freeze = frozenRow ? freezeOf(frozenRow) : null
+    if (frozenRow && !freeze) add('freeze', `${label}'s geometry freeze is not a geometry`)
+    if (frozenRow) report.geometryFrozenAt = Number(frozenRow.frozen_at_sequence)
+
     // Configuration copies. Each verdict depends on the copy and the foundation alone.
     const mine = versions.filter((v) => v.world_id === w.id)
-    const acceptedCollections = new Map<number, FoundationCollection[]>()
+    const acceptedFoundations = new Map<number, WorldFoundation>()
     const acceptedWorlds = new Map<number, World>()
+    const recordedGeometries = new Map(geometries.filter((g) => g.world_id === w.id).map((g) => [g.version, g]))
     for (const v of mine) {
       const vLabel = `${label} configuration version ${v.version}`
       if (report.play && v.play_installation_id !== report.play.installationId) add('configs', `${vLabel} was served by another installation`)
@@ -249,10 +314,13 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       if (sha256(v.config_canonical) !== v.config_hash) add('configs', `${vLabel} does not hash to its config_hash`)
       if (v.verdict === 'rejected') {
         report.configVersions.rejected++
+        if (recordedGeometries.has(v.version)) add('geometry', `${vLabel} is rejected but has a recorded geometry`)
         if (!isRecord(v.rejection) || (v.rejection.code !== 'config_invalid' && v.rejection.code !== 'config_incompatible') || !Array.isArray(v.rejection.problems)) add('configs', `${vLabel} is rejected without a reason`)
-        else if (v.judged_by === WORLD_CONFIG_JUDGE && SUPPORTED_PLAY_SCHEMA_VERSIONS.includes(v.schema_version)) {
-          const again = judgeWorldConfig(document, w.id, foundation)
-          if (again.verdict !== 'rejected' || again.code !== v.rejection.code) add('verdict', `${vLabel} is recorded as rejected (${String(v.rejection.code)}); this build's rules ${again.verdict === 'accepted' ? 'accept it' : `reject it as ${again.code}`}`)
+        else if (SUPPORTED_PLAY_SCHEMA_VERSIONS.includes(v.schema_version)) {
+          // Checked by the rules of the judge that recorded it, when this build has them; never by other rules.
+          const again = judgeWorldConfigAs(v.judged_by, document, w.id, foundation)
+          if (again && (again.verdict !== 'rejected' || again.code !== v.rejection.code))
+            add('verdict', `${vLabel} is recorded as rejected (${String(v.rejection.code)}) by ${v.judged_by}; its rules ${again.verdict === 'accepted' ? 'accept it' : `reject it as ${again.code}`}`)
         }
         continue
       }
@@ -266,10 +334,16 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
         add('configs', `${vLabel} is accepted but is not a valid city: ${judged.problems[0]?.path} ${judged.problems[0]?.detail}`)
         continue
       }
-      acceptedCollections.set(v.version, judged.foundation.collections)
+      acceptedFoundations.set(v.version, judged.foundation)
       acceptedWorlds.set(v.version, judged.world)
       if (v.version === report.foundingConfigVersion && !sameFoundation(judged.foundation, foundation)) add('foundation', `${vLabel} founded the world but does not make the recorded foundation`)
-      if (JSON.stringify([judged.foundation.layout, judged.foundation.districts]) !== JSON.stringify([foundation.layout, foundation.districts])) add('geometry', `${vLabel} is accepted but would move the city's districts`)
+      // world-evolution-v2 accepted only the founding geometry; this build's judge leaves geometry to governing (0008).
+      if (v.judged_by === WORLD_CONFIG_JUDGE_V2 && !sameGeometry(judged.foundation, foundation)) add('geometry', `${vLabel} is accepted by ${v.judged_by} but would move the city's districts`)
+      if (policies) {
+        const g = recordedGeometries.get(v.version)
+        const recorded = g ? parseWorldGeometry({ key: g.layout_key, geometryFingerprint: g.layout_geometry_fingerprint }, g.districts) : null
+        if (!recorded || !sameGeometry(recorded, judged.foundation)) add('geometry', `${vLabel} is accepted but ${g ? 'its recorded geometry is not the one it draws' : 'has no recorded geometry'}`)
+      }
       if (!keepsCollections(foundation, judged.foundation.collections)) add('collections', `${vLabel} is accepted but drops or repoints a founding collection`)
       for (const c of judged.foundation.collections) {
         const other = foundation.collections.find((f) => f.chain === c.chain && f.contract === c.contract && f.key !== c.key)
@@ -290,11 +364,13 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       const governed: FoundationCollection[][] = []
       adopted.forEach((a, i) => {
         if (i > 0 && a.version === adopted[i - 1].version) add('adoptions', `${label}'s adoption ${a.adoption_seq} adopts version ${a.version}, which already governed it`)
-        const collections = acceptedCollections.get(a.version)
-        if (!collections) return
-        const problems = governingProblems(foundation, establishedCollections(foundation, governed), { ...foundation, collections })
+        const candidate = acceptedFoundations.get(a.version)
+        if (!candidate) return
+        // From the adoption that governed the first property on, every governing version draws the frozen geometry.
+        const frozen = freeze && a.adoption_seq >= freeze.adoption ? freeze.geometry : null
+        const problems = governingProblems(establishedCollections(foundation, governed), candidate, frozen)
         if (problems.length > 0) add('adoptions', `${label}'s adoption ${a.adoption_seq} (version ${a.version}) could not govern it: ${problems[0].detail}`)
-        governed.push(collections)
+        governed.push(candidate.collections)
       })
       report.governingConfigVersion = adopted.at(-1)!.version
     }
@@ -307,6 +383,19 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       if (mismatch) add('properties', `${label}'s city and its property records disagree: ${mismatch}`)
       const governingWorld = report.governingConfigVersion === null ? undefined : acceptedWorlds.get(report.governingConfigVersion)
       if (governingWorld) for (const p of worldCityProblems(governingWorld, state)) add('state', `${label}: ${p}`)
+    }
+    if (policies) {
+      const first = mine2[0]
+      if (!first && frozenRow) add('freeze', `${label} has frozen its district geometry but has no property`)
+      if (first && !frozenRow) add('freeze', `${label} has properties but no frozen district geometry`)
+      if (first && frozenRow && freeze) {
+        if (frozenRow.city_id !== w.city_id || Number(frozenRow.frozen_at_sequence) !== Number(first.activated_sequence) || freeze.adoption !== first.activated_adoption_seq || freeze.configVersion !== first.activated_config_version)
+          add('freeze', `${label}'s geometry freeze is not at its first property (sequence ${first.activated_sequence}, adoption ${first.activated_adoption_seq}, version ${first.activated_config_version})`)
+        const drawn = acceptedFoundations.get(freeze.configVersion)
+        if (!drawn || !sameGeometry(drawn, freeze.geometry)) add('freeze', `${label}'s frozen geometry is not the geometry configuration version ${freeze.configVersion} draws`)
+        if (frozenRow.frozen_by === 'migration-0008' ? !sameGeometry(freeze.geometry, foundation) : frozenRow.frozen_by !== 'first-property')
+          add('freeze', `${label}'s geometry freeze says it was ${frozenRow.frozen_by}, which it cannot have been`)
+      }
     }
     const steps: RecordedActivation[] = []
     let lastAdoption = 0
@@ -333,7 +422,14 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
         if (identity.propertyId !== p.id || identity.buildingId !== p.building_id) add('properties', `${pLabel} does not carry the V2 property id of its NFT in this world`)
         if (identity.collection.key !== p.collection_key) add('properties', `${pLabel} names collection ${p.collection_key}; its NFT is collection ${identity.collection.key}`)
       }
-      if (!foundation.districts.some((d) => d.key === p.district_key && d.geometryFingerprint === p.district_geometry_fingerprint)) add('geometry', `${pLabel} stands on district ${p.district_key} with geometry the world was not founded on`)
+      // Before 0008 a world's geometry froze at its founding.
+      const ground: WorldGeometry = policies ? (freeze?.geometry ?? { layout: foundation.layout, districts: [] }) : foundation
+      if (!ground.districts.some((d) => d.key === p.district_key && d.geometryFingerprint === p.district_geometry_fingerprint)) add('geometry', `${pLabel} stands on district ${p.district_key} with geometry its world did not freeze`)
+      if (p.activator_core_user_id === null || p.activator_discord_user_id === null) {
+        report.propertiesWithoutActivator++
+        if (p.activator_core_user_id !== p.activator_discord_user_id) add('activator', `${pLabel} records half an original activator`)
+        else if (policiesSince && p.activated_at >= policiesSince) add('activator', `${pLabel} was activated after migration 0008 but records no original activator`)
+      }
       steps.push({ world, request: { asset, plotId: p.plot_id }, sequence: Number(p.activated_sequence) })
     }
     if (steps.length === mine2.length && mine2.length > 0) {
@@ -359,6 +455,17 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
   for (const key of new Set(twice(reports.flatMap((r) => (r.play ? [`${r.play.environment}/${r.play.gameKey}/${r.play.discordGuildId}`] : []))))) add('cross-world', `Discord server ${key} has more than one world`)
   for (const key of new Set(twice(reports.map((r) => r.city)))) add('cross-world', `city ${key} belongs to more than one world`)
   return reports
+}
+
+interface Freeze {
+  adoption: number
+  configVersion: number
+  geometry: WorldGeometry
+}
+
+function freezeOf(row: FreezeRow): Freeze | null {
+  const geometry = parseWorldGeometry({ key: row.layout_key, geometryFingerprint: row.layout_geometry_fingerprint }, row.districts)
+  return geometry ? { adoption: row.adoption_seq, configVersion: row.config_version, geometry: geometryOf(geometry) } : null
 }
 
 /** A JSON value with object keys sorted, for comparing a jsonb payload (which reorders keys) with what the engine makes. */

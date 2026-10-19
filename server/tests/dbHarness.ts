@@ -60,3 +60,20 @@ export function useTestSchema(): TestSchema {
   })
   return ctx
 }
+
+/**
+ * This build records each accepted configuration version's geometry and reads a world's geometry freeze (migration
+ * 0008). A test that founds or opens worlds through this build on a schema from BEFORE 0008 (to prove what an older
+ * migration does to a populated database) stands in for those two tables while it does, and drops them before the
+ * real migration creates them. The stand-ins hold no rules: only the columns this build reads and writes.
+ */
+export async function withPre0008StandIns<T>(db: pg.Pool, work: () => Promise<T>): Promise<T> {
+  await db.query('CREATE TABLE world_config_geometries (world_id uuid, version integer, layout_key text, layout_geometry_fingerprint text, districts jsonb, recorded_by text)')
+  await db.query('CREATE TABLE world_geometry_freezes (world_id uuid, frozen_at_sequence bigint, adoption_seq integer, config_version integer, layout_key text, layout_geometry_fingerprint text, districts jsonb, frozen_by text)')
+  try {
+    return await work()
+  } finally {
+    await db.query('DROP TABLE world_config_geometries')
+    await db.query('DROP TABLE world_geometry_freezes')
+  }
+}

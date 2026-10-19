@@ -40,15 +40,16 @@ export function loadParsedBrandCity(config: Readonly<BrandCityConfig>, spec: Sam
 
 /**
  * A PERSISTENT city: a configuration the world accepted, drawn with the state the world
- * stored. The compiled geometry must be the world's own (`geometryFingerprint`), or nothing is
- * drawn: a city is never shown on districts it was not founded on. Nor is a stored state the
+ * stored. The compiled geometry must be the world's own (`geometryFingerprint`: the geometry the
+ * server says the city is drawn on, frozen once it has a property), or nothing is drawn: a city is
+ * never shown on districts that are not its own. Nor is a stored state the
  * engine finds impossible on that geometry (a building on no plot, a property id that is not its
  * NFT's, wards that do not add up): it is refused, never drawn in part.
  */
 export function loadPersistedBrandCity(config: Readonly<BrandCityConfig>, stored: WorldCityState, geometryFingerprint: string): BrandCityLoad {
   const compiled = compileBrandWorld(config)
   if (!compiled.ok) return { ok: false, problems: compiled.problems.map((p) => ({ path: `world:${p.code}`, detail: p.detail })) }
-  if (compiled.world.layout.geometryFingerprint !== geometryFingerprint) return { ok: false, problems: [{ path: 'districts', detail: 'this configuration does not draw the districts this city was founded on' }] }
+  if (compiled.world.layout.geometryFingerprint !== geometryFingerprint) return { ok: false, problems: [{ path: 'districts', detail: 'this configuration does not draw this city\'s districts' }] }
   const problems = worldCityProblems(compiled.world, stored)
   if (problems.length > 0) return { ok: false, problems: problems.map((detail) => ({ path: 'state', detail })) }
   const state = persistedBrandCityState(config, stored)

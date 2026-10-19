@@ -190,10 +190,19 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
     return { world_id: world.worldId, version, play_installation_id: world.installationId, schema_version: 1, config_hash: sha256(config), config_canonical: config, verdict: 'accepted', rejection: null, judged_by: 'test-validator/1', ...overrides }
   }
 
+  /** An accepted copy is recorded with a geometry (0008): any well-formed one, here. */
   async function addConfig(world: World, version: number, overrides: Record<string, unknown> = {}): Promise<void> {
     const row = configRow(world, version, overrides)
     const names = Object.keys(row)
-    await t.db.query(`INSERT INTO world_config_versions (${names.join(', ')}) VALUES (${names.map((_, i) => `$${i + 1}`).join(', ')})`, Object.values(row))
+    const insert = (db: pg.Pool | pg.PoolClient) => db.query(`INSERT INTO world_config_versions (${names.join(', ')}) VALUES (${names.map((_, i) => `$${i + 1}`).join(', ')})`, Object.values(row))
+    if (row.verdict !== 'accepted') return void (await insert(t.db))
+    await inTransaction(async (client) => {
+      await insert(client)
+      await client.query(
+        `INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) VALUES ($1, $2, 'test-layout', $3, $4::jsonb, 'test-validator/1')`,
+        [row.world_id, row.version, 'a'.repeat(64), JSON.stringify([{ key: 'd1', geometryFingerprint: 'b'.repeat(64) }])],
+      )
+    })
   }
 
   const adopt = (world: World, seq: number, version: number) => t.db.query('INSERT INTO world_config_adoptions (world_id, adoption_seq, version) VALUES ($1, $2, $3)', [world.worldId, seq, version])
@@ -904,6 +913,21 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
       await addConfig(a, 1)
       await addConfig(b, 1)
       await expect(addConfig(a, 1)).rejects.toMatchObject({ code: '23505' })
+      expect(await count('world_config_versions')).toBe(2)
+    })
+
+    it('records an accepted copy only with its geometry (0008), and that geometry only for an accepted copy', async () => {
+      await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'staging' })
+      const world = await addWorld('staging')
+      const row = configRow(world, 1)
+      const names = Object.keys(row)
+      await expect(t.db.query(`INSERT INTO world_config_versions (${names.join(', ')}) VALUES (${names.map((_, i) => `$${i + 1}`).join(', ')})`, Object.values(row))).rejects.toThrow('recorded with its geometry')
+      await addConfig(world, 2, { verdict: 'rejected', rejection: { code: 'x' } })
+      await expect(
+        t.db.query(`INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) VALUES ($1, 2, 'test-layout', $2, '[{"key":"d1","geometryFingerprint":"${'b'.repeat(64)}"}]', 'x')`, [world.worldId, 'a'.repeat(64)]),
+      ).rejects.toThrow('only for an accepted configuration version')
+      await addConfig(world, 1)
+      await expect(t.db.query(`UPDATE world_config_geometries SET recorded_by = 'y' WHERE world_id = $1`, [world.worldId])).rejects.toThrow("geometry is permanent: it cannot be changed")
       expect(await count('world_config_versions')).toBe(2)
     })
 

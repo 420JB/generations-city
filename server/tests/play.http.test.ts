@@ -175,6 +175,7 @@ describe('play sessions over HTTP', () => {
         districtRules: { status: 'unknown', reason: 'not-checked' },
       },
       permissions: { viewCity: true, claim: false, build: false },
+      originalActivations: [],
     })
     expect(env.s.rows).toHaveLength(1)
     // Only a hash is kept.

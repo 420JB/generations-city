@@ -10,8 +10,10 @@ import {
   judgeWorldConfig,
   parseWorldCityState,
   parseWorldFoundation,
+  parseWorldGeometry,
   POPULATED_WORLD_CITY_STATE_VERSION,
   projectWorldDistricts,
+  sameGeometry,
   worldBuildingId,
   WORLD_CITY_STATE_VERSION,
   WORLD_CONFIG_JUDGE,
@@ -21,7 +23,7 @@ import {
   type WorldBuildingRecord,
   type WorldCityState,
   type WorldConfigJudgement,
-  type WorldFoundation,
+  type WorldGeometry,
 } from '../engine'
 import type { LogFields, Logger } from '../log'
 import { canonicalJson } from '../play/canonical'
@@ -45,12 +47,21 @@ import { uuidv7 } from './ids'
  * one commit, and the other rolls back everything it wrote and reads the winner's world.
  *
  * Later launches record the version they are pinned to (once, with this game's verdict, which
- * depends on the version and the world's foundation alone), check that it may govern the world
- * (it keeps every collection the world has established), adopt it if it is the installation's
- * active version, and read the city back. A version this world cannot accept is recorded as
- * rejected and the launch is refused; so is a launch pinned to an accepted version that may not
- * govern. Either way the world is not changed, replaced or reset. Nothing here ever updates or
+ * depends on the version and the world's founding collections alone, and, when accepted, the
+ * geometry it draws), check that it may govern the world (it keeps every collection the world has
+ * established and, once the world's first property has frozen its district geometry, draws exactly
+ * that geometry), adopt it if it is the installation's active version, and read the city back. A
+ * version this world cannot accept is recorded as rejected and the launch is refused; so is a
+ * launch pinned to an accepted version that may not govern, and one pinned to a version that does
+ * not govern and draws other districts than the one that does (it would show a city that is not
+ * there). Either way the world is not changed, replaced or reset. Nothing here ever updates or
  * deletes a city.
+ *
+ * GEOMETRY (migration 0008, locked policy). A world's district geometry is that of the version
+ * governing it until its first property; the first property's transaction (`world/properties.ts`)
+ * freezes the geometry it stood on (`world_geometry_freezes`). Adoptions and that activation take
+ * the same city row lock, so an adoption either governed the first property, or comes after it and
+ * must draw the frozen geometry.
  *
  * A play session reads its world back with `read` (`play/session.ts`): one read-only snapshot of
  * the city, its founding record, its property records and the version that governs it now,
@@ -101,6 +112,8 @@ export interface VerifiedLaunch {
   active: { version: number | null; configHash: string | null }
   /** The version the run is pinned to, its hash already recomputed and matched. */
   pinned: { version: number; schemaVersion: number; configHash: string; config: Record<string, unknown> }
+  /** The player Play's run named, only to tell them which properties they originally activated. Never written. */
+  player?: { discordUserId: string; coreUserId: string }
 }
 
 type AcceptedJudgement = Extract<WorldConfigJudgement, { verdict: 'accepted' }>
@@ -111,6 +124,8 @@ export interface OpenedWorld {
   instance: string
   /** The pinned configuration, as the world accepted it. */
   accepted: AcceptedJudgement
+  /** The ids of the properties `launch.player` originally activated in this world, in activation order. */
+  originalActivations: string[]
 }
 
 /**
@@ -134,6 +149,24 @@ export interface WorldScope {
 export interface ReadWorld {
   world: PlayWorld
   governing: { version: number; schemaVersion: number; configHash: string; config: Record<string, unknown> }
+  /** The ids of the properties the reading player originally activated, in activation order (none without a player). */
+  originalActivations: string[]
+}
+
+/** Who a property's original activator is (migration 0008): the player Proofy named for the activating session. */
+export interface ActivatorIdentity {
+  discordUserId: string
+  coreUserId: string
+}
+
+/** The district geometry a world's first property froze (migration 0008). */
+export interface GeometryFreeze {
+  sequence: number
+  adoption: number
+  configVersion: number
+  geometry: WorldGeometry
+  /** `migration-0008`: the first property was placed before 0008, when geometry froze at founding. */
+  frozenBy: 'first-property' | 'migration-0008'
 }
 
 export interface WorldStore {
@@ -142,8 +175,9 @@ export interface WorldStore {
   /**
    * A world, read and nothing else: no Play, no lock, nothing written. The binding must still be exactly
    * `scope`'s. Everything comes from one snapshot, so the state, sequence and governing version agree.
+   * `player`, the session's, is only matched against the properties' original activators.
    */
-  read(scope: WorldScope): Promise<ReadWorld>
+  read(scope: WorldScope, player?: ActivatorIdentity): Promise<ReadWorld>
 }
 
 /** Points in founding at which a test may make it fail, to prove nothing is left half-written. */
@@ -194,12 +228,41 @@ interface VersionRow {
   verdict: 'accepted' | 'rejected'
   rejection: { code?: unknown; problems?: unknown } | null
   config_canonical: string
+  /** Its recorded geometry (`world_config_geometries`, 0008): null for a rejected version. */
+  g_layout_key: string | null
+  g_layout_fingerprint: string | null
+  g_districts: unknown
 }
+
+/** A world's configuration copies, each with the geometry recorded for it. */
+const VERSIONS = `SELECT v.version, v.schema_version, v.config_hash, v.verdict, v.rejection, v.config_canonical,
+                         g.layout_key AS g_layout_key, g.layout_geometry_fingerprint AS g_layout_fingerprint, g.districts AS g_districts
+                    FROM world_config_versions v LEFT JOIN world_config_geometries g ON g.world_id = v.world_id AND g.version = v.version
+                   WHERE v.world_id = $1`
 
 const unavailable = (why: string) => new WorldRefusal('world_unavailable', why)
 
-/** The geometry part of two foundations: what decides where every plot is. */
-const sameGeometry = (a: WorldFoundation, b: WorldFoundation) => JSON.stringify([a.layout, a.districts]) === JSON.stringify([b.layout, b.districts])
+/** What `PlayWorld.definition` says of a world drawn with `drawn`. */
+function definitionOf(foundingVersion: number, governingVersion: number, drawn: AcceptedJudgement, freeze: GeometryFreeze | null): PlayWorld['definition'] {
+  return {
+    foundingConfigVersion: foundingVersion,
+    governingConfigVersion: governingVersion,
+    layoutKey: drawn.foundation.layout.key,
+    geometryFingerprint: drawn.foundation.layout.geometryFingerprint,
+    districtGeometry: freeze ? { frozen: true, atSequence: freeze.sequence, configVersion: freeze.configVersion } : { frozen: false },
+  }
+}
+
+/** The properties of a world `player` originally activated (0008), in activation order. */
+async function originalActivationsOf(client: PoolClient, worldId: string, player: ActivatorIdentity | undefined): Promise<string[]> {
+  if (!player) return []
+  return (
+    await client.query<{ id: string }>(
+      'SELECT id FROM world_properties WHERE world_id = $1 AND activator_discord_user_id = $2 AND activator_core_user_id = $3 ORDER BY activated_sequence',
+      [worldId, player.discordUserId, player.coreUserId],
+    )
+  ).rows.map((r) => r.id)
+}
 
 export function createWorldStore(db: Database, { mode, log, onFoundingStep }: WorldStoreOptions): WorldStore {
   const isRefusal = (err: unknown) => err instanceof WorldRefusal || err instanceof LostFoundingRace
@@ -284,13 +347,14 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       cityId,
       instance: city.instance_id,
       accepted: judged,
+      originalActivations: [],
       world: {
         id: worldId,
         provisioned: true,
         created: true,
         foundedAt: created.created_at.toISOString(),
         sequence: 1,
-        definition: { foundingConfigVersion: pinned.version, governingConfigVersion: pinned.version, layoutKey: judged.foundation.layout.key, geometryFingerprint: judged.foundation.layout.geometryFingerprint },
+        definition: definitionOf(pinned.version, pinned.version, judged, null),
         state,
         districts: districtsOf(worldId, judged.world, state),
       },
@@ -305,6 +369,12 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
       [worldId, pinned.version, launch.installationId, pinned.schemaVersion, pinned.configHash, canonicalJson(pinned.config), judged.verdict, rejection, WORLD_CONFIG_JUDGE],
     )
+    // An accepted version is recorded with the geometry it draws (0008), whether or not it ever governs.
+    if (judged.verdict === 'accepted')
+      await client.query(
+        'INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) VALUES ($1, $2, $3, $4, $5::jsonb, $6)',
+        [worldId, pinned.version, judged.foundation.layout.key, judged.foundation.layout.geometryFingerprint, JSON.stringify(judged.foundation.districts), WORLD_CONFIG_JUDGE],
+      )
   }
 
   /**
@@ -318,10 +388,10 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       throw new WorldRefusal('world_binding_conflict', 'This installation\'s city is bound to another game or Discord server.')
 
     // The lock every change to this city takes: launches of one installation queue here, so versions and adoptions are written in order.
-    const { instance, sequence, state, foundation, foundingVersion } = await readFounded(client, bound, true)
+    const { instance, sequence, state, foundation, foundingVersion, freeze } = await readFounded(client, bound, true)
 
-    const versions = (await client.query<VersionRow>('SELECT version, schema_version, config_hash, verdict, rejection, config_canonical FROM world_config_versions WHERE world_id = $1 ORDER BY version', [worldId])).rows
-    const accepted = acceptedReader(worldId, foundation)
+    const versions = (await client.query<VersionRow>(`${VERSIONS} ORDER BY v.version`, [worldId])).rows
+    const accepted = acceptedReader(worldId)
 
     let judged: AcceptedJudgement
     const recorded = versions.find((v) => v.version === pinned.version)
@@ -331,16 +401,18 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       if (recorded.verdict === 'rejected') return { rejected: refusalFrom(recorded) }
       judged = accepted(recorded)
     } else {
-      // Judged against the foundation alone, so the verdict is the same whichever launch brings the version first.
+      // Judged against the founding collections alone, so the verdict is the same whichever launch brings the version first.
       const verdict = judgeWorldConfig(pinned.config, worldId, foundation)
       await insertVersion(client, worldId, launch, verdict)
+      if (verdict.verdict === 'accepted') versions.push(versionRowOf(pinned, verdict))
       notes.push(['world configuration version recorded', { world: worldId, version: pinned.version, verdict: verdict.verdict, ...(verdict.verdict === 'rejected' ? { code: verdict.code } : {}) }])
       if (verdict.verdict === 'rejected') return { rejected: new WorldRefusal(verdict.code, 'The pinned configuration cannot govern this city.', verdict.problems) }
       judged = verdict
     }
 
     // Only a version that could govern the world now is drawn or adopted: one that keeps every collection the
-    // versions that have governed it established. Collections are additive; nothing is written past this point.
+    // versions that have governed it established (collections are additive) and, once the world's first property
+    // has frozen its geometry, draws exactly that geometry. Nothing but an adoption is written past this point.
     const adoptions = (await client.query<{ adoption_seq: number; version: number }>('SELECT adoption_seq, version FROM world_config_adoptions WHERE world_id = $1 ORDER BY adoption_seq', [worldId])).rows
     const latest = adoptions.at(-1)
     if (!latest) throw unavailable(`world ${worldId} has no adopted configuration`)
@@ -349,8 +421,9 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       if (!row) throw unavailable(`world ${worldId} adopted version ${a.version}, which it has no copy of`)
       return accepted(row).foundation.collections
     })
-    const problems = governingProblems(foundation, establishedCollections(foundation, governed), judged.foundation)
-    if (problems.length > 0) return { rejected: new WorldRefusal('config_incompatible', 'The pinned configuration would drop or repoint a collection this city has established, so it cannot govern it.', problems) }
+    const problems = governingProblems(establishedCollections(foundation, governed), judged.foundation, freeze?.geometry ?? null)
+    if (problems.length > 0)
+      return { rejected: new WorldRefusal('config_incompatible', 'The pinned configuration would move the districts this city\'s properties stand on, or drop or repoint a collection it has established, so it cannot govern it.', problems) }
 
     // The configuration that governs the city follows the installation's ACTIVE version. A run pinned to an
     // older version is still drawn with that version's presentation, but does not turn the city back. Nor does
@@ -366,17 +439,26 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       }
     }
 
+    // A version that does not govern is drawn only on the districts of the one that does: before the first property
+    // the governing version may have changed them, and a run pinned to an older version would show a city that is
+    // not there. (Once the geometry is frozen every governing version draws it, so this holds already.)
+    const governingRow = versions.find((v) => v.version === governing)
+    if (!governingRow) throw unavailable(`world ${worldId} is governed by version ${governing}, which it has no copy of`)
+    if (governing !== pinned.version && !sameGeometry(accepted(governingRow).foundation, judged.foundation))
+      return { rejected: new WorldRefusal('config_superseded', 'This server\'s city configuration changed after this launch was issued.') }
+
     return {
       cityId: bound.city_id,
       instance,
       accepted: judged,
+      originalActivations: await originalActivationsOf(client, worldId, launch.player),
       world: {
         id: worldId,
         provisioned: true,
         created: false,
         foundedAt: bound.created_at.toISOString(),
         sequence,
-        definition: { foundingConfigVersion: foundingVersion, governingConfigVersion: governing, layoutKey: foundation.layout.key, geometryFingerprint: foundation.layout.geometryFingerprint },
+        definition: definitionOf(foundingVersion, governing, judged, freeze),
         state,
         districts: districtsOf(worldId, judged.world, state),
       },
@@ -384,7 +466,7 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
   }
 
   /** Read a world in one read-only snapshot. */
-  async function readWorld(scope: WorldScope): Promise<ReadWorld> {
+  async function readWorld(scope: WorldScope, player?: ActivatorIdentity): Promise<ReadWorld> {
     return withTransaction(db, isRefusal, async (client) => {
       await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
       await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`)
@@ -393,18 +475,19 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       if (!PLAY_ENVIRONMENTS_FOR_MODE[mode].includes(scope.environment)) throw unavailable(`Play environment ${scope.environment} is not served by APP_MODE=${mode}`)
 
       const bound = await boundTo(client, scope)
-      const { sequence, state, foundation, foundingVersion } = await readFounded(client, bound, false)
-      const { row, judged } = await governingOf(client, scope.worldId, foundation)
+      const { sequence, state, foundingVersion, freeze } = await readFounded(client, bound, false)
+      const { row, judged } = await governingOf(client, scope.worldId, freeze)
       const config = JSON.parse(row.config_canonical) as Record<string, unknown>
       return {
         governing: { version: row.version, schemaVersion: row.schema_version, configHash: row.config_hash, config },
+        originalActivations: await originalActivationsOf(client, scope.worldId, player),
         world: {
           id: scope.worldId,
           provisioned: true,
           created: false,
           foundedAt: bound.created_at.toISOString(),
           sequence,
-          definition: { foundingConfigVersion: foundingVersion, governingConfigVersion: row.version, layoutKey: foundation.layout.key, geometryFingerprint: foundation.layout.geometryFingerprint },
+          definition: definitionOf(foundingVersion, row.version, judged, freeze),
           state,
           districts: districtsOf(scope.worldId, judged.world, state),
         },
@@ -452,8 +535,9 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
 /**
  * A world's city and its founding record, checked: the bound city row, as founded (sequence 1, version 1) or with
  * properties (version 2, one property per later sequence), the `city.initialized` event that fixed its foundation,
- * and its property records, which must be exactly the buildings its state holds. `lock` takes the lock every
- * change to the city takes; a read takes none.
+ * its property records, which must be exactly the buildings its state holds, and its geometry freeze, which it has
+ * exactly when it has a property. `lock` takes the lock every change to the city takes (before anything else is
+ * read, so a change that held it is seen whole); a read takes none.
  */
 async function readFounded(client: PoolClient, bound: Pick<BindingRow, 'world_id' | 'city_id' | 'city_instance_id'>, lock: boolean) {
   const worldId = bound.world_id
@@ -482,7 +566,22 @@ async function readFounded(client: PoolClient, bound: Pick<BindingRow, 'world_id
   ).rows
   const mismatch = parityProblem(state, sequence, properties)
   if (mismatch) throw unavailable(`world ${worldId}'s city and its property records disagree: ${mismatch}`)
-  return { instance: city.instance_id, sequence, state, foundation, foundingVersion, properties }
+
+  const frozen = (
+    await client.query<{ frozen_at_sequence: string; adoption_seq: number; config_version: number; layout_key: string; layout_geometry_fingerprint: string; districts: unknown; frozen_by: string }>(
+      'SELECT frozen_at_sequence, adoption_seq, config_version, layout_key, layout_geometry_fingerprint, districts, frozen_by FROM world_geometry_freezes WHERE world_id = $1',
+      [worldId],
+    )
+  ).rows[0]
+  let freeze: GeometryFreeze | null = null
+  if (frozen) {
+    const geometry = parseWorldGeometry({ key: frozen.layout_key, geometryFingerprint: frozen.layout_geometry_fingerprint }, frozen.districts)
+    const first = properties[0]
+    if (!geometry || (frozen.frozen_by !== 'first-property' && frozen.frozen_by !== 'migration-0008') || !first || Number(frozen.frozen_at_sequence) !== Number(first.activated_sequence))
+      throw unavailable(`world ${worldId} holds a geometry freeze this build cannot read, or not at its first property`)
+    freeze = { sequence: Number(frozen.frozen_at_sequence), adoption: frozen.adoption_seq, configVersion: frozen.config_version, geometry, frozenBy: frozen.frozen_by }
+  } else if (properties.length > 0) throw unavailable(`world ${worldId} has properties but no frozen geometry`)
+  return { instance: city.instance_id, sequence, state, foundation, foundingVersion, properties, freeze }
 }
 
 /** The world a scope names, through its whole binding: a session names a world through the binding it was opened by. */
@@ -499,14 +598,19 @@ async function boundTo(client: PoolClient, scope: WorldScope): Promise<BindingRo
   return bound
 }
 
-/** The version that governs a world now (its latest adoption), read again exactly as a launch would. */
-async function governingOf(client: PoolClient, worldId: string, foundation: WorldFoundation): Promise<{ row: VersionRow; judged: AcceptedJudgement; adoption: number }> {
+/**
+ * The version that governs a world now (its latest adoption), read again exactly as a launch would: still an
+ * accepted city drawing its recorded geometry and, once the world's geometry is frozen, exactly that geometry.
+ * Anything else makes the world unreadable.
+ */
+async function governingOf(client: PoolClient, worldId: string, freeze: GeometryFreeze | null): Promise<{ row: VersionRow; judged: AcceptedJudgement; adoption: number }> {
   const latest = (await client.query<{ adoption_seq: number; version: number }>('SELECT adoption_seq, version FROM world_config_adoptions WHERE world_id = $1 ORDER BY adoption_seq DESC LIMIT 1', [worldId])).rows[0]
   if (!latest) throw unavailable(`world ${worldId} has no adopted configuration`)
-  const row = (await client.query<VersionRow>('SELECT version, schema_version, config_hash, verdict, rejection, config_canonical FROM world_config_versions WHERE world_id = $1 AND version = $2', [worldId, latest.version])).rows[0]
+  const row = (await client.query<VersionRow>(`${VERSIONS} AND v.version = $2`, [worldId, latest.version])).rows[0]
   if (!row) throw unavailable(`world ${worldId} adopted version ${latest.version}, which it has no copy of`)
-  // Still an accepted city on the world's geometry, or the world is unreadable.
-  return { row, judged: acceptedReader(worldId, foundation)(row), adoption: latest.adoption_seq }
+  const judged = acceptedReader(worldId)(row)
+  if (freeze && !sameGeometry(judged.foundation, freeze.geometry)) throw unavailable(`world ${worldId} is governed by version ${row.version}, which does not draw the geometry its first property froze`)
+  return { row, judged, adoption: latest.adoption_seq }
 }
 
 /** A world's city, locked for a change, with everything a change is judged against. */
@@ -522,6 +626,8 @@ export interface LockedWorld {
   governingVersion: number
   /** The adoption that made `governingVersion` govern (`world_config_adoptions.adoption_seq`). */
   governingAdoption: number
+  /** The geometry the world's first property froze, or null while it has none: the next activation freezes the governing geometry. */
+  freeze: GeometryFreeze | null
 }
 
 /**
@@ -531,24 +637,44 @@ export interface LockedWorld {
  */
 export async function lockWorldForChange(client: PoolClient, scope: WorldScope): Promise<LockedWorld> {
   const bound = await boundTo(client, scope)
-  const { instance, sequence, state, foundation } = await readFounded(client, bound, true)
-  const { row, judged, adoption } = await governingOf(client, scope.worldId, foundation)
+  const { instance, sequence, state, freeze } = await readFounded(client, bound, true)
+  const { row, judged, adoption } = await governingOf(client, scope.worldId, freeze)
   // The state must be one the world's own geometry can hold, as every read requires.
   districtsOf(scope.worldId, judged.world, state)
-  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingAdoption: adoption }
+  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingAdoption: adoption, freeze }
 }
 
-/** Reads accepted versions again, once each: still a valid city on the world's geometry, or the world is unreadable. */
-function acceptedReader(worldId: string, foundation: WorldFoundation): (row: VersionRow) => AcceptedJudgement {
+/**
+ * Reads accepted versions again, once each: still a valid city, drawing exactly the geometry recorded for it, or
+ * the world is unreadable.
+ */
+function acceptedReader(worldId: string): (row: VersionRow) => AcceptedJudgement {
   const read = new Map<number, AcceptedJudgement>()
   return (row) => {
     let j = read.get(row.version)
     if (!j) {
       const again = judgeWorldConfig(JSON.parse(row.config_canonical), worldId, null)
-      if (row.verdict !== 'accepted' || again.verdict !== 'accepted' || !sameGeometry(again.foundation, foundation)) throw unavailable(`world ${worldId} holds an accepted configuration this build no longer reads as the same city`)
+      const recorded = parseWorldGeometry({ key: row.g_layout_key, geometryFingerprint: row.g_layout_fingerprint }, row.g_districts)
+      if (row.verdict !== 'accepted' || again.verdict !== 'accepted' || !recorded || !sameGeometry(again.foundation, recorded))
+        throw unavailable(`world ${worldId} holds an accepted configuration this build no longer reads as the same city`)
       read.set(row.version, (j = again))
     }
     return j
+  }
+}
+
+/** The row of a version this transaction has just recorded as accepted. */
+function versionRowOf(pinned: VerifiedLaunch['pinned'], judged: AcceptedJudgement): VersionRow {
+  return {
+    version: pinned.version,
+    schema_version: pinned.schemaVersion,
+    config_hash: pinned.configHash,
+    verdict: 'accepted',
+    rejection: null,
+    config_canonical: canonicalJson(pinned.config),
+    g_layout_key: judged.foundation.layout.key,
+    g_layout_fingerprint: judged.foundation.layout.geometryFingerprint,
+    g_districts: judged.foundation.districts,
   }
 }
 
