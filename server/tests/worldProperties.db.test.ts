@@ -83,7 +83,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
   }
 
   /** Play with installations A (four districts) and B (six), the real launch path, world store, session service and property store. */
-  async function setup(options: { mode?: AppMode; migrated?: boolean; db?: pg.Pool; onStep?: (step: ActivationStep) => void | Promise<void>; play?: ReturnType<typeof fakePlay> } = {}) {
+  async function setup(options: { mode?: AppMode; migrated?: boolean; db?: pg.Pool; onStep?: (step: ActivationStep) => void | Promise<void>; play?: ReturnType<typeof fakePlay>; now?: () => Date } = {}) {
     const mode = options.mode ?? 'local'
     const db = options.db ?? t.db
     if (!options.migrated) await migrate(db, { dir: MIGRATIONS_DIR, environment: mode })
@@ -99,13 +99,13 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
     const environment = PLAY_ENV[mode]
     const worlds = createWorldStore(db, { mode, log: silentLogger })
     const launch = createPlayLaunchService({ play: p.play, environment, gameKey: 'rare-city', worlds })
-    const sessions = createPlaySessionService({ store: createPlaySessionStore(db), worlds, play: p.play, environment, gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0 })
+    const sessions = createPlaySessionService({ store: createPlaySessionStore(db), worlds, play: p.play, environment, gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0, now: options.now })
     const store = createWorldPropertyStore(db, { mode, log: silentLogger, onStep: options.onStep })
     const activation = createPropertyActivationService({ sessions, store })
     let runs = 0
     /** As POST /v1/play/session does; `presented` is the cookie the browser arrives with. */
-    const open = async (installation: string, player = ADA, presented: string | null = null) =>
-      sessions.open(await launch.open({ runToken: p.launch(installation, `run-${installation.slice(-1)}-${++runs}-${randomUUID()}`, { player }) }), presented)
+    const open = async (installation: string, player = ADA, presented: string | null = null, runExpiresAt?: string) =>
+      sessions.open(await launch.open({ runToken: p.launch(installation, `run-${installation.slice(-1)}-${++runs}-${randomUUID()}`, { player, runExpiresAt }) }), presented)
     const actorOf = (o: OpenedPlaySession) => ({ sessionRef: o.response.viewer.session.ref, worldId: o.response.world.id, discordUserId: o.response.viewer.player.discordUserId })
     const activate = (o: OpenedPlaySession, asset: { chain: string; contract: string; tokenId: string }, plotId: string): Promise<PropertyActivationResult> => activation.activate(o.token, actorOf(o), { asset, plotId })
     const read = async (o: OpenedPlaySession) => sessions.city(await sessions.session(o.token))
@@ -328,6 +328,31 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect(await rows()).toEqual(before)
     })
 
+    it('answers a repeat as success only to the player who activated it; anyone else learns nothing of who, or which session (L2)', async () => {
+      const { open, activate, sessions } = await setup()
+      const ada = await open(INSTALLATION_A, ADA)
+      const bea = await open(INSTALLATION_A, BEA)
+      const first = await activate(ada, keeper(1), 'saltmarsh-w0-p2')
+      const before = await rows()
+      // Another player of the same world, the same NFT on the same plot: refused, and the refusal carries no provenance.
+      const err = await activate(bea, keeper(1), 'saltmarsh-w0-p2').then(
+        () => null,
+        (e: unknown) => e as WorldPropertyRefusal,
+      )
+      expect(err).toBeInstanceOf(WorldPropertyRefusal)
+      expect(err!.code).toBe('asset-already-placed')
+      expect(`${err!.message} ${JSON.stringify(err)}`).not.toContain(ada.response.viewer.session.ref)
+      // Ada again, from a later launch (a new session): still her property, nothing written.
+      const relaunched = await open(INSTALLATION_A, ADA)
+      expect(await activate(relaunched, keeper(1), 'saltmarsh-w0-p2')).toMatchObject({ fresh: false, property: { id: first.property.id }, sequence: 2 })
+      expect(await rows()).toEqual(before)
+      // Once the activating session's row is gone (tidied after its retention), nobody can prove they were the activator.
+      await sessions.logout(ada.token)
+      await t.db.query('DELETE FROM play_sessions WHERE id = $1', [ada.response.viewer.session.ref])
+      expect(await refusalOf(activate(relaunched, keeper(1), 'saltmarsh-w0-p2'))).toBe('asset-already-placed')
+      expect(await count('world_properties')).toBe(1)
+    })
+
     it('queues concurrent activations on the city: one plot gives exactly one property', async () => {
       const { open, activate } = await setup()
       const a = await open(INSTALLATION_A)
@@ -398,6 +423,56 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect(await rows()).toEqual({ ...held })
     })
 
+    it('a session ended during an activation is a typed refusal, rolled back, never a database error (L1)', async () => {
+      let during: ((step: ActivationStep) => Promise<void>) | null = null
+      const s = await setup({ onStep: (step) => during?.(step) })
+      const a = await s.open(INSTALLATION_A)
+      // Signed out after the city was locked but before the activation reached the session: refused, nothing written.
+      const before = await rows()
+      const reached: ActivationStep[] = []
+      during = async (step) => {
+        reached.push(step)
+        if (step === 'locked') await t.db.query('UPDATE play_sessions SET revoked_at = now() WHERE id = $1', [a.response.viewer.session.ref])
+      }
+      expect(await refusalOf(s.activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('session_ended')
+      // Refused by the store's own check, before the city was written, not only by the database's guard at the end.
+      expect(reached).toEqual(['locked'])
+      expect(await rows()).toEqual(before)
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true })
+
+      // Signed out once the activation holds the session: the sign-out waits for it, and the property is whole.
+      const b = await s.open(INSTALLATION_A, BEA)
+      let signedOut: Promise<unknown> | null = null
+      const order: string[] = []
+      during = async (step) => {
+        if (step !== 'city') return
+        signedOut = t.db.query('UPDATE play_sessions SET revoked_at = now() WHERE id = $1', [b.response.viewer.session.ref]).then(() => order.push('signed out'))
+        await new Promise((r) => setTimeout(r, 300))
+        order.push('still writing')
+      }
+      const done = await s.activate(b, keeper(2), 'tidewater-w0-p1')
+      order.push('committed')
+      await signedOut
+      during = null
+      expect(done).toMatchObject({ fresh: true, sequence: 2 })
+      expect(order).toEqual(['still writing', 'committed', 'signed out'])
+      expect(await count('play_sessions', 'id = $1 AND revoked_at IS NOT NULL', [b.response.viewer.session.ref])).toBe(1)
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ sequence: 2, properties: 1 }] })
+    })
+
+    it('a session that expires between the store\'s check and the database\'s is the same typed refusal (L1)', async () => {
+      let during: ((step: ActivationStep) => Promise<void>) | null = null
+      // A session clock 59 s behind, so a run ending 2 s from now still opens a session (the minimum is 60 s): it really expires in 2 s.
+      const s = await setup({ onStep: (step) => during?.(step), now: () => new Date(Date.now() - 59_000) })
+      const a = await s.open(INSTALLATION_A, ADA, null, new Date(Date.now() + 2_000).toISOString())
+      const before = await rows()
+      during = async (step) => {
+        if (step === 'event') await new Promise((r) => setTimeout(r, 2_500))
+      }
+      expect(await refusalOf(s.activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('session_ended')
+      expect(await rows()).toEqual(before)
+    })
+
     it('the database refuses a property whose session is not live, or not of its world', async () => {
       const { open, sessions } = await setup()
       const a = await open(INSTALLATION_A)
@@ -427,6 +502,21 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
         expect((await activate(a, keeper(1), 'tidewater-w0-p0')).sequence).toBe(2)
         expect(await verifyCity(t.db)).toMatchObject({ ok: true })
       })
+  })
+
+  describe('districts with a Proofy rule', () => {
+    it('a caller that cannot verify rules may refuse them: judged on the governing configuration, under the lock, nothing written', async () => {
+      const p = fakePlay()
+      p.install(INSTALLATION_A, GUILD_A)
+      p.publish(INSTALLATION_A, { ...DOC_4, districts: DOC_4.districts.map((d) => (d.key === 'compass-row' ? { ...d, proofyRule: { verificationRuleId: 41, label: 'Verified Captain role' } } : d)) })
+      const { open, store, sessions } = await setup({ play: p })
+      const a = await open(INSTALLATION_A)
+      const actor = await sessions.requireActor(a.token, { sessionRef: a.response.viewer.session.ref, worldId: a.response.world.id, discordUserId: ADA.discordUserId })
+      const before = await rows()
+      expect(await refusalOf(store.activate(actor, { asset: keeper(1), plotId: 'compass-row-w0-p0' }, { refuseRuleGatedDistricts: true }))).toBe('district-rule-unverified')
+      expect(await rows()).toEqual(before)
+      expect(await store.activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0' }, { refuseRuleGatedDistricts: true })).toMatchObject({ fresh: true, sequence: 2 })
+    })
   })
 
   describe('held outside a local database', () => {
@@ -607,6 +697,22 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect(violations[0].detail).toMatch(/older than the adoption of the property before it/)
     })
 
+    it('a property record whose sequence was rewritten: every read refuses the city, and verify reports it (L3)', async () => {
+      const { a, read, open, worlds, r2, cityId } = await populated()
+      const scope = { worldId: a.response.world.id, environment: a.response.play.environment, gameKey: a.response.play.gameKey, installationId: a.response.play.installationId, discordGuildId: a.response.play.discordGuildId }
+      // Only the second property's recorded sequence changes (3 -> 4, with an event there so its foreign key holds): its
+      // state, plot and position are untouched, so only the read path's sequence check can see it.
+      await unguarded(async () => {
+        await t.db.query(`INSERT INTO city_events (city_id, sequence, type, payload) SELECT city_id, 4, type, payload FROM city_events WHERE city_id = $1 AND sequence = 3`, [cityId])
+        await t.db.query('UPDATE world_properties SET activated_sequence = 4 WHERE id = $1', [r2.property.id])
+      })
+      await expect(worlds.read(scope)).rejects.toThrow(`property ${r2.property.id} records sequence 4, not 3`)
+      expect(await refusalOf(read(a))).toBe('world_unavailable')
+      await expect(open(INSTALLATION_A)).rejects.toMatchObject({ code: 'world_unavailable' })
+      expect(await refusalOf(read(a))).toBe('world_unavailable')
+      expect(await rules()).toEqual(expect.arrayContaining(['properties']))
+    })
+
     it('a property record that went missing', async () => {
       const { r2, a, read } = await populated()
       await unguarded(() => t.db.query('DELETE FROM world_properties WHERE id = $1', [r2.property.id]))
@@ -675,9 +781,20 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
         const text = await readFile(file, 'utf8')
         if (/world\/properties|\.\/properties['"]|createWorldPropertyStore|createPropertyActivationService|world_properties/.test(text)) reaching.push(file.slice(root.length + 1))
       }
-      // The store reads world_properties (parity) and verify reads it; neither writes. Nothing else names it.
-      expect(reaching.sort()).toEqual([join('world', 'store.ts'), join('world', 'verify.ts')])
-      for (const file of reaching) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/INSERT INTO world_properties|createWorldPropertyStore/)
+      // The store reads world_properties (parity) and verify reads it; neither writes. The local rehearsal composes the
+      // activation service, and main builds the property store for it and for nothing else. Nothing else names it.
+      expect(reaching.sort()).toEqual(['main.ts', join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts')])
+      for (const file of reaching) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/INSERT INTO world_properties/)
+      for (const file of [join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts')]) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/createWorldPropertyStore/)
+      // main builds it exactly once, inside the block that only runs with the local rehearsal file (refused outside local mode).
+      const main = await readFile(join(root, 'main.ts'), 'utf8')
+      expect(main.match(/createWorldPropertyStore\(/g)).toHaveLength(1)
+      const block = main.slice(main.indexOf('if (config.localRehearsalFile && playSessions && db) {'))
+      expect(block.indexOf('createWorldPropertyStore(')).toBeGreaterThan(0)
+      expect(block.indexOf('createWorldPropertyStore(')).toBeLessThan(block.indexOf('\n  }\n'))
+      // The rehearsal refuses to exist outside local mode, and the app mounts its routes only in local mode.
+      expect(await readFile(join(root, 'world', 'rehearsal.ts'), 'utf8')).toMatch(/if \(mode !== 'local'\) throw/)
+      expect(await readFile(join(root, 'app.ts'), 'utf8')).toMatch(/const rehearsal = config\.mode === 'local' && playSessions \? \(deps\.rehearsal \?\? null\) : null/)
     })
   })
 })

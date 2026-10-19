@@ -40,7 +40,9 @@ import { plotCandidatesOf } from '../world/gameplay'
  * launch and returned by every launch after it, whatever configuration version it runs. Both
  * answers carry the city as stored (its sequence, state and properties) and a read-only projection
  * of its districts: open wards and the plots a joining NFT could choose. Nothing here claims,
- * reserves or builds anything; no route does yet.
+ * reserves or builds anything. The only route that places a property is the LOCAL PROPERTY
+ * REHEARSAL (`playRehearsal.ts`), which exists only on a local server started with test NFTs, and
+ * leaves `permissions` as they are: no real claim is authorized anywhere.
  */
 export const PLAY_SESSION_ENDPOINT = '/v1/play/session'
 /** The session's city, read again. GET, no body, no parameters. */

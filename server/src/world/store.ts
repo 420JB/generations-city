@@ -517,6 +517,8 @@ export interface LockedWorld {
   state: WorldCityState
   /** The governing configuration's compiled world: the engine's authority on districts, plots and collections. */
   world: World
+  /** The governing configuration itself (district names, Proofy rules), as the world accepted it. */
+  config: AcceptedJudgement['config']
   governingVersion: number
   /** The adoption that made `governingVersion` govern (`world_config_adoptions.adoption_seq`). */
   governingAdoption: number
@@ -533,7 +535,7 @@ export async function lockWorldForChange(client: PoolClient, scope: WorldScope):
   const { row, judged, adoption } = await governingOf(client, scope.worldId, foundation)
   // The state must be one the world's own geometry can hold, as every read requires.
   districtsOf(scope.worldId, judged.world, state)
-  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, governingVersion: row.version, governingAdoption: adoption }
+  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingAdoption: adoption }
 }
 
 /** Reads accepted versions again, once each: still a valid city on the world's geometry, or the world is unreadable. */

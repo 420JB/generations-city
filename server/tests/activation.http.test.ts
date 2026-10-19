@@ -285,6 +285,7 @@ describe('activation routes: rate limits', () => {
       activationCommit: { client: [{ limit: 10, windowMs: 60_000 }], user: [{ limit: 6, windowMs: 60_000 }] },
       playSession: { client: [{ limit: 20, windowMs: 60_000 }] },
       playCity: { client: [{ limit: 60, windowMs: 60_000 }], user: [{ limit: 30, windowMs: 60_000 }] },
+      playRehearsal: { client: [{ limit: 30, windowMs: 60_000 }], user: [{ limit: 12, windowMs: 60_000 }] },
     })
   })
 

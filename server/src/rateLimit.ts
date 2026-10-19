@@ -134,4 +134,6 @@ export const LIMITS = {
   // A session's city read costs a database snapshot and at most one Play read per installation every few seconds.
   // Reloads and a few tabs, not a poll.
   playCity: { client: [perMinute(60)], user: [perMinute(30)] },
+  /** Local property rehearsal (local deployments only): listing test NFTs and placing them. */
+  playRehearsal: { client: [perMinute(30)], user: [perMinute(12)] },
 } as const satisfies Record<string, { client: readonly RateRule[]; user?: readonly RateRule[] }>

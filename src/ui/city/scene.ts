@@ -115,6 +115,11 @@ export interface CityScene {
   statueFor(districtId: string): StatueArt
   /** Public name of a building, e.g. "Friend #812". */
   buildingLabel(b: SceneBuilding): string
+  /**
+   * The token number a building's map labels show, in its canonical decimal spelling (uint256 token ids do not fit a
+   * JavaScript number). Absent: the building's `friendId`, as the Rare Friends city has always shown it.
+   */
+  buildingToken?(b: SceneBuilding): string
 }
 
 const byScene = new WeakMap<CityScene, Map<string, SceneDistrict>>()

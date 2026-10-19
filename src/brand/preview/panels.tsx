@@ -10,6 +10,7 @@ import { worldProperty } from '../../world/property'
 import { mayAct, previewClaimAccess, type ClaimAccess, type PreviewMember } from '../core/eligibility'
 import { districtPlots, type LoadedBrandCity } from '../load'
 import type { Placement } from './PreviewApp'
+import { StoredPropertyCard, type StoredProperty } from './rehearsal'
 
 /** One line on who may claim and build, for the viewer the preview simulates. */
 function AccessNote({ access, district }: { access: ClaimAccess; district: SceneDistrict }) {
@@ -99,6 +100,7 @@ export function DistrictPanel({
   city,
   districtId,
   member,
+  rehearsal = false,
   onDistrict,
   onWarp,
   onChoosePlot,
@@ -107,6 +109,8 @@ export function DistrictPanel({
   city: LoadedBrandCity
   districtId: string
   member: PreviewMember | null
+  /** The player may place a test NFT here for real, on the local server (a local rehearsal). */
+  rehearsal?: boolean
   onDistrict: (id: string) => void
   onWarp: (buildingId: string) => void
   onChoosePlot: () => void
@@ -152,14 +156,18 @@ export function DistrictPanel({
       <div className={`fund-box access-box ${access.kind}`} data-testid="district-access" data-access={access.kind}>
         <div className="row-between">
           <h3>Who can build here</h3>
-          <SimTag>PREVIEW</SimTag>
+          <SimTag>{rehearsal ? 'LOCAL REHEARSAL' : 'PREVIEW'}</SimTag>
         </div>
         <AccessNote access={access} district={d} />
         <RuleRequirement access={access} />
         <button type="button" className="btn primary" onClick={onChoosePlot} disabled={!allowed} data-testid="choose-plot">
-          {allowed ? 'Choose a plot · preview' : access.kind === 'visitor' ? 'Sign in to claim' : 'Claiming is restricted'}
+          {allowed ? (rehearsal ? 'Choose a plot · local rehearsal' : 'Choose a plot · preview') : access.kind === 'visitor' ? 'Sign in to claim' : 'Claiming is restricted'}
         </button>
-        <p className="muted small">Exploring is open to everyone. On a live city the server re-checks every claim and build with Proofy; nothing shown here can grant access.</p>
+        <p className="muted small">
+          {rehearsal
+            ? 'You may place one of your local test NFTs on a plot here, permanently, in this local city. The server checks your session, the NFT and the plot again.'
+            : 'Exploring is open to everyone. On a live city the server re-checks every claim and build with Proofy; nothing shown here can grant access.'}
+        </p>
       </div>
 
       <MonumentPreview city={city} districtId={districtId} />
@@ -227,7 +235,24 @@ export function PlotPanel({ city, member, placement, onCancel, onClaim }: { city
   )
 }
 
-export function BuildingPreviewPanel({ city, buildingId, member, onDistrict, onClose, onBuild }: { city: LoadedBrandCity; buildingId: string; member: PreviewMember | null; onDistrict: (id: string) => void; onClose: () => void; onBuild: () => void }) {
+export function BuildingPreviewPanel({
+  city,
+  buildingId,
+  member,
+  stored = null,
+  onDistrict,
+  onClose,
+  onBuild,
+}: {
+  city: LoadedBrandCity
+  buildingId: string
+  member: PreviewMember | null
+  /** The building's record as the city stores it (a persistent city): shown as it is, in place of a sample owner. */
+  stored?: StoredProperty | null
+  onDistrict: (id: string) => void
+  onClose: () => void
+  onBuild: () => void
+}) {
   const { scene, state, config, world } = city
   const b = state.buildings[buildingId]
   const d = sceneDistrict(scene, b.districtId)
@@ -256,11 +281,20 @@ export function BuildingPreviewPanel({ city, buildingId, member, onDistrict, onC
         onClose={onClose}
       />
       <div className="owner-row">
-        <Avatar user={owner} size={30} />
-        <div>
-          <div className="muted small">Owner (sample member)</div>
-          <div className="strong">@{owner?.handle ?? 'unknown'}</div>
-        </div>
+        {stored ? (
+          <div>
+            <div className="muted small">Owner</div>
+            <div className="strong">Not recorded</div>
+          </div>
+        ) : (
+          <>
+            <Avatar user={owner} size={30} />
+            <div>
+              <div className="muted small">Owner (sample member)</div>
+              <div className="strong">@{owner?.handle ?? 'unknown'}</div>
+            </div>
+          </>
+        )}
         <div className="tier-medal" style={{ ['--dc' as string]: d.color }} data-testid="panel-tier">
           <span>TIER</span>
           <b>{tier}</b>
@@ -297,6 +331,7 @@ export function BuildingPreviewPanel({ city, buildingId, member, onDistrict, onC
           </dd>
         </div>
       </dl>
+      {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
       <div className={`fund-box access-box ${access.kind}`} data-testid="build-access" data-access={access.kind}>
         <div className="row-between">
           <h3>Build here</h3>

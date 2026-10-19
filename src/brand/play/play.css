@@ -56,3 +56,67 @@
   gap: 8px;
   margin-top: 12px;
 }
+
+/* Local property rehearsal (local servers only): marked wherever it shows. */
+.rehearsal-bar-flag {
+  background: #ffb347;
+}
+.rehearsal-flag {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px dashed #ffb347;
+  color: var(--ink);
+  background: rgba(255, 179, 71, 0.08);
+}
+.preview-bar .rehearsal-flag {
+  flex-basis: 100%;
+  margin: 0;
+}
+.rehearsal-step h3 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rehearsal-nfts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.rehearsal-nft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.rehearsal-nft.on {
+  border-color: #ffb347;
+}
+.rehearsal-nft .mono,
+.rehearsal-asset,
+.stored-property dd {
+  overflow-wrap: anywhere;
+}
+.rehearsal-confirm {
+  margin-top: 12px;
+}
+.stored-property {
+  margin-top: 12px;
+}
+.stored-property .stat-grid {
+  grid-template-columns: 1fr;
+}
+/* uint256 token ids are up to 78 digits: they wrap rather than overflow the panels. */
+.play-city .building-panel h2,
+.play-city .building-panel dd,
+.rehearsal-confirm b,
+.play-city .notice {
+  overflow-wrap: anywhere;
+}

@@ -59,7 +59,8 @@ server/
     genesis-cli.ts     `npm run city:genesis -- <command>`
     verify-cli.ts      `npm run city:verify`
     world/store.ts     persistent brand cities: founding, configuration versions, adoption, loading
-    world/properties.ts  INTERNAL ONLY: authoritative world property activation (migration 0007); no route uses it
+    world/properties.ts  LOCAL ONLY: authoritative world property activation (migration 0007); only the local rehearsal uses it
+    world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/ids.ts       UUIDv7 world ids
     db/pool.ts         pg pool

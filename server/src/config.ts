@@ -52,6 +52,12 @@ export interface ServerConfig {
    * DATABASE_URL, because a launch opens the installation's persistent city.
    */
   play: PlayConnection | null
+  /**
+   * The LOCAL PROPERTY REHEARSAL file (`world/rehearsal.ts`), or null: no rehearsal, and its routes do not
+   * exist. Set by LOCAL_PROPERTY_REHEARSAL_FILE, which is refused in any mode but local, and needs Play.
+   * It lists TEST NFTs per Discord player: rehearsal data, never verified holdings.
+   */
+  localRehearsalFile: string | null
 }
 
 export interface PlayConnection {
@@ -287,6 +293,15 @@ function readPlay(env: Record<string, string | undefined>, mode: AppMode): PlayC
   return { apiUrl: url.toString().replace(/\/+$/, ''), credential, environment, gameKey }
 }
 
+/** The local property rehearsal file. Local mode only, and only with Play: a rehearsal acts for play sessions. */
+function readLocalRehearsal(env: Record<string, string | undefined>, mode: AppMode, play: PlayConnection | null): string | null {
+  const file = clean(env.LOCAL_PROPERTY_REHEARSAL_FILE)
+  if (file === undefined) return null
+  if (mode !== 'local') throw new ConfigError(`LOCAL_PROPERTY_REHEARSAL_FILE is only allowed when APP_MODE=local, not ${mode}.`)
+  if (!play) throw new ConfigError('LOCAL_PROPERTY_REHEARSAL_FILE needs PLAY_API_URL and PLAY_SERVICE_CREDENTIAL: a rehearsal activation acts for a play session.')
+  return file
+}
+
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
   const mode = readMode(env)
   const port = readPort(env)
@@ -309,5 +324,6 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     hstsMaxAge: readHstsMaxAge(env, mode),
     activationEnabled: readActivationEnabled(env),
     play,
+    localRehearsalFile: readLocalRehearsal(env, mode, play),
   }
 }

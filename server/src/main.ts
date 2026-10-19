@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { http } from 'viem'
@@ -17,6 +18,8 @@ import { createPlayClient } from './play/client'
 import { createPlayLaunchService } from './play/launch'
 import { createPlaySessionService, createPlaySessionStore } from './play/session'
 import { loadStaticSite } from './static'
+import { createWorldPropertyStore } from './world/properties'
+import { createLocalPropertyRehearsal, parseRehearsalGrants, type LocalPropertyRehearsal } from './world/rehearsal'
 import { createWorldStore } from './world/store'
 
 const SHUTDOWN_GRACE_MS = 10_000
@@ -44,6 +47,20 @@ async function main() {
   // Config refuses Play without a database: every launch opens the installation's persistent city, and a play session to read it again.
   const play = config.play && db ? createPlayClient({ baseUrl: config.play.apiUrl, credential: config.play.credential }) : null
   const worlds = config.play && db ? createWorldStore(db, { mode: config.mode, log }) : null
+  const playSessions =
+    config.play && play && worlds && db ? createPlaySessionService({ store: createPlaySessionStore(db), worlds, play, environment: config.play.environment, gameKey: config.play.gameKey, log }) : null
+  // LOCAL PROPERTY REHEARSAL: only with APP_MODE=local and its file (config refuses the file anywhere else). Test NFTs, not holdings.
+  let rehearsal: LocalPropertyRehearsal | null = null
+  if (config.localRehearsalFile && playSessions && db) {
+    try {
+      const grants = parseRehearsalGrants(JSON.parse(await readFile(config.localRehearsalFile, 'utf8')))
+      rehearsal = createLocalPropertyRehearsal({ mode: config.mode, grants, sessions: playSessions, store: createWorldPropertyStore(db, { mode: config.mode, log }) })
+      log.warn('LOCAL PROPERTY REHEARSAL ENABLED: test NFTs from a local file may be placed as permanent properties in this local database. Not verified ownership.', { players: grants.size })
+    } catch (err) {
+      log.error(`invalid local rehearsal file: ${err instanceof Error ? err.message : String(err)}`)
+      process.exit(1)
+    }
+  }
   const server = createServer(
     createApp({
       config,
@@ -57,10 +74,8 @@ async function main() {
       activation: db ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
       properties: db ? createPropertyReader(db) : null,
       playLaunch: config.play && play && worlds ? createPlayLaunchService({ play, environment: config.play.environment, gameKey: config.play.gameKey, worlds }) : null,
-      playSessions:
-        config.play && play && worlds && db
-          ? createPlaySessionService({ store: createPlaySessionStore(db), worlds, play, environment: config.play.environment, gameKey: config.play.gameKey, log })
-          : null,
+      playSessions,
+      rehearsal,
       site,
     }),
   )
@@ -73,7 +88,7 @@ async function main() {
 
   server.listen(config.port, config.host, () => {
     // The RPC endpoint is deliberately absent: it may carry provider credentials.
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, play: config.play ? `${config.play.environment}/${config.play.gameKey}` : 'not-connected', commit: config.commit })
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, play: config.play ? `${config.play.environment}/${config.play.gameKey}` : 'not-connected', localRehearsal: rehearsal ? 'enabled' : 'off', commit: config.commit })
   })
 
   let stopping = false

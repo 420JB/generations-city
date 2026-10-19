@@ -125,8 +125,8 @@ another session stops presenting it as current.
 
 Required before any player mutation (claim, build, economy):
 
-- `requireActor` must govern every future mutation, called with the session, world and player
-  the page drew. Nothing calls it yet: no route lets a play session change anything.
+- `requireActor` must govern every mutation, called with the session, world and player the page
+  drew. Only the local rehearsal route calls it today (above); nothing outside local mode can change a city.
 - **F5, a browser with no session.** A run token is a bearer token, and nothing in the current
   Core -> Play -> game contract ties a run to the browser that started it. A link carrying an
   attacker's run token, opened in a browser with no Rare City session, signs it in as the
@@ -136,28 +136,49 @@ Required before any player mutation (claim, build, economy):
   checks it against that secret before opening a session. Rare City cannot invent this on its own,
   because nothing the trusted issuer signs would vouch for it.
 
-**Persistent gameplay foundation (P1-C2-B2A): built, NOT reachable.** A world's city can now
-hold properties (migration 0007, `world_properties`; city state version 2), each one NFT on the
-exact plot a player chose, written by `server/src/world/properties.ts` in one transaction with
-the city's next sequence and its `world.property.activated` event. Every city answer carries the
-stored properties and a read-only projection of each district (open wards, plot candidates), and
-`city:verify` replays every activation through the engine. But:
+**Persistent gameplay foundation (P1-C2-B2A): built.** A world's city can hold properties
+(migration 0007, `world_properties`; city state version 2), each one NFT on the exact plot a player
+chose, written by `server/src/world/properties.ts` in one transaction with the city's next sequence
+and its `world.property.activated` event. Every city answer carries the stored properties and a
+read-only projection of each district (open wards, plot candidates), and `city:verify` replays
+every activation through the engine.
 
-- no route, CLI or development endpoint can activate a property; only test harnesses call the
-  property store (`server/tests/worldProperties.db.test.ts`, `persistent.spec.ts` here), and a
-  test pins that nothing else in `server/src` reaches it;
-- the store refuses unless it is configured `local` AND the database is stamped `local`, and the
-  database itself refuses a world property anywhere else (`world_properties_guard`), so no staging
-  or production world city can advance at all;
-- the composition a future route must use, `createPropertyActivationService`, calls
-  `requireActor` first, and the database refuses a property whose play session is not live and of
-  its world;
-- nothing checks that the player holds the NFT or meets a district's Proofy rule, no player
-  identity is stored on a property, and there is no district ticket, allocator, points or
-  building progress.
+**Local property rehearsal (P1-C2-B2B): LOCAL ONLY, NOT a production authorization.** The whole
+player flow, on the standard city page: a launched player picks one of their TEST NFTs, a district
+and a highlighted plot, reviews what is permanent, and activates a Tier 0 property; the page reads
+the city again, warps to it and shows the stored record. `serve.ts` starts the server this way, and
+`rehearsal.spec.ts` drives it.
 
-Lifting the hold is a new migration replacing `world_properties_guard`, after F5, F7, F3 and a
-fresh Core NFT/role/verification eligibility contract exist.
+- It exists only with `APP_MODE=local` AND `LOCAL_PROPERTY_REHEARSAL_FILE` (a JSON file
+  `{ "kind": "rare-city/local-property-rehearsal-v1", "players": { "<discord user id>": ["<CAIP-19
+  asset id>", …] } }`). Config refuses the file in any other mode; the app mounts no route without
+  it (`GET /v1/play/rehearsal/assets` and `POST /v1/play/rehearsal/activations` are a plain `404` /
+  `405`); the rehearsal module refuses to be built outside local mode; the property store refuses any
+  mode or database but local; and the database itself refuses a world property in any database not
+  stamped local (`world_properties_guard`), so no staging or production world city can advance.
+- The file is test data, never ownership: no contract can say which NFTs a Proofy player holds. The
+  page labels it everywhere (LOCAL REHEARSAL · TEST NFT). The browser names only one NFT the server
+  lists for the session's player, and the server checks that again.
+- An activation names the session, world and player the page drew; `requireActor` refuses anything
+  else and asks Play afresh (no cache, no grace). It also needs an `Origin` header naming this
+  server (beyond the common same-origin, JSON-only boundary), and is limited per session credential.
+  The store then judges the NFT, the plot and the district under the city's lock. A district with a
+  Proofy rule is refused (`district_rule_unverified`): nothing can check a rule yet.
+- The same player repeating an activation gets the same property back (`fresh: false`); anyone else
+  is refused with no session or player in the answer. A session ended during an activation is a typed
+  refusal and nothing is written.
+- Choosing the district by hand is REHEARSAL-ONLY test behavior, labelled as such on the page. On a
+  live city a player's default district is assigned on authenticated, eligible city entry
+  (citywide round-robin tickets, abandoned slots reused; matching collection/trait rules override
+  it), and the player chooses only the exact plot. Not implemented yet.
+- Locked by the owner, NOT implemented yet (the local rehearsal keeps the checkpointed behavior):
+  district geography freezes at the first permanent property; collections can be disabled and
+  re-enabled for future claims without touching existing properties; the original verified
+  Core/Discord activator is stored permanently on each property, separately from the current owner.
+
+Lifting the hold anywhere but local is a new migration replacing `world_properties_guard`, after
+F5, F7, F3, a fresh Core NFT/role/verification eligibility contract, a separate non-owner database
+runtime role and permanent activator provenance exist.
 
 Needs a verified Proofy Core / Play contract:
 

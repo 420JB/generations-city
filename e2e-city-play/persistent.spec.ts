@@ -13,9 +13,9 @@ import { install, launch, launchHref, publish, snowflake } from './play'
  * A PERSISTENT CITY WITH PROPERTIES, end to end, against a REAL local Proofy Play: the standard
  * renderer draws exactly what the world stores, and nothing else.
  *
- * No route can activate a property (P1-C2-B2A keeps live mutations on hold), so this INTERNAL
- * TEST HARNESS writes them the way a future authorized route will, through the server's own
- * property store on the same disposable database, for the session the browser holds. The page is
+ * This INTERNAL TEST HARNESS writes properties directly through the server's own property store on
+ * the same disposable database, for the session the browser holds (the player flow through the
+ * local rehearsal route is `rehearsal.spec.ts`). The page is
  * then only reloaded: everything it shows comes from `GET /v1/play/city` and the launch path.
  */
 const ORIGIN = 'http://localhost:4352'

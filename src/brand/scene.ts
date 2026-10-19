@@ -82,6 +82,8 @@ export function brandScene(config: BrandCityConfig, world: World, nfts: Readonly
     const c = nft ? collections.get(nft.collection) : undefined
     return c ? `${c.displayName} #${nft!.tokenId}` : `Property #${b.friendId}`
   }
+  // The NFT's own token id, exact: `friendId` is display-only and rounds above 2^53.
+  const buildingToken = (b: SceneBuilding): string => nfts[b.id]?.tokenId ?? String(b.friendId)
 
   return Object.freeze({
     key: config.worldId,
@@ -92,5 +94,6 @@ export function brandScene(config: BrandCityConfig, world: World, nfts: Readonly
     resident: Object.freeze({ one: 'Member', many: 'Members' }),
     statueFor,
     buildingLabel,
+    buildingToken,
   })
 }

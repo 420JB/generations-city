@@ -9,6 +9,7 @@ import { districtPlots, loadBrandCity, type LoadedBrandCity } from '../load'
 import type { SampleBrand } from '../samples'
 import type { WorldPoint } from '../../game/world'
 import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
+import { RehearsalPlotPanel, type PlacementRehearsal, type StoredProperty } from './rehearsal'
 
 type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string } | null
 
@@ -68,17 +69,44 @@ export function PreviewApp({ brands }: { brands: readonly SampleBrand[] }) {
   )
 }
 
+/** The plots the engine offers in a district now, as the placement layer takes them. */
+const candidatesIn = (city: LoadedBrandCity, districtId: string): PreviewCandidate[] =>
+  districtPlots(city, districtId).map((c) => ({ districtId: c.districtKey, ward: c.ward, plot: c.plot, newWard: c.newWard, plotId: c.plotId }))
+
 /**
  * ONE CONFIGURED CITY on the standard renderer, with the standard HUD and panels. Shared by
  * the sample preview and the Proofy Play launch page, so both draw exactly the same city for
  * the same data; only the bar above (`bar`) says where the data came from.
+ *
+ * The Play page may also pass `stored` (a building's record as the city stores it, for its panel)
+ * and, in a local rehearsal only, `rehearsal`: the player may then place a test NFT on a plot they
+ * choose. The city it is given may change (the page reads it again after a placement): plot
+ * candidates always follow the city on the page, and a selected plot that is no longer free is
+ * dropped.
  */
-export function BrandCityPreview({ city, members, bar }: { city: LoadedBrandCity; members: readonly (PreviewMember | null)[]; bar: ReactNode }) {
+export function BrandCityPreview({
+  city,
+  members,
+  bar,
+  stored,
+  rehearsal,
+}: {
+  city: LoadedBrandCity
+  members: readonly (PreviewMember | null)[]
+  bar: ReactNode
+  stored?: (buildingId: string) => StoredProperty | null
+  rehearsal?: PlacementRehearsal | null
+}) {
   const { scene, state, config } = city
   const [memberIndex, setMemberIndex] = useState(1)
   const member: PreviewMember | null = members[memberIndex] ?? null
   const [panel, setPanel] = useState<Panel>(null)
-  const [placement, setPlacement] = useState<Placement | null>(null)
+  const [placing, setPlacing] = useState<{ districtId: string; selected: PreviewCandidate | null } | null>(null)
+  const placingIn = placing?.districtId ?? null
+  const candidates = useMemo(() => (placingIn ? candidatesIn(city, placingIn) : []), [city, placingIn])
+  const placement: Placement | null = placing && { districtId: placing.districtId, candidates, selected: placing.selected && candidates.some((c) => c.plotId === placing.selected!.plotId) ? placing.selected : null }
+  /** The player places for real (on the local server) only as themselves, never as a simulated viewer. */
+  const rehearsing = rehearsal && member?.kind === 'player' ? rehearsal : null
   const [focus, setFocus] = useState<{ buildingId: string; seq: number } | null>(null)
   const [frame, setFrame] = useState<{ seq: number; points: WorldPoint[] } | null>(null)
   const [homeSeq, setHomeSeq] = useState(0)
@@ -92,7 +120,7 @@ export function BrandCityPreview({ city, members, bar }: { city: LoadedBrandCity
   }, [])
 
   const openDistrict = useCallback((id: string) => {
-    setPlacement(null)
+    setPlacing(null)
     setPanel({ kind: 'district', id })
   }, [])
 
@@ -107,34 +135,51 @@ export function BrandCityPreview({ city, members, bar }: { city: LoadedBrandCity
   const startPlacement = (districtId: string) => {
     if (!allowedIn(districtId)) return
     const d = sceneDistrict(scene, districtId)
-    const candidates = districtPlots(city, districtId).map((c) => ({ districtId: c.districtKey, ward: c.ward, plot: c.plot, newWard: c.newWard, plotId: c.plotId }))
-    setPlacement({ districtId, candidates, selected: null })
+    const offered = candidatesIn(city, districtId)
+    setPlacing({ districtId, selected: null })
     setPanel(null)
-    setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: candidates.map((c) => plotWorldIn(d, c.ward, c.plot)) }))
+    setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: offered.map((c) => plotWorldIn(d, c.ward, c.plot)) }))
   }
 
   const capital = state.capital.holder ? sceneDistrict(scene, state.capital.holder) : null
   const crown = state.crown.holder ? state.buildings[state.crown.holder] : null
   const drawer =
-    placement !== null ? (
+    placement !== null && rehearsing ? (
+      <RehearsalPlotPanel
+        key={placement.districtId}
+        city={city}
+        placement={placement}
+        rehearsal={rehearsing}
+        onCancel={() => {
+          setPlacing(null)
+          setPanel({ kind: 'district', id: placement.districtId })
+        }}
+        onActivated={(result, nft) => {
+          setPlacing(null)
+          warp(result.buildingId)
+          say(`${result.fresh ? 'Property activated' : 'Already your property'}: ${nft.collectionName} #${nft.tokenId} · city sequence ${result.sequence}. Local rehearsal, test NFT.`)
+        }}
+      />
+    ) : placement !== null ? (
       <PlotPanel
         city={city}
         member={member}
         placement={placement}
         onCancel={() => {
-          setPlacement(null)
+          setPlacing(null)
           setPanel({ kind: 'district', id: placement.districtId })
         }}
         onClaim={() => allowedIn(placement.districtId) && say('Preview only: nothing was claimed. A live claim will be decided by the server (NFT ownership and, where set, the Proofy rule).')}
       />
     ) : panel?.kind === 'district' ? (
-      <DistrictPanel key={panel.id} city={city} districtId={panel.id} member={member} onDistrict={openDistrict} onWarp={warp} onChoosePlot={() => startPlacement(panel.id)} onClose={() => setPanel(null)} />
+      <DistrictPanel key={panel.id} city={city} districtId={panel.id} member={member} rehearsal={!!rehearsing} onDistrict={openDistrict} onWarp={warp} onChoosePlot={() => startPlacement(panel.id)} onClose={() => setPanel(null)} />
     ) : panel?.kind === 'building' && state.buildings[panel.id] ? (
       <BuildingPreviewPanel
         key={panel.id}
         city={city}
         buildingId={panel.id}
         member={member}
+        stored={stored?.(panel.id) ?? null}
         onDistrict={openDistrict}
         onClose={() => setPanel(null)}
         onBuild={() => allowedIn(state.buildings[panel.id].districtId) && say('Preview only: nothing was built or spent. Building will use the shared Proofy community points, which are not connected yet.')}
@@ -156,7 +201,7 @@ export function BrandCityPreview({ city, members, bar }: { city: LoadedBrandCity
         onSelect={select}
         onSelectDistrict={openDistrict}
         placement={placement ? { candidates: placement.candidates, selected: placement.selected } : null}
-        onPickPlot={(c) => setPlacement((p) => (p ? { ...p, selected: c } : p))}
+        onPickPlot={(c) => setPlacing((p) => (p ? { ...p, selected: c } : p))}
         frame={frame}
         focus={focus}
         fx={NO_FX}

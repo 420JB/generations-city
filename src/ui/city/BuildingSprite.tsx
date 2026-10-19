@@ -150,7 +150,7 @@ function Roof({ kind, a, trim, accent }: { kind: string; a: number; trim: string
   }
 }
 
-function Rooftop({ kind, a, accent, friendId, detail }: { kind: string; a: number; accent: string; friendId: number; detail: Detail }) {
+function Rooftop({ kind, a, accent, token, detail }: { kind: string; a: number; accent: string; token: string | number; detail: Detail }) {
   const k = a * S
   const dx = k * 0.9
   switch (kind) {
@@ -195,7 +195,7 @@ function Rooftop({ kind, a, accent, friendId, detail }: { kind: string; a: numbe
           <rect x={-22} y={-19} width={44} height={13} rx={2} fill="#0d1120" stroke={accent} strokeWidth={1} />
           {detail !== 'far' && (
             <text x={0} y={-9.5} textAnchor="middle" fontSize={8} fontWeight={800} fill={accent} letterSpacing={0.5}>
-              #{friendId}
+              #{token}
             </text>
           )}
         </g>
@@ -279,6 +279,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const scene = useCityScene()
   const district = sceneDistrict(scene, b.districtId)
   const name = scene.buildingLabel(b)
+  const token = scene.buildingToken?.(b) ?? b.friendId
   const sections = sectionsFor(tier, H, a0)
   const topSec = sections[sections.length - 1]
   const shaft = sections.find((s) => s.kind === 'shaft') ?? sections[0]
@@ -462,7 +463,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       {/* Roof + rooftop fixture */}
       <g transform={`translate(0 ${-topSec.z1})`}>
         {tier > 0 && <Roof kind={b.architecture.roof} a={topSec.a} trim={pal.trim} accent={accent} />}
-        {tier > 0 && <Rooftop kind={b.architecture.rooftop} a={topSec.a} accent={accent} friendId={b.friendId} detail={detail} />}
+        {tier > 0 && <Rooftop kind={b.architecture.rooftop} a={topSec.a} accent={accent} token={token} detail={detail} />}
       </g>
 
       {/* Next section under construction (late stages). Behind rooftop media, so scaffold and
@@ -527,7 +528,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       {/* Label */}
       {showLabel && (
         <g id={`bl-${b.id}`} transform={`translate(0 ${topY - 12}) scale(${labelScale})`} className={`bldg-label${isPlayer ? ' is-player-label' : ''}${minorLabel ? ' minor' : ''}`}>
-          <BuildingLabel text={`${isObjective && !isPlayer ? '★ ' : ''}#${b.friendId} · T${tierFor(target)}`} isPlayer={isPlayer} stroke={isObjective ? '#ffd45a' : isCrown ? '#ffd45a' : district.color} objective={isObjective} far={detail === 'far'} />
+          <BuildingLabel text={`${isObjective && !isPlayer ? '★ ' : ''}#${token} · T${tierFor(target)}`} isPlayer={isPlayer} stroke={isObjective ? '#ffd45a' : isCrown ? '#ffd45a' : district.color} objective={isObjective} far={detail === 'far'} />
         </g>
       )}
 

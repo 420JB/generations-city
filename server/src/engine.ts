@@ -69,6 +69,16 @@ export {
   type PlayWorldDistrict,
   projectWorldDistricts,
 } from '../../src/protocol/play'
+// The local property rehearsal: its routes and answers (local deployments only, see server/src/world/rehearsal.ts).
+export {
+  PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_ASSETS_ENDPOINT,
+  REHEARSAL_MARK,
+  type RehearsalActivationResponse,
+  type RehearsalAssetsResponse,
+  type RehearsalErrorCode,
+  type RehearsalRouteErrorCode,
+} from '../../src/protocol/playRehearsal'
 // Persistent brand cities: how a world's configuration may change, and the state its city is stored with.
 export { establishedCollections, foundationOf, governingProblems, judgeWorldConfig, parseWorldFoundation, sameFoundation, WORLD_CONFIG_JUDGE, type FoundationCollection, type WorldConfigJudgement, type WorldFoundation } from '../../src/brand/core/evolution'
 export { emptyWorldCityState, parseWorldCityState, POPULATED_WORLD_CITY_STATE_VERSION, WORLD_CITY_STATE_VERSION, worldBuildingId, worldCityStateText, type WorldBuildingRecord, type WorldCityState } from '../../src/world/cityState'

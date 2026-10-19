@@ -3,7 +3,7 @@ import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http
 import { gzipSync } from 'node:zlib'
 import type { PropertyReader } from './activation/properties'
 import { ActivationError, type ActivationService } from './activation/service'
-import { AuthError, type AuthService, type LiveSession } from './auth/service'
+import { AuthError, hashSessionToken, type AuthService, type LiveSession } from './auth/service'
 import type { CityReader } from './city/store'
 import { clientKey, type ClientKey } from './clientKey'
 import type { ServerConfig } from './config'
@@ -29,9 +29,11 @@ import {
   type IdentityErrorCode,
   PLAY_CITY_ENDPOINT,
   PLAY_LOGOUT_ENDPOINT,
+  PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
   type PlayErrorBody,
-  type PlayErrorCode,
+  type RehearsalRouteErrorCode,
 } from './engine'
 import { assertSameOrigin, HttpError, playSessionCookie, readJsonBody, sessionCookie } from './http'
 import { errorFields, type Logger } from './log'
@@ -42,6 +44,7 @@ import { PlaySessionError, type PlaySessionService } from './play/session'
 import { createRateLimiter, LIMITS, unlimited, type RateLimiter, type RateRule } from './rateLimit'
 import { buildSecurityHeaders } from './securityHeaders'
 import type { StaticFile, StaticSite } from './static'
+import { RehearsalRefusal, type LocalPropertyRehearsal } from './world/rehearsal'
 
 export const SERVICE_NAME = 'rare-city-server'
 
@@ -63,6 +66,11 @@ export interface AppDeps {
   playLaunch?: PlayLaunchService | null
   /** Play sessions: what a launch leaves this browser signed in to. Needed with `playLaunch`; without it, Play is `play_disabled`. */
   playSessions?: PlaySessionService | null
+  /**
+   * The LOCAL PROPERTY REHEARSAL (`world/rehearsal.ts`). Its two routes exist only when this is given AND the mode is
+   * local; otherwise they are not there at all (404). Built only from LOCAL_PROPERTY_REHEARSAL_FILE.
+   */
+  rehearsal?: LocalPropertyRehearsal | null
   /** Which Friends already have a property, for the My Friends annotation. null = not available. */
   properties?: PropertyReader | null
   /** The built client, served from this origin. null = API only. */
@@ -165,7 +173,7 @@ interface PostRoute {
   /** Client-network limits, counted before the body is read. null = not limited. */
   limit: readonly RateRule[] | null
   /** What the client is told, and what is logged, when the handler fails unexpectedly. */
-  failure: { code: IdentityErrorCode | ActivationErrorCode | PlayErrorCode; log: string }
+  failure: { code: IdentityErrorCode | ActivationErrorCode | RehearsalRouteErrorCode; log: string }
   handle(ctx: PostContext): Promise<void>
 }
 
@@ -182,6 +190,8 @@ interface PostRoute {
  */
 export function createApp(deps: AppDeps): RequestListener {
   const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null, playLaunch = null, playSessions = null } = deps
+  // Local mode, and the rehearsal file, or the rehearsal routes do not exist.
+  const rehearsal = config.mode === 'local' && playSessions ? (deps.rehearsal ?? null) : null
   const cookie = sessionCookie(config.mode)
   const playCookie = playSessionCookie(config.mode)
   const security = buildSecurityHeaders(config)
@@ -195,7 +205,7 @@ export function createApp(deps: AppDeps): RequestListener {
   let warnedAt = Number.NEGATIVE_INFINITY
 
   const cityError = (res: ServerResponse, code: CityErrorCode) => send(res, 503, { error: code }, { 'retry-after': '5' })
-  const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode | ActivationErrorCode | PlayErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
+  const identityError = (res: ServerResponse, status: number, code: IdentityErrorCode | ActivationErrorCode | RehearsalRouteErrorCode, headers: Record<string, string | string[]> = {}) => send(res, status, { error: code }, { ...PRIVATE, ...headers })
 
   /**
    * Count this request against `rules` for `key`. Answers 429 and returns false when it is over the limit.
@@ -349,6 +359,25 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /** A play session refusal on a rehearsal route: a session that is over loses its cookie, one that cannot be served now keeps it. */
+  function playRefusal(res: ServerResponse, presented: string | null, err: PlaySessionError) {
+    const ended = presented !== null && (err.status === 401 || err.status === 403)
+    return identityError(res, err.status, err.code, { ...(ended ? { 'set-cookie': playCookie.clear() } : {}), ...(err.status === 503 ? { 'retry-after': '5' } : {}) })
+  }
+
+  /** LOCAL REHEARSAL: the test NFTs the session's player may place. Marked as rehearsal data in the answer itself. */
+  async function serveRehearsalAssets(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_ASSETS_ENDPOINT, client, LIMITS.playRehearsal.client)) return
+    const presented = playCookie.read(req)
+    try {
+      return send(res, 200, await service.assets(presented), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      log.error('rehearsal assets read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
   /** A sign-in route: the common boundary, then the auth service if there is one to ask. */
   const signIn = (limit: PostRoute['limit'], handle: (service: AuthService, ctx: PostContext) => Promise<void>): PostRoute => ({
     limit,
@@ -423,6 +452,32 @@ export function createApp(deps: AppDeps): RequestListener {
         send(res, 200, opened.response, { ...PRIVATE, 'set-cookie': playCookie.set(opened.token, opened.maxAgeSeconds) })
       },
     },
+    // LOCAL PROPERTY REHEARSAL, local mode with the rehearsal file only (`world/rehearsal.ts`). Past the common boundary
+    // (same origin, JSON only, size) it also needs an Origin header naming this service, then: the exact actor the page
+    // drew (`requireActor`: session, world, player, Play active now), the per-player limit, the NFT listed for that
+    // player, and the property store's own judgement under the city's lock. Nothing in the body is believed beyond
+    // which listed NFT and which plot.
+    ...(rehearsal
+      ? {
+          [PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT]: {
+            limit: LIMITS.playRehearsal.client,
+            failure: { code: 'play_session_unavailable', log: 'rehearsal activation failed' },
+            async handle({ req, res, body }) {
+              if (req.headers.origin !== config.publicOrigin) return identityError(res, 403, 'origin_mismatch')
+              const presented = playCookie.read(req)
+              // Keyed by the session credential (as stored: its hash), never by anything the body names.
+              if (!withinLimit(res, `${PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT}:session`, presented ? hashSessionToken(presented).toString('hex') : '', LIMITS.playRehearsal.user)) return
+              try {
+                return send(res, 200, await rehearsal.activate(presented, body), PRIVATE)
+              } catch (err) {
+                if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+                if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+                throw err
+              }
+            },
+          } satisfies PostRoute,
+        }
+      : {}),
     // Ends the play session only. A wallet session in the same browser is a different cookie and is not touched.
     [PLAY_LOGOUT_ENDPOINT]: {
       limit: null,
@@ -491,6 +546,9 @@ export function createApp(deps: AppDeps): RequestListener {
         return serveFriends(req, res, client)
       case PLAY_CITY_ENDPOINT:
         return servePlayCity(req, res, client)
+      case PLAY_REHEARSAL_ASSETS_ENDPOINT:
+        if (rehearsal) return serveRehearsalAssets(req, res, client, rehearsal)
+        break
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.
     if (!site || isReserved(path)) return send(res, 404, { error: 'not_found' })
