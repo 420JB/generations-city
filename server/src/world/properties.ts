@@ -16,7 +16,7 @@ import {
 } from '../engine'
 import type { Logger } from '../log'
 import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play/session'
-import { lockWorldForChange, WorldRefusal, type ActivatorIdentity } from './store'
+import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type ConfirmActive } from './store'
 
 /**
  * WORLD PROPERTY ACTIVATION, AUTHORITATIVE PERSISTENCE (P1-C2-B2A). LOCAL ONLY.
@@ -47,6 +47,24 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity } from './stor
  * transaction, under the city lock every configuration adoption also takes. A refused, failed or
  * rolled-back activation freezes nothing. Every later property stands on that geometry, and every
  * version that governs the world afterwards must draw it (`store.ts`, and the database's guards).
+ *
+ * STALE MAPS (P1-C2-B2C-H). A player chooses a plot on the city their page drew, and before the
+ * first property a configuration adoption may redraw the districts under the same plot ids. So an
+ * activation names the layout geometry fingerprint of the city it was chosen on, and under the city
+ * lock it must be the governing geometry's, or it is refused (`config_superseded`) before anything is
+ * written: an identical plot id is not the same ground on another geometry. The page then shows the
+ * city as it is and the player chooses again.
+ *
+ * PLAY'S ACTIVE CONFIGURATION (P1-C2-B2C-H). The configuration that governs a world is the one the
+ * installation had active when a launch adopted it, and adoption waits for a launch. A world's first
+ * property freezes the governing geometry for good, so it must not freeze a version Play no longer
+ * has active: before the freeze, with the city lock held, Play is asked once (`activeConfig`, contract
+ * §4.4) which version and hash the installation has active, and unless that is exactly the governing
+ * version the activation is refused (`config_superseded`; the player relaunches, which adopts it).
+ * No answer in time refuses it too (`active_config_unverified`): a first property is never written
+ * on an uncertain configuration. Every adoption takes the same lock, so none slips in between. Play's
+ * pointer can still move after Play answered; that publish then comes after this property, and the
+ * new version must draw the frozen geometry to govern, as for any later publish.
  *
  * ORIGINAL ACTIVATOR (migration 0008, locked policy). Each property records, for good, the Core user
  * id and Discord user id of the player who activated it: read from the activating play session's
@@ -87,6 +105,13 @@ export type WorldPropertyRefusalCode =
   | 'session_ended'
   /** The plot's district has a Proofy rule, and no contract can say whether the player meets it (only with `refuseRuleGatedDistricts`). */
   | 'district-rule-unverified'
+  /**
+   * The city the page chose on is not the one that governs now (its geometry changed), or, for a world's first property,
+   * Play has another configuration version active than the one that governs. Nothing was written.
+   */
+  | 'config_superseded'
+  /** A world's first property, and Play did not say in time which configuration it has active. Nothing was written. */
+  | 'active_config_unverified'
 
 export class WorldPropertyRefusal extends Error {
   readonly code: WorldPropertyRefusalCode
@@ -97,10 +122,14 @@ export class WorldPropertyRefusal extends Error {
   }
 }
 
-/** What an activation names: an NFT, as untyped input, and the exact plot the player chose. */
+/**
+ * What an activation names: an NFT, as untyped input, the exact plot the player chose, and the layout geometry fingerprint
+ * of the city it was chosen on (`PlayWorld.definition.geometryFingerprint` as the page drew it).
+ */
 export interface PropertyActivationInput {
   asset: { chain: unknown; contract: unknown; tokenId: unknown; standard?: unknown }
   plotId: unknown
+  geometryFingerprint: unknown
 }
 
 /** A property as stored. */
@@ -138,9 +167,11 @@ export interface PropertyActivationResult {
 
 /**
  * Points inside the write at which a test may make it fail, or act, to prove nothing is left half-written. `locked`: the
- * city is locked, the session not yet. `freeze`: only for a world's first property, after its geometry freeze is written.
+ * city is locked, the session not yet. `confirmed`: only for a world's first property, once Play confirmed its active
+ * configuration and before anything is written. `freeze`: only for a world's first property, after its geometry freeze is
+ * written.
  */
-export type ActivationStep = 'locked' | 'city' | 'event' | 'freeze' | 'property'
+export type ActivationStep = 'locked' | 'confirmed' | 'city' | 'event' | 'freeze' | 'property'
 
 export interface ActivationOptions {
   /**
@@ -149,6 +180,11 @@ export interface ActivationOptions {
    * verify it must not place anything there.
    */
   refuseRuleGatedDistricts?: boolean
+  /**
+   * Play's active configuration for the actor's installation, asked only for a world's first property, with the city
+   * locked (`PlaySessionService.activeConfig`). Without it a first property is refused (`active_config_unverified`).
+   */
+  activeConfig?: ConfirmActive
 }
 
 export interface WorldPropertyStore {
@@ -257,6 +293,9 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
           ).rows
           if (live.length !== 1) throw new WorldPropertyRefusal('session_ended', 'The play session ended before the activation was written.')
           const activator: ActivatorIdentity = { coreUserId: live[0].core_user_id, discordUserId: live[0].discord_user_id }
+          // The plot was chosen on the city the page drew. On any other geometry the same plot id may be other ground.
+          if (input.geometryFingerprint !== read.world.layout.geometryFingerprint)
+            throw new WorldPropertyRefusal('config_superseded', 'The city\'s districts changed after this page drew it; nothing was placed.')
 
           const property = worldProperty(read.world, asset)
           if (!property) throw new WorldPropertyRefusal('asset-not-in-world')
@@ -279,6 +318,14 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
           if (!proposed.ok) throw new WorldPropertyRefusal(proposed.reason)
           const t = proposed.transition
           if (options.refuseRuleGatedDistricts && read.config.districts.find((d) => d.key === t.plot.districtKey)?.gate) throw new WorldPropertyRefusal('district-rule-unverified')
+          // The first property freezes the governing geometry for good: only while Play, asked now, has exactly that version active.
+          if (!read.freeze) {
+            const active = options.activeConfig ? await options.activeConfig().catch(() => null) : null
+            if (!active) throw new WorldPropertyRefusal('active_config_unverified', 'Proofy Play did not confirm which city configuration is active; nothing was placed.')
+            if (active.version !== read.governingVersion || active.configHash !== read.governingConfigHash)
+              throw new WorldPropertyRefusal('config_superseded', 'Proofy Play has another city configuration active than the one this city follows; nothing was placed.')
+            await onStep?.('confirmed')
+          }
 
           const moved = await client.query(
             'UPDATE city SET state = $1::json, state_version = $2, sequence = $3, updated_at = now() WHERE id = $4 AND instance_id = $5 AND sequence = $6',
@@ -349,9 +396,9 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
 /**
  * The only composition a mutation route may use: `requireActor` (the cookie's live session must be exactly the one
  * the page drew, and Play must answer `active` now), then `authorize` (what the route alone can check about the
- * actor, before any database work), then the store.
+ * actor, before any database work), then the store, with Play's active configuration to ask under the city lock.
  */
-export function createPropertyActivationService({ sessions, store }: { sessions: Pick<PlaySessionService, 'requireActor'>; store: WorldPropertyStore }) {
+export function createPropertyActivationService({ sessions, store }: { sessions: Pick<PlaySessionService, 'requireActor' | 'activeConfig'>; store: WorldPropertyStore }) {
   return {
     async activate(
       presented: string | null,
@@ -361,7 +408,7 @@ export function createPropertyActivationService({ sessions, store }: { sessions:
     ): Promise<PropertyActivationResult> {
       const actor = await sessions.requireActor(presented, expected)
       authorize?.(actor)
-      return store.activate(actor, input, options)
+      return store.activate(actor, input, { ...options, activeConfig: sessions.activeConfig(actor) })
     },
   }
 }

@@ -176,6 +176,7 @@ describe('play sessions over HTTP', () => {
       },
       permissions: { viewCity: true, claim: false, build: false },
       originalActivations: [],
+      unrecordedActivations: [],
     })
     expect(env.s.rows).toHaveLength(1)
     // Only a hash is kept.

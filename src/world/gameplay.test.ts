@@ -311,6 +311,7 @@ describe('persistent city as drawn and read', () => {
         },
         permissions: { viewCity: true, claim: false, build: false },
         originalActivations: [Object.values(state.buildings)[0].propertyId],
+        unrecordedActivations: [],
       },
       world: {
         id: WORLD_4,

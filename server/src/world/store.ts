@@ -126,6 +126,8 @@ export interface OpenedWorld {
   accepted: AcceptedJudgement
   /** The ids of the properties `launch.player` originally activated in this world, in activation order. */
   originalActivations: string[]
+  /** The ids of this world's properties whose original activator was never recorded (written before 0008), in activation order. */
+  unrecordedActivations: string[]
 }
 
 /**
@@ -151,6 +153,8 @@ export interface ReadWorld {
   governing: { version: number; schemaVersion: number; configHash: string; config: Record<string, unknown> }
   /** The ids of the properties the reading player originally activated, in activation order (none without a player). */
   originalActivations: string[]
+  /** The ids of the world's properties whose original activator was never recorded (written before 0008), in activation order. */
+  unrecordedActivations: string[]
 }
 
 /** Who a property's original activator is (migration 0008): the player Proofy named for the activating session. */
@@ -264,6 +268,14 @@ async function originalActivationsOf(client: PoolClient, worldId: string, player
   ).rows.map((r) => r.id)
 }
 
+/**
+ * The properties of a world whose original activator was never recorded: written before 0008, when no activator was kept.
+ * Who placed them is unknown, to everyone; saying so names nobody.
+ */
+async function unrecordedActivationsOf(client: PoolClient, worldId: string): Promise<string[]> {
+  return (await client.query<{ id: string }>('SELECT id FROM world_properties WHERE world_id = $1 AND activator_core_user_id IS NULL ORDER BY activated_sequence', [worldId])).rows.map((r) => r.id)
+}
+
 export function createWorldStore(db: Database, { mode, log, onFoundingStep }: WorldStoreOptions): WorldStore {
   const isRefusal = (err: unknown) => err instanceof WorldRefusal || err instanceof LostFoundingRace
 
@@ -348,6 +360,7 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       instance: city.instance_id,
       accepted: judged,
       originalActivations: [],
+      unrecordedActivations: [],
       world: {
         id: worldId,
         provisioned: true,
@@ -452,6 +465,7 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       instance,
       accepted: judged,
       originalActivations: await originalActivationsOf(client, worldId, launch.player),
+      unrecordedActivations: await unrecordedActivationsOf(client, worldId),
       world: {
         id: worldId,
         provisioned: true,
@@ -481,6 +495,7 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
       return {
         governing: { version: row.version, schemaVersion: row.schema_version, configHash: row.config_hash, config },
         originalActivations: await originalActivationsOf(client, scope.worldId, player),
+        unrecordedActivations: await unrecordedActivationsOf(client, scope.worldId),
         world: {
           id: scope.worldId,
           provisioned: true,
@@ -624,6 +639,8 @@ export interface LockedWorld {
   /** The governing configuration itself (district names, Proofy rules), as the world accepted it. */
   config: AcceptedJudgement['config']
   governingVersion: number
+  /** Its configuration hash: what Play's active pointer must name for the version to be the installation's active one. */
+  governingConfigHash: string
   /** The adoption that made `governingVersion` govern (`world_config_adoptions.adoption_seq`). */
   governingAdoption: number
   /** The geometry the world's first property froze, or null while it has none: the next activation freezes the governing geometry. */
@@ -641,7 +658,7 @@ export async function lockWorldForChange(client: PoolClient, scope: WorldScope):
   const { row, judged, adoption } = await governingOf(client, scope.worldId, freeze)
   // The state must be one the world's own geometry can hold, as every read requires.
   districtsOf(scope.worldId, judged.world, state)
-  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingAdoption: adoption, freeze }
+  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingConfigHash: row.config_hash, governingAdoption: adoption, freeze }
 }
 
 /**

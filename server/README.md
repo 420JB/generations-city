@@ -1230,6 +1230,13 @@ configuration and is not affected by anything here.
 - After migrating, the database is stamped with its `APP_MODE` in `app_meta`. A database
   stamped `staging` refuses to be migrated or reported ready as `production` (and the
   reverse), which catches a process pointed at the wrong database.
+- Stop every instance of the previous build before migrating when a migration changes what
+  the code must write: an older instance left serving against the new schema writes by the
+  old rules. Where that would be permanent the database refuses it instead (`0009`: a new
+  configuration verdict is recorded only by the current judge, so an older build left
+  running after `0008` fails its launches rather than recording a `world-evolution-v2`
+  verdict for good). A judge change replaces `world_config_versions_current_judge()` in the
+  same migration that ships the new judge.
 
 ## Tests
 

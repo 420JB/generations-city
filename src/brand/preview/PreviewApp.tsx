@@ -101,10 +101,18 @@ export function BrandCityPreview({
   const [memberIndex, setMemberIndex] = useState(1)
   const member: PreviewMember | null = members[memberIndex] ?? null
   const [panel, setPanel] = useState<Panel>(null)
-  const [placing, setPlacing] = useState<{ districtId: string; selected: PreviewCandidate | null } | null>(null)
-  const placingIn = placing?.districtId ?? null
+  // A plot is chosen on one geometry. A plot id names other ground on another, so a city redrawn on other districts
+  // keeps no selected plot (and no placement at all in a district that is gone): the player chooses again.
+  const geometry = city.world.layout.geometryFingerprint
+  const [placing, setPlacing] = useState<{ districtId: string; selected: PreviewCandidate | null; geometry: string } | null>(null)
+  const placingNow = placing && (placing.geometry === geometry || city.world.districts.some((d) => d.key === placing.districtId)) ? placing : null
+  const placingIn = placingNow?.districtId ?? null
   const candidates = useMemo(() => (placingIn ? candidatesIn(city, placingIn) : []), [city, placingIn])
-  const placement: Placement | null = placing && { districtId: placing.districtId, candidates, selected: placing.selected && candidates.some((c) => c.plotId === placing.selected!.plotId) ? placing.selected : null }
+  const placement: Placement | null = placingNow && {
+    districtId: placingNow.districtId,
+    candidates,
+    selected: placingNow.geometry === geometry && placingNow.selected && candidates.some((c) => c.plotId === placingNow.selected!.plotId) ? placingNow.selected : null,
+  }
   /** The player places for real (on the local server) only as themselves, never as a simulated viewer. */
   const rehearsing = rehearsal && member?.kind === 'player' ? rehearsal : null
   const [focus, setFocus] = useState<{ buildingId: string; seq: number } | null>(null)
@@ -136,7 +144,7 @@ export function BrandCityPreview({
     if (!allowedIn(districtId)) return
     const d = sceneDistrict(scene, districtId)
     const offered = candidatesIn(city, districtId)
-    setPlacing({ districtId, selected: null })
+    setPlacing({ districtId, selected: null, geometry })
     setPanel(null)
     setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: offered.map((c) => plotWorldIn(d, c.ward, c.plot)) }))
   }
@@ -201,7 +209,7 @@ export function BrandCityPreview({
         onSelect={select}
         onSelectDistrict={openDistrict}
         placement={placement ? { candidates: placement.candidates, selected: placement.selected } : null}
-        onPickPlot={(c) => setPlacing((p) => (p ? { ...p, selected: c } : p))}
+        onPickPlot={(c) => setPlacing((p) => (p ? { ...p, selected: c, geometry } : p))}
         frame={frame}
         focus={focus}
         fx={NO_FX}

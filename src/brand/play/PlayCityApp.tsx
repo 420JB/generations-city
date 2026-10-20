@@ -93,6 +93,7 @@ const REHEARSAL_REFUSALS: Record<RehearsalErrorCode | 'invalid_request', string>
 
 /** Session and Play refusals of a placement, said as what happened to the placement rather than to the city view. */
 const PLACEMENT_REFUSALS: Partial<Record<PlayErrorCode, string>> = {
+  config_superseded: 'Proofy Play has a newer city configuration that this city has not taken up yet, so nothing was placed. Launch Rare City again from Proofy Play, then choose your plot.',
   installation_unverified: 'Proofy Play did not confirm Rare City on this server just now, so nothing was placed. You are still signed in: try again in a moment.',
   play_session_unavailable: 'Your session could not be checked just now, so nothing was placed. Try again in a moment.',
   world_unavailable: 'The city could not be read just now, so nothing was placed. Try again in a moment.',
@@ -254,7 +255,15 @@ export function PlayCityApp() {
    * drew, then read the city again so the page shows it as stored. A refusal that ends the session leaves the city.
    */
   async function placeProperty(drawn: PlayCityResponse, asset: string, plotId: string): Promise<RehearsalResult> {
-    const request: RehearsalActivationRequest = { sessionRef: drawn.viewer.session.ref, worldId: drawn.world.id, discordUserId: drawn.viewer.player.discordUserId, asset, plotId }
+    // The plot was chosen on the districts this page drew: the server places it only on that same ground.
+    const request: RehearsalActivationRequest = {
+      sessionRef: drawn.viewer.session.ref,
+      worldId: drawn.world.id,
+      discordUserId: drawn.viewer.player.discordUserId,
+      asset,
+      plotId,
+      geometryFingerprint: drawn.world.definition.geometryFingerprint,
+    }
     const answer = await ask(PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) })
     if (!answer) return { ok: false, message: 'The server could not be reached. Nothing is known to have been placed: reload to see the city as stored.' }
     const placed = answer.response.ok ? parseRehearsalActivationResponse(answer.body) : null
@@ -273,6 +282,9 @@ export function PlayCityApp() {
     const next = await withRehearsal(await readSession())
     setPhase(next.kind === 'ready' && next.city.viewer.session.ref !== drawn.viewer.session.ref ? { kind: 'superseded' } : next)
     if (placed) return { ok: true, buildingId: placed.property.buildingId, fresh: placed.fresh, sequence: placed.sequence }
+    // The districts changed under the page: it now shows the city as it is, and the plot must be chosen again on it.
+    if (refused === 'config_superseded' && next.kind === 'ready' && next.city.world.definition.geometryFingerprint !== drawn.world.definition.geometryFingerprint)
+      return { ok: false, message: 'This city’s districts changed before your property was placed, so nothing was placed. The map now shows the city as it is: choose your plot again.' }
     if (typeof refused === 'string' && Object.hasOwn(REHEARSAL_REFUSALS, refused)) return { ok: false, message: REHEARSAL_REFUSALS[refused as RehearsalErrorCode] }
     if (typeof refused === 'string' && Object.hasOwn(REFUSALS, refused)) return { ok: false, message: PLACEMENT_REFUSALS[refused as PlayErrorCode] ?? REFUSALS[refused as PlayErrorCode] }
     return { ok: false, message: REFUSALS.unreadable }
@@ -382,7 +394,16 @@ function PlayCity({
   const stored = (buildingId: string) => {
     const b = (world.state.buildings as Readonly<Record<string, WorldBuildingRecord>>)[buildingId]
     return b
-      ? { propertyId: b.propertyId, asset: b.asset, collection: b.collection, districtKey: b.districtKey, ward: b.ward, plot: b.plot, sequence: b.sequence, activatedByViewer: viewer.originalActivations.includes(b.propertyId) }
+      ? {
+          propertyId: b.propertyId,
+          asset: b.asset,
+          collection: b.collection,
+          districtKey: b.districtKey,
+          ward: b.ward,
+          plot: b.plot,
+          sequence: b.sequence,
+          activator: viewer.originalActivations.includes(b.propertyId) ? ('viewer' as const) : viewer.unrecordedActivations.includes(b.propertyId) ? ('unrecorded' as const) : ('other' as const),
+        }
       : null
   }
   const geometry = world.definition.districtGeometry
@@ -410,6 +431,7 @@ function PlayCity({
       data-world-created={String(world.created)}
       data-world-sequence={world.sequence}
       data-governing-version={world.definition.governingConfigVersion}
+      data-geometry-fingerprint={world.definition.geometryFingerprint}
       data-geometry-frozen={String(geometry.frozen)}
       data-original-activations={viewer.originalActivations.length}
       data-buildings={buildings}

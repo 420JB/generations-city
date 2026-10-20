@@ -18,6 +18,7 @@ const BODY = {
     },
     permissions: { viewCity: true, claim: false, build: false },
     originalActivations: [] as string[],
+    unrecordedActivations: [] as string[],
   },
   world: {
     id: '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1b',
@@ -97,5 +98,11 @@ describe('Play session viewer and city read', () => {
     expect(parsePlayViewer({ ...v, originalActivations: undefined })).toBeNull()
     expect(parsePlayViewer({ ...v, originalActivations: ['ada'] })).toBeNull()
     expect(parsePlayViewer({ ...v, originalActivations: [{ id: '3f1c2b9a-7d4e-4c8b-9a21-5e6f7a8b9c0d' }] })).toBeNull()
+    // Properties nobody's activator was recorded for (before 0008): ids only, never missing, never also the viewer's.
+    const legacy = '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1c'
+    expect(parsePlayViewer({ ...v, unrecordedActivations: [legacy] })?.unrecordedActivations).toEqual([legacy])
+    expect(parsePlayViewer({ ...v, unrecordedActivations: undefined })).toBeNull()
+    expect(parsePlayViewer({ ...v, unrecordedActivations: ['ada'] })).toBeNull()
+    expect(parsePlayViewer({ ...v, originalActivations: [legacy], unrecordedActivations: [legacy] })).toBeNull()
   })
 })

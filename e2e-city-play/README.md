@@ -210,6 +210,33 @@ runtime role exist. (Permanent activator provenance now exists: migration 0008.)
 - **B. Closing and re-opening a collection to new claims (NOT implemented: needs a Play contract
   change).** See below.
 
+**World-policy hardening (P1-C2-B2C-H, migration 0009).** Corrections from the independent C2-B2C
+audit:
+
+- **The plot is placed on the ground the player chose it on.** A plot id names ground only on one
+  geometry: before the first property an adoption can redraw the districts under the same ids
+  (`tidewater-w0-p0` was −45°/90° on four districts and −75°/60° on six). So an activation carries the
+  layout geometry fingerprint of the city its page drew (`PlayWorld.definition.geometryFingerprint`,
+  shape-checked at the route), and under the city lock it must be the governing geometry's, or it is
+  refused `409 config_superseded` before anything is written. The page reads the city again, drops
+  the selected plot on a redrawn map and asks the player to choose again.
+- **The first property waits for Play's active configuration.** Adoption follows a launch, so a city
+  can still be governed by version 1 after an admin activated version 2. The first property would
+  freeze version 1 for good, decided by launch order. So, for a city's first property only, with the
+  city lock held, Rare City asks Play once more which version the installation has active (contract
+  1.1.0 §4.4, `GET /v1/game/installations/{id}`: `activeConfigVersion`, `activeConfigHash`, the
+  installation's pointer, §7) and refuses `409 config_superseded` unless it is exactly the governing
+  version and hash; the page says to launch again, which adopts it. No answer within 3 s, or an
+  installation not active, refuses it (`503 installation_unverified`): a first property is never
+  written on an uncertain configuration. A publish Play accepts after it answered comes after the
+  property, and must then draw the frozen geometry to govern, like any later publish.
+- **An older build cannot record a new verdict (0009).** A new `world_config_versions` row must be
+  judged by the current judge (`world-evolution-v3`); an older instance left running after 0008 has
+  its launches refused rather than recording a v2 verdict for good. Recorded verdicts are untouched.
+  Older instances must still be stopped before migrating (`server/README.md`, Migrations).
+- **Unknown stays unknown.** A property written before 0008 has no recorded activator; the page says
+  so (`viewer.unrecordedActivations`) instead of implying a private record exists.
+
 **Collection claim policy: the Play configuration change it needs.** Today Rare City's Play
 configuration schema version 1 (`src/brand/core/playConfig.ts`) describes a collection as exactly
 `{ key, chain, contract, displayName }` (`additionalProperties: false`), and Rare City's rules make

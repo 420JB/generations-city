@@ -32,8 +32,18 @@ const store = createWorldPropertyStore(db, { mode: 'local', log: silentLogger })
 async function installed(config: unknown) {
   const guild = snowflake()
   const installation = await install(guild)
-  await publish(guild, installation, config)
-  return { guild, installation }
+  const active = await publish(guild, installation, config)
+  return { guild, installation, active }
+}
+
+/**
+ * What the internal harness passes the property store, as the activation service would: the geometry the page drew, and
+ * for a city's first property Play's active configuration, here the version Play itself answered when it activated it
+ * (nothing else is activated in between).
+ */
+async function placedAs(page: Page, active: { version: number; configHash: string }) {
+  const geometryFingerprint = (await page.getByTestId('play-city').getAttribute('data-geometry-fingerprint'))!
+  return { geometryFingerprint, options: { activeConfig: async () => active } }
 }
 
 async function cityOn(page: Page) {
@@ -75,10 +85,11 @@ test('a four-district city with two collections: empty as installed, then exactl
 
   // The internal harness activates three properties, from both collections, on exact plots.
   const actor = await sessionOf(context)
+  const { geometryFingerprint, options } = await placedAs(page, a.active)
   const placed = [
-    await store.activate(actor, { asset: nft(BRAND_A.collections, 'harbor-keepers', '812'), plotId: 'lantern-quay-w0-p3' }),
-    await store.activate(actor, { asset: nft(BRAND_A.collections, 'tide-pass', '77'), plotId: 'tidewater-w0-p0' }),
-    await store.activate(actor, { asset: nft(BRAND_A.collections, 'harbor-keepers', '9'), plotId: 'compass-row-w0-p1' }),
+    await store.activate(actor, { asset: nft(BRAND_A.collections, 'harbor-keepers', '812'), plotId: 'lantern-quay-w0-p3', geometryFingerprint }, options),
+    await store.activate(actor, { asset: nft(BRAND_A.collections, 'tide-pass', '77'), plotId: 'tidewater-w0-p0', geometryFingerprint }, options),
+    await store.activate(actor, { asset: nft(BRAND_A.collections, 'harbor-keepers', '9'), plotId: 'compass-row-w0-p1', geometryFingerprint }, options),
   ]
   expect(placed.map((p) => p.sequence)).toEqual([2, 3, 4])
 
@@ -114,9 +125,10 @@ test('a six-district city with three collections keeps its own properties; anoth
   const city = await cityOn(page)
   await expect(city).toHaveAttribute('data-buildings', '0')
   const actor = await sessionOf(context)
-  await store.activate(actor, { asset: nft(BRAND_B.collections, 'orchard-sprites', '1'), plotId: 'plum-arcade-w0-p0' })
-  await store.activate(actor, { asset: nft(BRAND_B.collections, 'neon-seeds', '1'), plotId: 'kiwi-docks-w0-p2' })
-  await store.activate(actor, { asset: nft(BRAND_B.collections, 'grove-pass', '1'), plotId: 'cherry-row-w0-p4' })
+  const { geometryFingerprint, options } = await placedAs(page, b.active)
+  await store.activate(actor, { asset: nft(BRAND_B.collections, 'orchard-sprites', '1'), plotId: 'plum-arcade-w0-p0', geometryFingerprint }, options)
+  await store.activate(actor, { asset: nft(BRAND_B.collections, 'neon-seeds', '1'), plotId: 'kiwi-docks-w0-p2', geometryFingerprint }, options)
+  await store.activate(actor, { asset: nft(BRAND_B.collections, 'grove-pass', '1'), plotId: 'cherry-row-w0-p4', geometryFingerprint }, options)
   await page.reload()
   await cityOn(page)
   await expect(city).toHaveAttribute('data-buildings', '3')

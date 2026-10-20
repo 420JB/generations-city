@@ -118,6 +118,12 @@ export interface PlayViewer {
    * NFTs now, and nobody is ever told who activated anyone else's property.
    */
   originalActivations: string[]
+  /**
+   * The properties of this city whose original activator was never recorded (their ids, in activation order): placed
+   * before original activators were kept (migration 0008). Who placed them is unknown, to everyone, the viewer
+   * included; none of them is ever in `originalActivations`.
+   */
+  unrecordedActivations: string[]
 }
 
 /** `GET /v1/play/city`: the session's city, as stored, with the configuration that governs it. */
@@ -230,7 +236,12 @@ export type PlayErrorCode =
   | 'config_invalid'
   /** The pinned configuration would move the city's districts or drop a collection; the city is unchanged. */
   | 'config_incompatible'
-  /** The city does not exist yet and this run is pinned to a configuration that is no longer active. */
+  /**
+   * The configuration changed under this request: on a launch, the city does not exist yet and the run is pinned to a
+   * configuration that is no longer active (or is drawn on districts the city no longer has); on a placement, the page
+   * chose its plot on districts that no longer govern, or (before a city's first property) Play has another
+   * configuration active than the one the city follows. Nothing was written.
+   */
   | 'config_superseded'
   /** This Discord server's city is bound to another installation (or Play disagrees with the binding). */
   | 'world_binding_conflict'
@@ -309,15 +320,20 @@ export function parsePlayViewer(v: unknown): PlayViewer | null {
   if (!guildMember || !playEntitled || !installationActive || !brandAdmin || !districtRules) return null
   // Only viewing is open: a page that is told otherwise is talking to something else.
   if (permissions.viewCity !== true || permissions.claim !== false || permissions.build !== false) return null
-  const { originalActivations } = v
-  if (!Array.isArray(originalActivations) || originalActivations.length > 100_000 || !originalActivations.every((id) => typeof id === 'string' && UUID.test(id))) return null
+  const { originalActivations, unrecordedActivations } = v
+  const ids = (list: unknown): list is string[] => Array.isArray(list) && list.length <= 100_000 && list.every((id) => typeof id === 'string' && UUID.test(id))
+  if (!ids(originalActivations) || !ids(unrecordedActivations)) return null
+  // A property's activator is either recorded or not, never both.
+  const unrecorded = new Set(unrecordedActivations)
+  if (originalActivations.some((id) => unrecorded.has(id))) return null
   return {
     authenticated: true,
     player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
     session: { ref: session.ref, expiresAt: session.expiresAt, renewal: 'relaunch' },
     status: { guildMember, playEntitled, installationActive, brandAdmin, districtRules },
     permissions: { viewCity: true, claim: false, build: false },
-    originalActivations: [...(originalActivations as string[])],
+    originalActivations: [...originalActivations],
+    unrecordedActivations: [...unrecordedActivations],
   }
 }
 

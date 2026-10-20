@@ -11,7 +11,9 @@ import { nft, REHEARSAL_ADA, REHEARSAL_BEA } from './rehearsal'
  *   - a city's district geometry follows its configuration until its FIRST PROPERTY, which freezes
  *     it; later configurations that move districts are refused, presentation changes still govern;
  *   - every property records its ORIGINAL ACTIVATOR (the Proofy player of the activating session),
- *     which outlives sign-out and relaunch and is never shown to anyone else.
+ *     which outlives sign-out and relaunch and is never shown to anyone else;
+ *   - (P1-C2-B2C-H) a plot chosen on districts that have since changed is refused and chosen again,
+ *     and a city's first property waits for the configuration Play has active to be launched.
  * Local dev-issued Play runs stand in for Proofy Core here: nothing in this file is evidence of a
  * production Core identity integration.
  */
@@ -54,8 +56,8 @@ async function still(page: Page) {
   }
 }
 
-/** Place a listed test NFT on an exact plot through the page, as a player does. */
-async function place(page: Page, asset: string, plotId: string) {
+/** Choose a listed test NFT and an exact plot on the page, as a player does, up to the permanent confirmation. */
+async function choose(page: Page, asset: string, plotId: string) {
   const [, districtKey, ward, plot] = /^(.+)-w(\d+)-p(\d+)$/.exec(plotId)!
   await page.getByTestId('nav-overview').click()
   await still(page)
@@ -66,6 +68,12 @@ async function place(page: Page, asset: string, plotId: string) {
   await page.locator(`[data-asset="${asset}"]`).check()
   await page.getByTestId(`candidate-plot-${districtKey}-${ward}-${plot}`).click()
   await page.getByTestId('rehearsal-review').click()
+  await expect(page.getByTestId('rehearsal-confirm')).toHaveAttribute('data-plot-id', plotId)
+}
+
+/** Place a listed test NFT on an exact plot through the page, as a player does. */
+async function place(page: Page, asset: string, plotId: string) {
+  await choose(page, asset, plotId)
   await page.getByTestId('rehearsal-activate').click()
   await expect(page.getByTestId('stored-property')).toHaveAttribute('data-plot-id', plotId)
 }
@@ -73,7 +81,14 @@ async function place(page: Page, asset: string, plotId: string) {
 /** The rehearsal route, asked directly from the page with its own cookie, naming the actor the page drew. */
 async function placeByApi(page: Page, asset: string, plotId: string) {
   const city = page.getByTestId('play-city')
-  const body = { sessionRef: await city.getAttribute('data-session-ref'), worldId: await city.getAttribute('data-world'), discordUserId: await city.getAttribute('data-player'), asset, plotId }
+  const body = {
+    sessionRef: await city.getAttribute('data-session-ref'),
+    worldId: await city.getAttribute('data-world'),
+    discordUserId: await city.getAttribute('data-player'),
+    asset,
+    plotId,
+    geometryFingerprint: await city.getAttribute('data-geometry-fingerprint'),
+  }
   return page.evaluate(async (b) => {
     const r = await fetch('/v1/play/rehearsal/activations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), credentials: 'same-origin' })
     return { status: r.status, body: (await r.json()) as Record<string, unknown> }
@@ -185,4 +200,68 @@ test('the original activator is the launched player, outlives sign-out and relau
   await bea.screenshot({ path: `${SHOTS}/policy-5-other-player.png` })
   await adaContext.close()
   await beaContext.close()
+})
+
+test('a plot chosen on four districts is refused once six govern: nothing placed, the map redrawn, the plot chosen again', async ({ browser }) => {
+  const a = await installed(BRAND_A)
+  const adaContext = await browser.newContext()
+  const ada = await adaContext.newPage()
+  const city = await arrive(ada, launchHref(await launch(a.guild, 'rare-city', 'Ada', REHEARSAL_ADA)))
+  const drawn = (await city.getAttribute('data-geometry-fingerprint'))!
+  await choose(ada, nft(BRAND_A, 'harbor-keepers', '812'), 'tidewater-w0-p0')
+
+  // While Ada reviews, the admin publishes six districts and Bea launches with them: the city now governs six.
+  await publish(a.guild, a.installation, BRAND_A_SIX)
+  const beaContext = await browser.newContext()
+  const bea = await beaContext.newPage()
+  await arrive(bea, launchHref(await launch(a.guild, 'rare-city', 'Bea', REHEARSAL_BEA)))
+
+  // tidewater-w0-p0 still exists, on other ground: refused, nothing placed, the map shows the city as it is.
+  await ada.getByTestId('rehearsal-activate').click()
+  await expect(ada.getByTestId('rehearsal-error')).toHaveText('This city’s districts changed before your property was placed, so nothing was placed. The map now shows the city as it is: choose your plot again.')
+  await expect(city).toHaveAttribute('data-world-sequence', '1')
+  await expect(city).toHaveAttribute('data-governing-version', '2')
+  await expect(city).toHaveAttribute('data-geometry-frozen', 'false')
+  expect(await city.getAttribute('data-geometry-fingerprint')).not.toBe(drawn)
+  await expect(ada.locator('[data-testid^="district-label-"]')).toHaveCount(6)
+  await expect(ada.getByTestId('no-plot-selected')).toBeVisible()
+  await expect(ada.getByTestId('selected-plot')).toHaveCount(0)
+  await ada.screenshot({ path: `${SHOTS}/policy-6-stale-map-refused.png` })
+
+  // Chosen again, in the same panel, on the city as drawn now: placed there, and the six districts freeze.
+  await still(ada)
+  await ada.getByTestId('candidate-plot-tidewater-0-0').click()
+  await ada.getByTestId('rehearsal-review').click()
+  await expect(ada.getByTestId('rehearsal-confirm')).toHaveAttribute('data-plot-id', 'tidewater-w0-p0')
+  await ada.getByTestId('rehearsal-activate').click()
+  await expect(ada.getByTestId('stored-property')).toHaveAttribute('data-plot-id', 'tidewater-w0-p0')
+  await expect(city).toHaveAttribute('data-world-sequence', '2')
+  await expect(city).toHaveAttribute('data-geometry-frozen', 'true')
+  await expect(ada.getByTestId('play-geometry')).toHaveAttribute('title', "Fixed by the city's first property, at sequence 2, under configuration v2.")
+  await adaContext.close()
+  await beaContext.close()
+})
+
+test('a configuration Play has active but no launch has taken up holds the first property until a relaunch', async ({ browser }) => {
+  const a = await installed(BRAND_A)
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  const city = await arrive(page, launchHref(await launch(a.guild, 'rare-city', 'Ada', REHEARSAL_ADA)))
+  await choose(page, nft(BRAND_A, 'harbor-keepers', '812'), 'tidewater-w0-p0')
+  // The admin publishes six districts; nobody has launched with them yet. The page is not stale: four still govern.
+  await publish(a.guild, a.installation, BRAND_A_SIX)
+  await page.getByTestId('rehearsal-activate').click()
+  await expect(page.getByTestId('rehearsal-error')).toHaveText('Proofy Play has a newer city configuration that this city has not taken up yet, so nothing was placed. Launch Rare City again from Proofy Play, then choose your plot.')
+  await expect(city).toHaveAttribute('data-world-sequence', '1')
+  await expect(city).toHaveAttribute('data-governing-version', '1')
+  await expect(city).toHaveAttribute('data-geometry-frozen', 'false')
+  await page.screenshot({ path: `${SHOTS}/policy-7-play-config-newer.png` })
+
+  // Relaunched: the six districts govern, and the first property freezes them.
+  await arrive(page, launchHref(await launch(a.guild, 'rare-city', 'Ada', REHEARSAL_ADA)))
+  await expect(city).toHaveAttribute('data-governing-version', '2')
+  await place(page, nft(BRAND_A, 'harbor-keepers', '812'), 'dune-w0-p0')
+  await expect(city).toHaveAttribute('data-geometry-frozen', 'true')
+  await expect(page.getByTestId('play-geometry')).toHaveAttribute('title', "Fixed by the city's first property, at sequence 2, under configuration v2.")
+  await context.close()
 })

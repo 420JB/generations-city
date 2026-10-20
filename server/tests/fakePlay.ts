@@ -159,7 +159,7 @@ export function memoryWorlds() {
       const l = known?.launch
       if (!known || !l || l.environment !== scope.environment || l.gameKey !== scope.gameKey || l.installationId !== scope.installationId || l.discordGuildId !== scope.discordGuildId)
         throw new WorldRefusal('world_unavailable', 'not bound')
-      return { originalActivations: [], world: { ...known.world, created: false }, governing: { version: l.pinned.version, schemaVersion: l.pinned.schemaVersion, configHash: l.pinned.configHash, config: structuredClone(l.pinned.config) } }
+      return { originalActivations: [], unrecordedActivations: [], world: { ...known.world, created: false }, governing: { version: l.pinned.version, schemaVersion: l.pinned.schemaVersion, configHash: l.pinned.configHash, config: structuredClone(l.pinned.config) } }
     },
     async open(launch, confirmActive) {
       opened.push(structuredClone(launch))
@@ -175,6 +175,7 @@ export function memoryWorlds() {
         instance: '00000000-0000-4000-8000-000000000000',
         accepted: judged,
         originalActivations: [],
+        unrecordedActivations: [],
         world: {
           id,
           provisioned: true,

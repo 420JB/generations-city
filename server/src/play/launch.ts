@@ -43,6 +43,8 @@ export interface PlayLaunch {
   config: Record<string, unknown>
   /** The properties of this city the run's player originally activated (the world store's answer, in its launch transaction). */
   originalActivations: string[]
+  /** The properties of this city whose original activator was never recorded (written before migration 0008). */
+  unrecordedActivations: string[]
 }
 
 export interface PlayLaunchService {
@@ -94,7 +96,8 @@ const WORLD_STATUS: Record<WorldRefusalCode, number> = {
 }
 /**
  * How long the world store waits, holding one world's lock, for Play to confirm the active version
- * before it founds the world or adopts a version. Shorter than the store's lock timeout (5s), so a
+ * before it founds the world or adopts a version (and the property store, before a world's first
+ * property freezes its geometry). Shorter than the store's lock timeout (5s), so a
  * launch queued behind it still gets the lock; past it, nothing is founded or adopted.
  */
 export const ACTIVE_CONFIRM_MS = 3_000
@@ -126,29 +129,34 @@ const mismatch = (what: string) => new PlayLaunchError(502, 'config_binding_mism
  * Any failure refuses the launch. Nothing is substituted: there is no sample city, no
  * "last good" configuration, no default, and never a second city.
  */
-export function createPlayLaunchService({ play, environment, gameKey, worlds, activeConfirmMs = ACTIVE_CONFIRM_MS, clock = () => performance.now() }: PlayLaunchOptions): PlayLaunchService {
-  /** The store's one question to Play under its lock: still this installation's, still active, and which version? */
-  function confirmActive(installationId: string, discordGuildId: string): ConfirmActive {
-    let asked = false
-    return async () => {
-      if (asked) return null
-      asked = true
-      // Past the deadline the request is abandoned, not left to run on behind a launch that has moved on.
-      const cancel = new AbortController()
-      let timer: NodeJS.Timeout | undefined
-      const deadline = new Promise<null>((resolve) => (timer = setTimeout(() => (cancel.abort(), resolve(null)), activeConfirmMs)))
-      const answer = play.getInstallation(installationId, { signal: cancel.signal }).then(
-        (i) => (i.id === installationId && i.gameKey === gameKey && i.discordGuildId === discordGuildId && i.status === 'active' ? { version: i.activeConfigVersion, configHash: i.activeConfigHash } : null),
-        () => null,
-      )
-      try {
-        return await Promise.race([answer, deadline])
-      } finally {
-        clearTimeout(timer)
-      }
+/**
+ * A world store's one question to Play under a world's lock: is the installation still this one's (game, Discord server),
+ * still active, and which configuration version and hash does it have ACTIVE now (contract §4.4: `activeConfigVersion`,
+ * `activeConfigHash`, the installation's pointer, §7)? Null when Play does not say so within `ms` (the request is then
+ * abandoned, not left to run on behind a caller that has moved on), or says anything else. Asked at most once. Never throws.
+ * Launches ask it before founding or adopting; the property store, before a world's first property freezes its geometry.
+ */
+export function confirmActiveConfig(play: PlayGameReader, gameKey: string, installationId: string, discordGuildId: string, ms: number): ConfirmActive {
+  let asked = false
+  return async () => {
+    if (asked) return null
+    asked = true
+    const cancel = new AbortController()
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<null>((resolve) => (timer = setTimeout(() => (cancel.abort(), resolve(null)), ms)))
+    const answer = play.getInstallation(installationId, { signal: cancel.signal }).then(
+      (i) => (i.id === installationId && i.gameKey === gameKey && i.discordGuildId === discordGuildId && i.status === 'active' ? { version: i.activeConfigVersion, configHash: i.activeConfigHash } : null),
+      () => null,
+    )
+    try {
+      return await Promise.race([answer, deadline])
+    } finally {
+      clearTimeout(timer)
     }
   }
+}
 
+export function createPlayLaunchService({ play, environment, gameKey, worlds, activeConfirmMs = ACTIVE_CONFIRM_MS, clock = () => performance.now() }: PlayLaunchOptions): PlayLaunchService {
   async function ask<T>(work: Promise<T>, refusal: (err: PlayApiError) => PlayLaunchError | null = () => null): Promise<T> {
     try {
       return await work
@@ -207,7 +215,7 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
             pinned: { version: version.version, schemaVersion: version.schemaVersion, configHash: version.configHash, config: version.config },
             player: { discordUserId: run.player.discordUserId, coreUserId: run.player.coreUserId },
           },
-          confirmActive(run.installationId, run.discordGuildId),
+          confirmActiveConfig(play, gameKey, run.installationId, run.discordGuildId, activeConfirmMs),
         )
       } catch (err) {
         if (err instanceof WorldRefusal) throw new PlayLaunchError(WORLD_STATUS[err.code], err.code, err.message, err.problems)
@@ -231,6 +239,7 @@ export function createPlayLaunchService({ play, environment, gameKey, worlds, ac
         world: opened.world,
         config: version.config,
         originalActivations: opened.originalActivations,
+        unrecordedActivations: opened.unrecordedActivations,
       }
     },
   }

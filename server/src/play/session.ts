@@ -5,10 +5,10 @@ import type { Database } from '../db/pool'
 import { withTransaction } from '../db/transaction'
 import type { PlayCityResponse, PlayEnvironment, PlayErrorCode, PlayFact, PlaySessionResponse, PlayViewer } from '../engine'
 import { errorFields, type Logger } from '../log'
-import { WorldRefusal, type WorldScope, type WorldStore } from '../world/store'
+import { WorldRefusal, type ConfirmActive, type WorldScope, type WorldStore } from '../world/store'
 import type { PlayGameReader, PlayRun } from './client'
 import { createInstallationChecker, type InstallationVerdict } from './installationCheck'
-import type { PlayLaunch } from './launch'
+import { ACTIVE_CONFIRM_MS, confirmActiveConfig, type PlayLaunch } from './launch'
 
 /**
  * PLAY SESSIONS: a player who launched Rare City from Proofy Play, kept signed in to the one city
@@ -233,6 +233,13 @@ export interface PlaySessionService {
    * 401 `play_session_required`, 409 `play_actor_mismatch`, 403 as `city`, 503 `installation_unverified`.
    */
   requireActor(presented: string | null, expected: ExpectedActor): Promise<LivePlaySession>
+  /**
+   * Play's ACTIVE configuration for a live session's installation (contract §4.4), asked once when the returned
+   * function is called: by the property store, with the world's lock held, before a world's first property freezes
+   * its geometry. Null unless Play answers within ACTIVE_CONFIRM_MS that the installation is still the session's and
+   * active. Server to Play only: nothing the browser says reaches it. Never throws.
+   */
+  activeConfig(session: LivePlaySession): ConfirmActive
   /** End the session behind this cookie value. Unknown or missing values are a no-op. */
   logout(presented: string | null): Promise<void>
 }
@@ -253,12 +260,21 @@ export interface PlaySessionOptions {
   graceMs?: number
   /** Monotonic milliseconds, the launch service's clock too. Tests may replace it. */
   clock?: () => number
+  /** Tests only: the deadline for Play's answer in `activeConfig`. */
+  activeConfirmMs?: number
 }
 
 const atLaunch = (source: 'proofy-core' | 'proofy-play', at: Date): PlayFact<true> => ({ status: 'verified', value: true, source, basis: 'launch', at: at.toISOString() })
 
 /** What a session's viewer is told: who Proofy says they are, what was verified when, and what is not known. */
-function viewerOf(ref: string, player: PlayRun['player'], createdAt: Date, expiresAt: Date, installationActive: PlayFact<true>, originalActivations: string[]): PlayViewer {
+function viewerOf(
+  ref: string,
+  player: PlayRun['player'],
+  createdAt: Date,
+  expiresAt: Date,
+  installationActive: PlayFact<true>,
+  { originalActivations, unrecordedActivations }: { originalActivations: string[]; unrecordedActivations: string[] },
+): PlayViewer {
   return {
     authenticated: true,
     player: { discordUserId: player.discordUserId, coreUserId: player.coreUserId, displayName: player.displayName },
@@ -273,6 +289,7 @@ function viewerOf(ref: string, player: PlayRun['player'], createdAt: Date, expir
     },
     permissions: { viewCity: true, claim: false, build: false },
     originalActivations,
+    unrecordedActivations,
   }
 }
 
@@ -366,7 +383,7 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
       // The launch asked Play about the installation and it was active: where this installation's freshness starts.
       checker.verified(scope, launch.installationVerifiedAt)
       await tidy(at)
-      const viewer = viewerOf(id, launch.player, at, expiresAt, atLaunch('proofy-play', at), launch.originalActivations)
+      const viewer = viewerOf(id, launch.player, at, expiresAt, atLaunch('proofy-play', at), launch)
       return {
         token,
         maxAgeSeconds: Math.floor((expiresAt.getTime() - at.getTime()) / 1000),
@@ -403,7 +420,7 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
         verdict.kind === 'active' ? { status: 'verified', value: true, source: 'proofy-play', basis: 'live', at: verdict.verifiedAt.toISOString() } : { status: 'unknown', reason: 'authority-unavailable' }
       return {
         play: { environment: session.scope.environment, gameKey: session.scope.gameKey, installationId: session.scope.installationId, discordGuildId: session.scope.discordGuildId, configVersion: read.governing.version, configHash: read.governing.configHash, schemaVersion: read.governing.schemaVersion },
-        viewer: viewerOf(session.id, session.player, session.createdAt, session.expiresAt, installationActive, read.originalActivations),
+        viewer: viewerOf(session.id, session.player, session.createdAt, session.expiresAt, installationActive, read),
         world: read.world,
         config: read.governing.config,
       }
@@ -422,6 +439,8 @@ export function createPlaySessionService(options: PlaySessionOptions): PlaySessi
       if (verdict.kind !== 'active') throw unverified()
       return session
     },
+
+    activeConfig: (session) => confirmActiveConfig(play, gameKey, session.scope.installationId, session.scope.discordGuildId, options.activeConfirmMs ?? ACTIVE_CONFIRM_MS),
 
     async logout(presented) {
       const hash = hashOf(presented)

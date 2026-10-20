@@ -41,8 +41,11 @@ export interface StoredProperty {
   ward: number
   plot: number
   sequence: number
-  /** Whether the viewer is its original activator (the server's permanent record, matched on the viewer's Proofy identity). */
-  activatedByViewer: boolean
+  /**
+   * Its original activator, as the server's permanent record says: the viewer (matched on their Proofy identity), someone
+   * else (never named), or never recorded (placed before activators were kept, so unknown to everyone).
+   */
+  activator: 'viewer' | 'other' | 'unrecorded'
 }
 
 /** Says, wherever rehearsal data shows, what it is not. */
@@ -193,13 +196,15 @@ export function StoredPropertyCard({ stored, cityName }: { stored: StoredPropert
       <p className="small mono rehearsal-asset" data-testid="stored-property-asset">
         {stored.asset}
       </p>
-      <p className="small" data-testid="stored-property-activator" data-activated-by-viewer={String(stored.activatedByViewer)}>
-        {stored.activatedByViewer ? (
+      <p className="small" data-testid="stored-property-activator" data-activator={stored.activator} data-activated-by-viewer={String(stored.activator === 'viewer')}>
+        {stored.activator === 'viewer' ? (
           <>
             <b>Originally activated by you.</b> This record is permanent and stays yours whoever holds the NFT later.
           </>
-        ) : (
+        ) : stored.activator === 'other' ? (
           'Its original activator is recorded permanently and privately.'
+        ) : (
+          'Its original activator is unknown: it was placed before original activators were recorded, and none was recorded for it.'
         )}
       </p>
       <p className="muted small">Tier 0, nothing built. Permanent in {cityName}: its identity and plot never change. Who holds the NFT now is not tracked here.</p>

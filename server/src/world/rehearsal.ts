@@ -19,11 +19,14 @@ import { createPropertyActivationService, WorldPropertyRefusal, type WorldProper
  *   - Districts with a Proofy rule are refused: no contract can check one.
  *   - Who acts is `requireActor`: the cookie's live session must be exactly the one the page drew
  *     (session, world, player), and Play must answer `active` now (no cache, no grace).
+ *   - The page names the geometry it drew; under the city's lock it must be the governing one, and a
+ *     world's first property also needs Play to name the governing version as active (`properties.ts`).
  *
  * Manual district choice is rehearsal-only test behavior: a live city assigns each player's default
  * district (locked policy, not implemented). Still open, and not replaced here: F5 (browser-bound launch), F7 (fresh membership and
  * entitlement), F3 (Play game status), Core NFT eligibility and a separate non-owner database role.
- * (Each property's original activator is recorded permanently since migration 0008.)
+ * (Each property's original activator is recorded permanently since migration 0008; a property from
+ * before it has none, and says so.)
  */
 
 /** The rehearsal file's `kind`. */
@@ -33,7 +36,8 @@ const MAX_ASSETS_PER_PLAYER = 200
 const DISCORD_ID = /^[0-9]{15,25}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const PLOT_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-w(?:0|[1-9][0-9]{0,5})-p(?:0|[1-9][0-9]{0,5})$/
-const REQUEST_KEYS = ['asset', 'discordUserId', 'plotId', 'sessionRef', 'worldId']
+const HASH = /^[0-9a-f]{64}$/
+const REQUEST_KEYS = ['asset', 'discordUserId', 'geometryFingerprint', 'plotId', 'sessionRef', 'worldId']
 
 /** Which test NFTs each player may place, by Discord user id. */
 export type RehearsalGrants = ReadonlyMap<string, readonly NftAsset[]>
@@ -77,8 +81,8 @@ export class RehearsalRefusal extends Error {
   }
 }
 
-/** How each store refusal is answered. `session_ended` is the session layer's own answer. */
-const REFUSALS: Record<Exclude<WorldPropertyRefusalCode, 'session_ended' | 'world_unavailable'>, [number, RehearsalErrorCode]> = {
+/** How each store refusal is answered. The session layer's own answers are the rest (see `activate`). */
+const REFUSALS: Record<Exclude<WorldPropertyRefusalCode, 'session_ended' | 'world_unavailable' | 'config_superseded' | 'active_config_unverified'>, [number, RehearsalErrorCode]> = {
   'invalid-asset': [400, 'invalid_asset'],
   'asset-not-in-world': [422, 'asset_not_in_world'],
   'asset-already-placed': [409, 'asset_already_placed'],
@@ -99,7 +103,7 @@ export interface LocalPropertyRehearsal {
 export interface LocalPropertyRehearsalOptions {
   mode: AppMode
   grants: RehearsalGrants
-  sessions: Pick<PlaySessionService, 'session' | 'requireActor'>
+  sessions: Pick<PlaySessionService, 'session' | 'requireActor' | 'activeConfig'>
   store: WorldPropertyStore
 }
 
@@ -117,9 +121,11 @@ export function createLocalPropertyRehearsal({ mode, grants, sessions, store }: 
 
     async activate(presented, body) {
       if (Object.keys(body).sort().join() !== REQUEST_KEYS.join()) throw new RehearsalRefusal(400, 'invalid_request')
-      const { sessionRef, worldId, discordUserId, asset: key, plotId } = body
+      const { sessionRef, worldId, discordUserId, asset: key, plotId, geometryFingerprint } = body
       if (typeof sessionRef !== 'string' || !UUID.test(sessionRef) || typeof worldId !== 'string' || !UUID.test(worldId) || typeof discordUserId !== 'string' || !DISCORD_ID.test(discordUserId))
         throw new RehearsalRefusal(400, 'invalid_request')
+      // The geometry the page drew: judged against the governing one under the city's lock, never believed.
+      if (typeof geometryFingerprint !== 'string' || !HASH.test(geometryFingerprint)) throw new RehearsalRefusal(400, 'invalid_request')
       const asset = parseAssetKey(key)
       if (!asset) throw new RehearsalRefusal(400, 'invalid_asset')
       if (typeof plotId !== 'string' || !PLOT_ID.test(plotId)) throw new RehearsalRefusal(422, 'unknown_plot')
@@ -129,7 +135,7 @@ export function createLocalPropertyRehearsal({ mode, grants, sessions, store }: 
         result = await service.activate(
           presented,
           { sessionRef, worldId, discordUserId },
-          { asset, plotId },
+          { asset, plotId, geometryFingerprint },
           {
             refuseRuleGatedDistricts: true,
             // The player Proofy Play redeemed for the session, never one the request names, must be listed for this NFT.
@@ -142,6 +148,9 @@ export function createLocalPropertyRehearsal({ mode, grants, sessions, store }: 
         if (!(err instanceof WorldPropertyRefusal)) throw err
         if (err.code === 'session_ended') throw new PlaySessionError(401, 'play_session_required', err.message)
         if (err.code === 'world_unavailable') throw new PlaySessionError(503, 'world_unavailable', err.message)
+        // The page's city, or Play's active configuration, is not the one that governs: the page reads the city again.
+        if (err.code === 'config_superseded') throw new PlaySessionError(409, 'config_superseded', err.message)
+        if (err.code === 'active_config_unverified') throw new PlaySessionError(503, 'installation_unverified', err.message)
         const [status, code] = REFUSALS[err.code]
         throw new RehearsalRefusal(status, code, err.message)
       }

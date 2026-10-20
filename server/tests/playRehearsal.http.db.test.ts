@@ -7,6 +7,7 @@ import { ConfigError, loadConfig, type AppMode } from '../src/config'
 import { migrate } from '../src/db/migrations'
 import type { PlayCityResponse, RehearsalActivationResponse, RehearsalAssetsResponse } from '../src/engine'
 import { silentLogger } from '../src/log'
+import { PlayApiError } from '../src/play/client'
 import { createPlayLaunchService } from '../src/play/launch'
 import { createPlaySessionService, createPlaySessionStore } from '../src/play/session'
 import { createWorldPropertyStore } from '../src/world/properties'
@@ -67,7 +68,7 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
       })
       expect(res.status).toBe(200)
       const body = (await res.json()) as PlayCityResponse
-      return { cookie: res.headers.get('set-cookie')!.split(';')[0], actor: { sessionRef: body.viewer.session.ref, worldId: body.world.id, discordUserId: body.viewer.player.discordUserId }, body }
+      return { cookie: res.headers.get('set-cookie')!.split(';')[0], actor: { sessionRef: body.viewer.session.ref, worldId: body.world.id, discordUserId: body.viewer.player.discordUserId, geometryFingerprint: body.world.definition.geometryFingerprint }, body }
     }
     type Browser = Awaited<ReturnType<typeof launchAs>>
     /** `headers` override the browser's; a null header is not sent at all. */
@@ -81,6 +82,31 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     const properties = async () => (await t.db.query<{ n: number }>('SELECT count(*)::int AS n FROM world_properties')).rows[0].n
     return { p, base, launchAs, activate, city, properties }
   }
+
+  it('answers a stale page, or a configuration Play has active that the city has not adopted, with 409 config_superseded; Play silent under the lock is 503; nothing is written', async () => {
+    const { p, launchAs, activate, properties } = await boot()
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const answer = async (res: Response) => [res.status, await res.json(), res.headers.get('set-cookie')]
+    // An admin publishes a fourth district; nobody has launched with it. Ada's page is not stale, but the city's first
+    // property would freeze three districts Play no longer has active.
+    p.publish(INSTALLATION_A, { ...DOC_A, districts: [...DOC_A.districts, { key: 'saltmarsh', name: 'Saltmarsh', accent: '#2a9d8f', monument: null, proofyRule: null }] })
+    expect(await answer(await activate(ada, keeper(1), 'tidewater-w0-p0'))).toEqual([409, { error: 'config_superseded' }, null])
+    // Bea launches with it, so four districts govern: Ada's page, drawn on three, is stale (the plot id still exists).
+    await launchAs(INSTALLATION_A, BEA)
+    expect(await answer(await activate(ada, keeper(1), 'tidewater-w0-p0'))).toEqual([409, { error: 'config_superseded' }, null])
+    expect(await properties()).toBe(0)
+    // Relaunched on four districts. Play answers requireActor, then not the question under the lock: refused, still signed in.
+    const again = await launchAs(INSTALLATION_A, ADA, ada.cookie)
+    const ask = p.play.getInstallation.bind(p.play)
+    let asked = 0
+    p.play.getInstallation = (id, o) => (++asked === 2 ? Promise.reject(new PlayApiError(503, 'transport_error', 'unreachable')) : ask(id, o))
+    const silent = await activate(again, keeper(1), 'tidewater-w0-p0')
+    expect([silent.status, await silent.json(), silent.headers.get('set-cookie'), silent.headers.get('retry-after')]).toEqual([503, { error: 'installation_unverified' }, null, '5'])
+    expect(await properties()).toBe(0)
+    p.play.getInstallation = ask
+    expect((await activate(again, keeper(1), 'tidewater-w0-p0')).status).toBe(200)
+    expect(await properties()).toBe(1)
+  })
 
   it('places a listed test NFT on the exact plot chosen, permanently, and every player of the city sees it', async () => {
     const { base, launchAs, activate, city } = await boot()
@@ -255,6 +281,10 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     expect((await activate(ada, keeper(1), 'tidewater-w0-p0', { headers: { 'content-type': 'text/plain' } })).status).toBe(415)
     expect(await (await activate(ada, keeper(1), 'tidewater-w0-p0', { body: { ...ada.actor, asset: keeper(1), plotId: 'tidewater-w0-p0', owner: 'me' } })).json()).toEqual({ error: 'invalid_request' })
     expect(await (await activate(ada, keeper(1), 'tidewater-w0-p0', { body: { asset: keeper(1), plotId: 'tidewater-w0-p0' } })).json()).toEqual({ error: 'invalid_request' })
+    // The geometry the page drew is required, in its one shape: a lowercase hex SHA-256.
+    const { geometryFingerprint, ...noGeometry } = ada.actor
+    for (const bad of [undefined, null, 7, '', geometryFingerprint.toUpperCase(), geometryFingerprint.slice(1), `${geometryFingerprint}0`, { fingerprint: geometryFingerprint }])
+      expect(await (await activate(ada, keeper(1), 'tidewater-w0-p0', { body: { ...noGeometry, ...(bad === undefined ? {} : { geometryFingerprint: bad }), asset: keeper(1), plotId: 'tidewater-w0-p0' } })).json()).toEqual({ error: 'invalid_request' })
     expect(await properties()).toBe(0)
   })
 
@@ -272,7 +302,7 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     }
     // Nor can one be built or configured outside local mode.
     const store = createWorldPropertyStore(t.db, { mode: 'staging', log: silentLogger })
-    expect(() => createLocalPropertyRehearsal({ mode: 'staging', grants: new Map(), sessions: { session: async () => never(), requireActor: async () => never() }, store })).toThrow(/only with APP_MODE=local/)
+    expect(() => createLocalPropertyRehearsal({ mode: 'staging', grants: new Map(), sessions: { session: async () => never(), requireActor: async () => never(), activeConfig: () => async () => never() }, store })).toThrow(/only with APP_MODE=local/)
     const play = { PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: `ppk_staging_${'a'.repeat(24)}.${'b'.repeat(64)}`, DATABASE_URL: 'postgres://db/x', PUBLIC_ORIGIN: 'https://rc.example', TRUSTED_PROXY: 'railway' }
     expect(loadConfig({ APP_MODE: 'staging', ...play }).localRehearsalFile).toBeNull()
     expect(() => loadConfig({ APP_MODE: 'staging', ...play, LOCAL_PROPERTY_REHEARSAL_FILE: '/tmp/r.json' })).toThrow(ConfigError)

@@ -17,14 +17,18 @@ import type { PlayErrorCode } from './play'
  * (migration 0007), whatever any route does.
  *
  *   `GET  /v1/play/rehearsal/assets`       the test NFTs this session's player may place, marked as rehearsal data
- *   `POST /v1/play/rehearsal/activations`  `{ sessionRef, worldId, discordUserId, asset, plotId }`
+ *   `POST /v1/play/rehearsal/activations`  `{ sessionRef, worldId, discordUserId, asset, plotId, geometryFingerprint }`
  *
  * An activation names the session, world and player the page drew (refused with
  * `play_actor_mismatch` unless the browser's live session is exactly that one, and only once Play
- * answers that the installation is active now), one listed NFT by its CAIP-19 id and one exact plot.
+ * answers that the installation is active now), one listed NFT by its CAIP-19 id, one exact plot, and the
+ * layout geometry fingerprint of the city the plot was chosen on (`PlayWorld.definition.geometryFingerprint`).
  * The server judges everything else on the city as stored, under its lock: the NFT must be from one
  * of the world's collections and not placed yet, the plot one the engine offers now, and its district
- * without a Proofy rule (no contract can check one). The same player repeating it gets the same
+ * without a Proofy rule (no contract can check one). The city's governing geometry must be the one the
+ * page drew, and before a city's first property (which fixes its districts for good) Proofy Play must
+ * still have exactly the governing configuration active; otherwise `config_superseded` (409) and
+ * nothing is written. The same player repeating it gets the same
  * property back (`fresh: false`); anyone else is refused.
  */
 export const PLAY_REHEARSAL_ASSETS_ENDPOINT = '/v1/play/rehearsal/assets'
@@ -60,6 +64,8 @@ export interface RehearsalActivationRequest {
   discordUserId: string
   asset: string
   plotId: string
+  /** The layout geometry fingerprint of the city the plot was chosen on, as the page drew it. */
+  geometryFingerprint: string
 }
 
 /** A property as the rehearsal route answers with it. No session, no player: provenance stays on the server. */

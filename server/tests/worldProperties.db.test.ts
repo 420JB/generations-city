@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFile, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type pg from 'pg'
@@ -9,9 +9,10 @@ import { verifyCity } from '../src/city/verify'
 import type { AppMode } from '../src/config'
 import { migrate } from '../src/db/migrations'
 import { createPool } from '../src/db/pool'
-import { nftAsset, proposePropertyActivation, worldCityStateText, type NftAsset, type PlayEnvironment } from '../src/engine'
+import { nftAsset, proposePropertyActivation, WORLD_CONFIG_JUDGE, WORLD_CONFIG_JUDGE_V2, worldCityStateText, type NftAsset, type PlayEnvironment } from '../src/engine'
 import { installDemoFixture } from '../src/fixtures/demoCity'
 import { silentLogger } from '../src/log'
+import { canonicalHash, canonicalJson } from '../src/play/canonical'
 import { createPlayLaunchService } from '../src/play/launch'
 import { createPlaySessionService, createPlaySessionStore, PlaySessionError, type OpenedPlaySession } from '../src/play/session'
 import { createPropertyActivationService, createWorldPropertyStore, worldPropertiesOf, WorldPropertyRefusal, type ActivationStep, type PropertyActivationResult } from '../src/world/properties'
@@ -94,7 +95,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
   }
 
   /** Play with installations A (four districts) and B (six), the real launch path, world store, session service and property store. */
-  async function setup(options: { mode?: AppMode; migrated?: boolean; db?: pg.Pool; onStep?: (step: ActivationStep) => void | Promise<void>; play?: ReturnType<typeof fakePlay>; now?: () => Date } = {}) {
+  async function setup(options: { mode?: AppMode; migrated?: boolean; db?: pg.Pool; onStep?: (step: ActivationStep) => void | Promise<void>; play?: ReturnType<typeof fakePlay>; now?: () => Date; activeConfirmMs?: number } = {}) {
     const mode = options.mode ?? 'local'
     const db = options.db ?? t.db
     if (!options.migrated) await migrate(db, { dir: MIGRATIONS_DIR, environment: mode })
@@ -110,7 +111,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
     const environment = PLAY_ENV[mode]
     const worlds = createWorldStore(db, { mode, log: silentLogger })
     const launch = createPlayLaunchService({ play: p.play, environment, gameKey: 'rare-city', worlds })
-    const sessions = createPlaySessionService({ store: createPlaySessionStore(db), worlds, play: p.play, environment, gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0, now: options.now })
+    const sessions = createPlaySessionService({ store: createPlaySessionStore(db), worlds, play: p.play, environment, gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0, now: options.now, activeConfirmMs: options.activeConfirmMs })
     const store = createWorldPropertyStore(db, { mode, log: silentLogger, onStep: options.onStep })
     const activation = createPropertyActivationService({ sessions, store })
     let runs = 0
@@ -118,7 +119,9 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
     const open = async (installation: string, player = ADA, presented: string | null = null, runExpiresAt?: string) =>
       sessions.open(await launch.open({ runToken: p.launch(installation, `run-${installation.slice(-1)}-${++runs}-${randomUUID()}`, { player, runExpiresAt }) }), presented)
     const actorOf = (o: OpenedPlaySession) => ({ sessionRef: o.response.viewer.session.ref, worldId: o.response.world.id, discordUserId: o.response.viewer.player.discordUserId })
-    const activate = (o: OpenedPlaySession, asset: { chain: string; contract: string; tokenId: string }, plotId: string): Promise<PropertyActivationResult> => activation.activate(o.token, actorOf(o), { asset, plotId })
+    /** As the page does: the plot chosen on the city it drew (`drawn`, the launch's city unless the page read it again). */
+    const activate = (o: OpenedPlaySession, asset: { chain: string; contract: string; tokenId: string }, plotId: string, drawn = o.response.world.definition.geometryFingerprint): Promise<PropertyActivationResult> =>
+      activation.activate(o.token, actorOf(o), { asset, plotId, geometryFingerprint: drawn })
     const read = async (o: OpenedPlaySession) => sessions.city(await sessions.session(o.token))
     return { p, worlds, launch, sessions, store, activation, open, actorOf, activate, read }
   }
@@ -334,8 +337,8 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect(inC.property.worldId).toBe(c.response.world.id)
       // B's plot ids name nothing in A, and A's session cannot act in B, whatever the page claims.
       expect(await refusalOf(activate(a, keeper(8), 'plum-w0-p0'))).toBe('unknown-plot')
-      expect(await refusalOf(activation.activate(a.token, { ...actorOf(a), worldId: b.response.world.id }, { asset: sprite(1), plotId: 'plum-w0-p0' }))).toBe('play_actor_mismatch')
-      expect(await refusalOf(activation.activate(a.token, actorOf(b), { asset: sprite(1), plotId: 'plum-w0-p0' }))).toBe('play_actor_mismatch')
+      expect(await refusalOf(activation.activate(a.token, { ...actorOf(a), worldId: b.response.world.id }, { asset: sprite(1), plotId: 'plum-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('play_actor_mismatch')
+      expect(await refusalOf(activation.activate(a.token, actorOf(b), { asset: sprite(1), plotId: 'plum-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('play_actor_mismatch')
       expect((await read(b)).world.sequence).toBe(1)
       expect(await count('world_properties', 'world_id = $1', [b.response.world.id])).toBe(0)
       // The database refuses a property of A written into B's city.
@@ -438,9 +441,9 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const { p, open, activate, activation, actorOf } = await setup()
       const a = await open(INSTALLATION_A)
       const before = await rows()
-      expect(await refusalOf(activation.activate(null, actorOf(a), { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('play_session_required')
-      expect(await refusalOf(activation.activate(a.token, { ...actorOf(a), sessionRef: randomUUID() }, { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('play_actor_mismatch')
-      expect(await refusalOf(activation.activate(a.token, { ...actorOf(a), discordUserId: BEA.discordUserId }, { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('play_actor_mismatch')
+      expect(await refusalOf(activation.activate(null, actorOf(a), { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('play_session_required')
+      expect(await refusalOf(activation.activate(a.token, { ...actorOf(a), sessionRef: randomUUID() }, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('play_actor_mismatch')
+      expect(await refusalOf(activation.activate(a.token, { ...actorOf(a), discordUserId: BEA.discordUserId }, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('play_actor_mismatch')
       p.tamper.fail = { method: 'getInstallation', status: 503, code: 'unavailable' }
       expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('installation_unverified')
       p.tamper.fail = undefined
@@ -546,9 +549,9 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const a = await open(INSTALLATION_A)
       const actor = await sessions.requireActor(a.token, { sessionRef: a.response.viewer.session.ref, worldId: a.response.world.id, discordUserId: ADA.discordUserId })
       const before = await rows()
-      expect(await refusalOf(store.activate(actor, { asset: keeper(1), plotId: 'compass-row-w0-p0' }, { refuseRuleGatedDistricts: true }))).toBe('district-rule-unverified')
+      expect(await refusalOf(store.activate(actor, { asset: keeper(1), plotId: 'compass-row-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }, { refuseRuleGatedDistricts: true }))).toBe('district-rule-unverified')
       expect(await rows()).toEqual(before)
-      expect(await store.activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0' }, { refuseRuleGatedDistricts: true })).toMatchObject({ fresh: true, sequence: 2 })
+      expect(await store.activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }, { refuseRuleGatedDistricts: true, activeConfig: sessions.activeConfig(actor) })).toMatchObject({ fresh: true, sequence: 2 })
     })
   })
 
@@ -558,11 +561,11 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const a = await open(INSTALLATION_A)
       const actor = await sessions.requireActor(a.token, { sessionRef: a.response.viewer.session.ref, worldId: a.response.world.id, discordUserId: ADA.discordUserId })
       // Configured for staging: refused before anything is read.
-      expect(await refusalOf(createWorldPropertyStore(t.db, { mode: 'staging', log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('mutations_held')
-      expect(await refusalOf(createWorldPropertyStore(t.db, { mode: 'production', log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('mutations_held')
+      expect(await refusalOf(createWorldPropertyStore(t.db, { mode: 'staging', log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('mutations_held')
+      expect(await refusalOf(createWorldPropertyStore(t.db, { mode: 'production', log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('mutations_held')
       // Misconfigured as local against a staging database: the stamp is checked inside the transaction.
       // (The opposite misconfiguration, staging against a local database, is refused by the configuration: see below.)
-      expect(await refusalOf(createWorldPropertyStore(t.db, { mode: 'local', log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('mutations_held')
+      expect(await refusalOf(createWorldPropertyStore(t.db, { mode: 'local', log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('mutations_held')
       expect(await count('world_properties')).toBe(0)
     })
 
@@ -571,7 +574,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const a = await open(INSTALLATION_A)
       const actor = await sessions.requireActor(a.token, { sessionRef: a.response.viewer.session.ref, worldId: a.response.world.id, discordUserId: ADA.discordUserId })
       for (const mode of ['staging', 'production'] as const)
-        expect(await refusalOf(createWorldPropertyStore(t.db, { mode, log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0' }))).toBe('mutations_held')
+        expect(await refusalOf(createWorldPropertyStore(t.db, { mode, log: silentLogger }).activate(actor, { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }))).toBe('mutations_held')
       expect(await count('world_properties')).toBe(0)
     })
 
@@ -730,6 +733,49 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect(await refusalOf(read(a))).toBe('world_unavailable')
       await expect(open(INSTALLATION_A)).rejects.toMatchObject({ code: 'world_unavailable' })
       expect(await rules()).toEqual(expect.arrayContaining(['properties', 'replay']))
+    })
+
+    it('M13: properties whose geometry freeze is gone: every read, launch and activation refuses the city; verify reports it; the guards come back', async () => {
+      const { a, read, open, activate, cityId } = await populated()
+      const before = await rows()
+      await t.db.query('ALTER TABLE world_geometry_freezes DISABLE TRIGGER USER')
+      try {
+        await t.db.query('DELETE FROM world_geometry_freezes WHERE city_id = $1', [cityId])
+      } finally {
+        await t.db.query('ALTER TABLE world_geometry_freezes ENABLE TRIGGER USER')
+      }
+      // Nothing else differs: the governing version still draws the geometry the properties stand on.
+      expect({ ...(await rows()), world_geometry_freezes: before.world_geometry_freezes }).toEqual(before)
+      expect(await refusalOf(read(a))).toBe('world_unavailable')
+      await expect(open(INSTALLATION_A)).rejects.toMatchObject({ code: 'world_unavailable' })
+      expect(await refusalOf(activate(a, keeper(3), 'tidewater-w0-p2'))).toBe('world_unavailable')
+      expect(await rules()).toEqual(expect.arrayContaining(['freeze']))
+      // The guard is back: a freeze cannot be removed, and none can be written without its first property.
+      await expect(t.db.query(`INSERT INTO world_geometry_freezes SELECT * FROM json_populate_record(null::world_geometry_freezes, $1::json)`, [JSON.stringify(JSON.parse(before.world_geometry_freezes)[0])])).rejects.toThrow()
+      expect(await count('world_geometry_freezes')).toBe(0)
+    })
+
+    it('M15: a property activated since 0008 without its original activator: verify refuses the city; the constraint comes back exactly', async () => {
+      const { r2 } = await populated()
+      const definition = async () => (await t.db.query(`SELECT pg_get_constraintdef(c.oid) AS def, c.convalidated FROM pg_constraint c JOIN pg_class r ON r.oid = c.conrelid JOIN pg_namespace n ON n.oid = r.relnamespace WHERE n.nspname = $1 AND c.conname = 'wp_activator_required'`, [t.schema])).rows
+      const required = await definition()
+      expect(required).toEqual([{ def: 'CHECK (((activator_core_user_id IS NOT NULL) AND (activator_discord_user_id IS NOT NULL))) NOT VALID', convalidated: false }])
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true, violations: [] })
+      // Forged only inside one transaction, with the guards off and the constraint lifted, then restored as 0008 made it.
+      await inTransaction(async (client) => {
+        await client.query('ALTER TABLE world_properties DISABLE TRIGGER USER')
+        await client.query('ALTER TABLE world_properties DROP CONSTRAINT wp_activator_required')
+        await client.query('UPDATE world_properties SET activator_core_user_id = NULL, activator_discord_user_id = NULL WHERE id = $1', [r2.property.id])
+        await client.query('ALTER TABLE world_properties ADD CONSTRAINT wp_activator_required CHECK (activator_core_user_id IS NOT NULL AND activator_discord_user_id IS NOT NULL) NOT VALID')
+        await client.query('ALTER TABLE world_properties ENABLE TRIGGER USER')
+      })
+      expect(await definition()).toEqual(required)
+      const report = await verifyCity(t.db)
+      expect(report.ok).toBe(false)
+      expect(report.violations).toEqual(expect.arrayContaining([expect.objectContaining({ rule: 'activator', detail: expect.stringContaining('activated after migration 0008 but records no original activator') })]))
+      expect(report.worlds).toEqual(expect.arrayContaining([expect.objectContaining({ propertiesWithoutActivator: 1 })]))
+      // The constraint holds again for any other row.
+      await expect(t.db.query('UPDATE world_properties SET activator_core_user_id = NULL, activator_discord_user_id = NULL WHERE id <> $1', [r2.property.id])).rejects.toThrow(/wp_activator_required|permanent|cannot be changed/)
     })
 
     it('an event that does not say what the engine did', async () => {
@@ -955,19 +1001,27 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect((await open(INSTALLATION_A)).response.world.definition.governingConfigVersion).toBe(2)
     })
 
-    it('race: an activation holding the city first freezes the old geometry, and the six-district launch queued behind it is refused', async () => {
-      const { p, open, activate } = await setup()
+    it('race: an activation Play confirmed under the city lock freezes the old geometry, and a six-district version published and launched behind it is refused', async () => {
+      let publishBehind: (() => Promise<void>) | null = null
+      const { p, open, activate } = await setup({
+        onStep: async (s) => {
+          if (s === 'confirmed') await publishBehind?.()
+        },
+      })
       const a = await open(INSTALLATION_A)
       const worldId = a.response.world.id
-      p.publish(INSTALLATION_A, DOC_4_SIX)
-      const sixRun = p.launch(INSTALLATION_A, 'six-queued')
-      const held = await holdCity(worldId)
-      const activation = activate(a, keeper(1), 'tidewater-w0-p0')
-      await cityLockWaiters(1)
-      const relaunch = setup({ migrated: true, play: p }).then((s2) => s2.launch.open({ runToken: sixRun }))
-      await cityLockWaiters(2)
-      await held.release()
-      expect(await activation).toMatchObject({ fresh: true, sequence: 2, property: { adoption: 1, configVersion: 1 } })
+      let relaunch: Promise<unknown> = Promise.resolve()
+      // Play confirmed version 1 as active with the city locked; only then does the admin publish six districts and a
+      // player launch with them. That publish comes after this property: the launch queues behind it and is refused.
+      publishBehind = async () => {
+        publishBehind = null
+        p.publish(INSTALLATION_A, DOC_4_SIX)
+        const sixRun = p.launch(INSTALLATION_A, 'six-behind')
+        relaunch = setup({ migrated: true, play: p }).then((s2) => s2.launch.open({ runToken: sixRun }))
+        relaunch.catch(() => undefined)
+        await cityLockWaiters(1)
+      }
+      expect(await activate(a, keeper(1), 'tidewater-w0-p0')).toMatchObject({ fresh: true, sequence: 2, property: { adoption: 1, configVersion: 1 } })
       await expect(relaunch).rejects.toMatchObject({ code: 'config_incompatible' })
       // Version 2 is recorded as accepted (a verdict does not depend on the city), but it cannot govern a frozen city.
       expect(await adoptions(worldId)).toEqual([[1, 1]])
@@ -975,8 +1029,8 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect((await verifyCity(t.db)).ok).toBe(true)
     })
 
-    it('race: a six-district adoption holding the city first governs, and the activation queued behind it freezes six districts', async () => {
-      const { p, open, activate } = await setup()
+    it('race: a six-district adoption holding the city first governs, and the activation queued behind it, chosen on four districts, is refused; chosen again on six, it freezes six', async () => {
+      const { p, open, activate, read } = await setup()
       const a = await open(INSTALLATION_A)
       const worldId = a.response.world.id
       p.publish(INSTALLATION_A, DOC_4_SIX)
@@ -984,15 +1038,64 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const held = await holdCity(worldId)
       const relaunch = setup({ migrated: true, play: p }).then((s2) => s2.launch.open({ runToken: sixRun }))
       await cityLockWaiters(1)
+      const before = await rows()
       const activation = activate(a, keeper(1), 'tidewater-w0-p0')
       await cityLockWaiters(2)
       await held.release()
       expect((await relaunch).world.definition.governingConfigVersion).toBe(2)
-      const placed = await activation
+      // The page chose tidewater-w0-p0 on four districts. That plot id still exists, on other ground: refused, nothing written.
+      expect(await refusalOf(activation)).toBe('config_superseded')
+      const adopted = await rows()
+      expect({ ...adopted, world_config_versions: before.world_config_versions, world_config_geometries: before.world_config_geometries, world_config_adoptions: before.world_config_adoptions }).toEqual(before)
+      expect(await count('world_geometry_freezes')).toBe(0)
+      expect(await count('world_properties')).toBe(0)
+      // The page reads the city again and the player chooses on what it draws now.
+      const now = (await read(a)).world
+      expect(now.definition.governingConfigVersion).toBe(2)
+      const placed = await activate(a, keeper(1), 'tidewater-w0-p0', now.definition.geometryFingerprint)
       expect(placed).toMatchObject({ fresh: true, sequence: 2, property: { adoption: 2, configVersion: 2 } })
       expect(await freezeOf(worldId)).toMatchObject({ config_version: 2, adoption_seq: 2, ...(await geometryOfVersion(worldId, 2)) })
       expect((await freezeOf(worldId)).districts).toHaveLength(6)
       expect((await verifyCity(t.db)).ok).toBe(true)
+    })
+
+    it('race: a raw adoption of six districts queued behind a first activation (the database trigger alone, no store) is refused once the freeze commits', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((r) => (release = r))
+      let paused!: () => void
+      const atFreeze = new Promise<void>((r) => (paused = r))
+      const { p, open, activate } = await setup({
+        onStep: async (step) => {
+          if (step === 'freeze') {
+            paused()
+            await gate
+          }
+        },
+      })
+      const a = await open(INSTALLATION_A)
+      const worldId = a.response.world.id
+      // Version 2 (six districts) recorded and adopted once, then Play turns back to version 1 and a launch adopts it again.
+      p.publish(INSTALLATION_A, DOC_4_SIX)
+      await open(INSTALLATION_A)
+      p.activate(INSTALLATION_A, 1)
+      const back = await open(INSTALLATION_A)
+      const activation = activate(back, keeper(1), 'tidewater-w0-p0')
+      await atFreeze
+      const adopt = t.db.query('INSERT INTO world_config_adoptions (world_id, adoption_seq, version) VALUES ($1, 4, 2)', [worldId]).then(
+        () => 'adopted',
+        (e: Error) => e.message,
+      )
+      // The adoption's trigger waits for the city row the activation holds.
+      for (let i = 0; ; i++) {
+        const waiting = (await t.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE 'INSERT INTO world_config_adoptions%'`)).rows[0].n
+        if (waiting > 0) break
+        if (i > 400) throw new Error('the adoption never waited for the city lock')
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      release()
+      expect((await activation).property).toMatchObject({ configVersion: 1, adoption: 3 })
+      expect(await adopt).toMatch(/draws exactly that geometry/)
+      expect(await adoptions(worldId)).toEqual([[1, 1], [2, 2], [3, 1]])
     })
 
     it('after the first property refuses any version that moves the districts, at launch and in the database; nothing moves', async () => {
@@ -1068,6 +1171,178 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       expect((await open(INSTALLATION_D)).response.world.districts).toHaveLength(6)
       expect(await count('world_geometry_freezes')).toBe(3)
       expect((await verifyCity(t.db)).ok).toBe(true)
+    })
+  })
+
+  describe('stale maps and Play\'s active configuration (C2-B2C-H)', () => {
+    const DOC_4_SIX = { ...DOC_4, districts: [...DOC_4.districts, district('reef'), district('dune')] }
+    /** The same four districts, renamed: another configuration on the same ground. */
+    const DOC_4_RENAMED = { ...DOC_4, cityName: 'Harborlight Renamed', districts: DOC_4.districts.map((d) => ({ ...d, name: `${d.name} renamed` })) }
+    const freezes = async (worldId: string) => (await t.db.query('SELECT config_version, adoption_seq, jsonb_array_length(districts) AS districts FROM world_geometry_freezes WHERE world_id = $1', [worldId])).rows
+    const adoptions = async (worldId: string) => (await t.db.query('SELECT adoption_seq, version FROM world_config_adoptions WHERE world_id = $1 ORDER BY adoption_seq', [worldId])).rows.map((r) => [r.adoption_seq, r.version])
+    async function cityLockWaiters(n: number) {
+      for (let i = 0; i < 400; i++) {
+        const waiting = (await t.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%FROM city WHERE id = $1 FOR UPDATE%' AND pid <> pg_backend_pid()`)).rows[0].n
+        if (waiting >= n) return
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      throw new Error(`never saw ${n} transactions waiting for a city lock`)
+    }
+
+    it('MEDIUM-1: a plot chosen on four districts is refused once six govern, though the plot id still exists; nothing is written; chosen again, it lands where the page now shows it', async () => {
+      const { p, open, activate, read } = await setup()
+      const a = await open(INSTALLATION_A)
+      p.publish(INSTALLATION_A, DOC_4_SIX)
+      await open(INSTALLATION_A, BEA)
+      const before = await rows()
+      expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('config_superseded')
+      expect(await rows()).toEqual(before)
+      // The same plot id, on other ground: an identical id is no evidence the ground is the same.
+      const drawn = a.response.world.districts.find((d) => d.key === 'tidewater')!
+      const now = (await read(a)).world
+      const governing = now.districts.find((d) => d.key === 'tidewater')!
+      expect(drawn.candidates.plotIds).toContain('tidewater-w0-p0')
+      expect(governing.candidates.plotIds).toContain('tidewater-w0-p0')
+      expect([drawn.centerDeg, drawn.spanDeg]).toEqual([-45, 90])
+      expect([governing.centerDeg, governing.spanDeg]).toEqual([-75, 60])
+      expect(governing.geometryFingerprint).not.toBe(drawn.geometryFingerprint)
+      const placed = await activate(a, keeper(1), 'tidewater-w0-p0', now.definition.geometryFingerprint)
+      expect(placed.property).toMatchObject({ plotId: 'tidewater-w0-p0', configVersion: 2, districtGeometryFingerprint: governing.geometryFingerprint })
+      expect(await freezes(a.response.world.id)).toEqual([{ config_version: 2, adoption_seq: 2, districts: 6 }])
+    })
+
+    it('MEDIUM-1: the geometry is judged before anything else, even for a repeat; a page on the same ground is not stale whatever version drew it', async () => {
+      const { p, open, activate } = await setup()
+      const a = await open(INSTALLATION_A)
+      const first = await activate(a, keeper(1), 'tidewater-w0-p0')
+      // A repeat names the geometry too: a page on other ground learns nothing, not even that the NFT is placed.
+      expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0', 'f'.repeat(64)))).toBe('config_superseded')
+      expect(await activate(a, keeper(1), 'tidewater-w0-p0')).toMatchObject({ fresh: false, property: { id: first.property.id } })
+      // Renamed districts on the same ground: the page drawn under version 1 still places once version 2 governs.
+      p.publish(INSTALLATION_A, DOC_4_RENAMED)
+      const renamed = await open(INSTALLATION_A, BEA)
+      expect(renamed.response.world.definition).toMatchObject({ governingConfigVersion: 2, geometryFingerprint: a.response.world.definition.geometryFingerprint })
+      expect(await activate(a, keeper(2), 'saltmarsh-w0-p0')).toMatchObject({ fresh: true, sequence: 3, property: { configVersion: 2 } })
+    })
+
+    it('MEDIUM-2: an admin publishes six districts while the player still holds four, before anyone launches them: the first property is refused and nothing freezes; after a relaunch it freezes six', async () => {
+      const { p, open, activate } = await setup()
+      const a = await open(INSTALLATION_A)
+      const worldId = a.response.world.id
+      p.publish(INSTALLATION_A, DOC_4_SIX)
+      const before = await rows()
+      // The page is not stale (version 1 still governs), but Play has version 2 active: freezing version 1 now would let
+      // launch order decide the city's districts for good.
+      expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('config_superseded')
+      expect(await rows()).toEqual(before)
+      expect(await adoptions(worldId)).toEqual([[1, 1]])
+      const again = await open(INSTALLATION_A)
+      expect(again.response.world.definition).toMatchObject({ governingConfigVersion: 2, districtGeometry: { frozen: false } })
+      expect(await activate(again, keeper(1), 'dune-w0-p0')).toMatchObject({ fresh: true, property: { configVersion: 2, adoption: 2 } })
+      expect(await freezes(worldId)).toEqual([{ config_version: 2, adoption_seq: 2, districts: 6 }])
+    })
+
+    it('MEDIUM-2: a version on the same ground is still adopted first; with it already launched, the old page places on it', async () => {
+      const { p, open, activate } = await setup()
+      const a = await open(INSTALLATION_A)
+      const worldId = a.response.world.id
+      p.publish(INSTALLATION_A, DOC_4_RENAMED)
+      // Not launched yet: Play's active version is not the governing one, so nothing freezes.
+      expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('config_superseded')
+      expect(await count('world_geometry_freezes')).toBe(0)
+      // Launched by anyone: it governs, and the page drawn on version 1 (the same ground) may place.
+      await open(INSTALLATION_A, BEA)
+      expect(await activate(a, keeper(1), 'tidewater-w0-p0')).toMatchObject({ fresh: true, property: { configVersion: 2, adoption: 2 } })
+      expect(await freezes(worldId)).toEqual([{ config_version: 2, adoption_seq: 2, districts: 4 }])
+    })
+
+    it('MEDIUM-2: Play turning back to an older version holds every first property until a launch adopts it, whichever page asks', async () => {
+      const { p, open, activate } = await setup()
+      const a = await open(INSTALLATION_A)
+      p.publish(INSTALLATION_A, DOC_4_SIX)
+      const six = await open(INSTALLATION_A, BEA)
+      p.activate(INSTALLATION_A, 1)
+      // Ada's page drew four districts, six govern: stale. Bea's page drew six, but Play has version 1 active again.
+      expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0'))).toBe('config_superseded')
+      expect(await refusalOf(activate(six, keeper(2), 'dune-w0-p0'))).toBe('config_superseded')
+      expect(await count('world_geometry_freezes')).toBe(0)
+      const back = await open(INSTALLATION_A)
+      expect(back.response.world.definition.governingConfigVersion).toBe(1)
+      expect(await activate(back, keeper(1), 'tidewater-w0-p0')).toMatchObject({ fresh: true, property: { configVersion: 1, adoption: 3 } })
+      expect(await freezes(a.response.world.id)).toEqual([{ config_version: 1, adoption_seq: 3, districts: 4 }])
+    })
+
+    it('MEDIUM-2: asked again under the city lock: a publish while the activation waits for the lock is seen', async () => {
+      const { p, open, activate } = await setup()
+      const a = await open(INSTALLATION_A)
+      const held = await t.db.connect()
+      await held.query('BEGIN')
+      await held.query('SELECT 1 FROM city WHERE id = $1 FOR UPDATE', [`world:${a.response.world.id}`])
+      // requireActor has asked Play already (version 1 active); the admin publishes while the activation waits.
+      const activation = activate(a, keeper(1), 'tidewater-w0-p0')
+      await cityLockWaiters(1)
+      p.publish(INSTALLATION_A, DOC_4_SIX)
+      await held.query('COMMIT')
+      held.release()
+      expect(await refusalOf(activation)).toBe('config_superseded')
+      expect(await count('world_geometry_freezes')).toBe(0)
+      expect(await count('world_properties')).toBe(0)
+    })
+
+    it('MEDIUM-2: no answer, or no definite active version, from Play under the lock refuses a first property; nothing is written', async () => {
+      let arm: (() => void) | null = null
+      const { p, open, activate } = await setup({ activeConfirmMs: 150, onStep: (s) => (s === 'locked' ? arm?.() : undefined) })
+      const a = await open(INSTALLATION_A)
+      const ask = p.play.getInstallation.bind(p.play)
+      let hang = false
+      p.play.getInstallation = (id, o) => (hang ? new Promise((_, reject) => o?.signal?.addEventListener('abort', () => reject(new Error('aborted')))) : ask(id, o))
+      const before = await rows()
+      const cases: [string, () => void, string][] = [
+        ['no answer in time', () => (hang = true), 'active_config_unverified'],
+        ['Play unreachable', () => (p.tamper.fail = { method: 'getInstallation', status: 503, code: 'transport_error' }), 'active_config_unverified'],
+        ['the installation suspended', () => (p.tamper.installation = { status: 'suspended' }), 'active_config_unverified'],
+        ['no active version', () => (p.tamper.installation = { activeConfigVersion: null, activeConfigHash: null }), 'config_superseded'],
+        ['the governing version with another hash', () => (p.tamper.installation = { activeConfigHash: 'f'.repeat(64) }), 'config_superseded'],
+      ]
+      for (const [label, set, code] of cases) {
+        arm = set
+        try {
+          expect(await refusalOf(activate(a, keeper(1), 'tidewater-w0-p0')), label).toBe(code)
+        } finally {
+          arm = null
+          hang = false
+          delete p.tamper.fail
+          delete p.tamper.installation
+        }
+        expect(await rows(), label).toEqual(before)
+      }
+      expect(await activate(a, keeper(1), 'tidewater-w0-p0')).toMatchObject({ fresh: true, sequence: 2 })
+    })
+
+    it('MEDIUM-2: the store alone fails closed: a first property without Play\'s answer to ask is refused', async () => {
+      const { open, store, sessions } = await setup()
+      const a = await open(INSTALLATION_A)
+      const actor = await sessions.requireActor(a.token, { sessionRef: a.response.viewer.session.ref, worldId: a.response.world.id, discordUserId: ADA.discordUserId })
+      const input = { asset: keeper(1), plotId: 'tidewater-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }
+      const before = await rows()
+      expect(await refusalOf(store.activate(actor, input))).toBe('active_config_unverified')
+      expect(await refusalOf(store.activate(actor, input, { activeConfig: () => Promise.reject(new Error('no answer')) }))).toBe('active_config_unverified')
+      expect(await rows()).toEqual(before)
+      expect(await store.activate(actor, input, { activeConfig: sessions.activeConfig(actor) })).toMatchObject({ fresh: true, sequence: 2 })
+    })
+
+    it('asks Play under the lock only for the first property: after the freeze, nothing about Play\'s active version can move the districts', async () => {
+      const { p, open, activate } = await setup()
+      const a = await open(INSTALLATION_A)
+      const asked = () => p.calls.filter((c) => c.startsWith('getInstallation')).length
+      let n = asked()
+      await activate(a, keeper(1), 'tidewater-w0-p0')
+      // requireActor's fresh check, then the question under the lock.
+      expect(asked() - n).toBe(2)
+      n = asked()
+      p.publish(INSTALLATION_A, DOC_4_RENAMED)
+      expect(await activate(a, keeper(2), 'saltmarsh-w0-p0')).toMatchObject({ fresh: true, sequence: 3, property: { configVersion: 1 } })
+      expect(asked() - n).toBe(1)
     })
   })
 
@@ -1176,7 +1451,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const PROPERTY_0007 = 'id, world_id, city_id, city_instance_id, chain, standard, contract, token_id, collection_key, district_key, ward, plot, plot_id, building_id, district_geometry_fingerprint, activated_sequence, activated_adoption_seq, activated_config_version, activated_in_play_session, activated_at'
       const property0007 = JSON.stringify((await t.db.query(`SELECT ${PROPERTY_0007} FROM world_properties`)).rows)
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [8], current: 8 })
+      expect(await migrate(t.db, { dir: await migrationsThrough(8), environment: 'local' })).toEqual({ applied: [8], current: 8 })
       expect(await Promise.all(tables.map((table) => snapshot(t.db, table, '1')))).toEqual(before)
       expect(JSON.stringify((await t.db.query(`SELECT ${PROPERTY_0007} FROM world_properties`)).rows)).toBe(property0007)
       expect((await t.db.query('SELECT activator_core_user_id, activator_discord_user_id FROM world_properties')).rows).toEqual([{ activator_core_user_id: null, activator_discord_user_id: null }])
@@ -1205,8 +1480,13 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       // their activator, and B's first property freezes B.
       const after = await setup({ migrated: true, play: env.p })
       const ada = await after.open(INSTALLATION_A, ADA)
+      // Nobody, Ada included, is told who placed the pre-0008 property: it is unrecorded, never "yours".
+      const [legacy] = (await t.db.query<{ id: string }>('SELECT id FROM world_properties')).rows.map((r) => r.id)
+      expect(ada.response.viewer).toMatchObject({ originalActivations: [], unrecordedActivations: [legacy] })
       expect(await after.activate(ada, keeper(1), 'tidewater-w0-p0')).toMatchObject({ fresh: false, property: { activator: null } })
-      expect(await after.activate(ada, keeper(2), 'tidewater-w0-p1')).toMatchObject({ fresh: true, sequence: 3, property: { activator: { discordUserId: ADA.discordUserId, coreUserId: ADA.coreUserId } } })
+      const recorded = await after.activate(ada, keeper(2), 'tidewater-w0-p1')
+      expect(recorded).toMatchObject({ fresh: true, sequence: 3, property: { activator: { discordUserId: ADA.discordUserId, coreUserId: ADA.coreUserId } } })
+      expect((await after.read(ada)).viewer).toMatchObject({ originalActivations: [recorded.property.id], unrecordedActivations: [legacy] })
       const bea = await after.open(INSTALLATION_A, BEA)
       expect(await refusalOf(after.activate(bea, keeper(1), 'tidewater-w0-p0'))).toBe('asset-already-placed')
       const adaInB = await after.open(INSTALLATION_B, ADA)
@@ -1223,6 +1503,83 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const { rows: pinned } = await t.db.query<{ proname: string; config: string[] }>(`SELECT p.proname, p.proconfig AS config FROM pg_proc p JOIN pg_namespace s ON s.oid = p.pronamespace WHERE s.nspname = $1 AND p.proname = ANY($2) ORDER BY p.proname`, [t.schema, names])
       expect(pinned.map((r) => r.proname)).toEqual([...names].sort())
       for (const r of pinned) expect(r.config).toEqual([`search_path=${t.schema}, pg_temp`])
+    })
+  })
+
+  describe('migration 0009', () => {
+    const DOC_4_SIX = { ...DOC_4, districts: [...DOC_4.districts, district('reef'), district('dune')] }
+    const JUDGED = 'SELECT version, verdict, judged_by FROM world_config_versions WHERE world_id = $1 ORDER BY version'
+    /** As an older build's launch records a version: its verdict under its judge, in one transaction (with the geometry 0008 requires of an accepted one). */
+    async function recordAsOldBuild(worldId: string, version: number, document: Record<string, unknown>, verdict: 'accepted' | 'rejected') {
+      return inTransaction(async (client) => {
+        await client.query(
+          `INSERT INTO world_config_versions (world_id, version, play_installation_id, schema_version, config_hash, config_canonical, verdict, rejection, judged_by) VALUES ($1, $2, $3, 1, $4, $5, $6, $7::jsonb, $8)`,
+          [worldId, version, INSTALLATION_A, canonicalHash(document), canonicalJson(document), verdict, verdict === 'rejected' ? JSON.stringify({ code: 'config_incompatible', problems: [] }) : null, WORLD_CONFIG_JUDGE_V2],
+        )
+        if (verdict === 'accepted')
+          await client.query(`INSERT INTO world_config_geometries (world_id, version, layout_key, layout_geometry_fingerprint, districts, recorded_by) SELECT world_id, $2, layout_key, layout_geometry_fingerprint, districts, 'old-build' FROM world_config_geometries WHERE world_id = $1 AND version = 1`, [worldId, version])
+      })
+    }
+
+    it('keeps every recorded verdict, whatever judged it, and refuses only a NEW verdict by an older judge; the current judge records as before', async () => {
+      await migrate(t.db, { dir: await migrationsThrough(8), environment: 'local' })
+      await installDemoFixture(t.db, 'local')
+      const env = await setup({ migrated: true })
+      const a = await env.open(INSTALLATION_A)
+      const worldId = a.response.world.id
+      // An older build, left running after 0008, recorded Play's six-district version 2 as world-evolution-v2 rejected it.
+      const six = env.p.create(INSTALLATION_A, DOC_4_SIX)
+      await recordAsOldBuild(worldId, six.version, DOC_4_SIX, 'rejected')
+      const before = await rows()
+
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9], current: 9 })
+      expect(await rows()).toEqual(before)
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 9 })
+
+      // The historical verdict stays readable and in force: a launch pinned to it is refused, nothing is recorded again.
+      env.p.activate(INSTALLATION_A, six.version)
+      await expect(env.open(INSTALLATION_A)).rejects.toMatchObject({ code: 'config_incompatible' })
+      expect((await t.db.query(JUDGED, [worldId])).rows).toEqual([
+        { version: 1, verdict: 'accepted', judged_by: WORLD_CONFIG_JUDGE },
+        { version: 2, verdict: 'rejected', judged_by: WORLD_CONFIG_JUDGE_V2 },
+      ])
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true, violations: [] })
+
+      // An older build cannot record a new verdict any more, accepted or rejected: refused, nothing kept.
+      const corrected = env.p.create(INSTALLATION_A, { ...DOC_4_SIX, cityName: 'Harborlight Six' })
+      const held = await rows()
+      for (const verdict of ['rejected', 'accepted'] as const)
+        await expect(recordAsOldBuild(worldId, corrected.version, { ...DOC_4_SIX, cityName: 'Harborlight Six' }, verdict)).rejects.toThrow(/recorded only by the current judge/)
+      expect(await rows()).toEqual(held)
+
+      // This build records it, by the current judge, and it governs the still-empty city.
+      env.p.activate(INSTALLATION_A, corrected.version)
+      const opened = await env.open(INSTALLATION_A)
+      expect(opened.response.world.definition).toMatchObject({ governingConfigVersion: 3, districtGeometry: { frozen: false } })
+      expect((await t.db.query(JUDGED, [worldId])).rows.at(-1)).toEqual({ version: 3, verdict: 'accepted', judged_by: WORLD_CONFIG_JUDGE })
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true, violations: [] })
+    })
+
+    it('a failure inside it leaves nothing behind, and it applies cleanly afterwards', async () => {
+      const dir = await migrationsThrough(8)
+      await migrate(t.db, { dir, environment: 'local' })
+      const sql = await readFile(join(MIGRATIONS_DIR, '0009_current_config_judge.sql'), 'utf8')
+      await writeFile(join(dir, '0009_current_config_judge.sql'), `${sql}\nSELECT 1 / 0;\n`)
+      await expect(migrate(t.db, { dir, environment: 'local' })).rejects.toThrow(/division by zero/)
+      const present = async () => (await t.db.query<{ n: number }>(`SELECT (SELECT count(*) FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND g.tgname = 'world_config_versions_current_judge') + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'world_config_versions_current_judge') AS n`, [t.schema])).rows[0].n
+      expect(Number(await present())).toBe(0)
+      expect((await t.db.query('SELECT max(version) AS v FROM schema_migrations')).rows[0].v).toBe(8)
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9], current: 9 })
+      expect(Number(await present())).toBe(2)
+    })
+
+    it('names exactly the judge this build records with, and pins its guard to its own schema', async () => {
+      await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })
+      const sql = await readFile(join(MIGRATIONS_DIR, '0009_current_config_judge.sql'), 'utf8')
+      const guard = sql.slice(sql.indexOf('CREATE FUNCTION world_config_versions_current_judge()'), sql.indexOf('$$;'))
+      expect([...new Set(guard.match(/rare-city\/play-config-v1\+world-evolution-v\d+/g))]).toEqual([WORLD_CONFIG_JUDGE])
+      const { rows: pinned } = await t.db.query<{ config: string[] }>(`SELECT p.proconfig AS config FROM pg_proc p JOIN pg_namespace s ON s.oid = p.pronamespace WHERE s.nspname = $1 AND p.proname = 'world_config_versions_current_judge'`, [t.schema])
+      expect(pinned).toEqual([{ config: [`search_path=${t.schema}, pg_temp`] }])
     })
   })
 

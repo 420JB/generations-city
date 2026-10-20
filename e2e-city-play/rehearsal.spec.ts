@@ -66,7 +66,15 @@ async function pick(page: Page, plotId: string) {
 /** The rehearsal route, asked directly from the page with its own cookie, naming the actor the page drew. */
 async function placeByApi(page: Page, asset: string, plotId: string, override: Record<string, string> = {}) {
   const city = page.getByTestId('play-city')
-  const body = { sessionRef: await city.getAttribute('data-session-ref'), worldId: await city.getAttribute('data-world'), discordUserId: await city.getAttribute('data-player'), asset, plotId, ...override }
+  const body = {
+    sessionRef: await city.getAttribute('data-session-ref'),
+    worldId: await city.getAttribute('data-world'),
+    discordUserId: await city.getAttribute('data-player'),
+    asset,
+    plotId,
+    geometryFingerprint: await city.getAttribute('data-geometry-fingerprint'),
+    ...override,
+  }
   return page.evaluate(async (b) => {
     const r = await fetch('/v1/play/rehearsal/activations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), credentials: 'same-origin' })
     return { status: r.status, body: (await r.json()) as Record<string, unknown> }

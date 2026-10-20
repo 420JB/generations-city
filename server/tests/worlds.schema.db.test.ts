@@ -8,7 +8,7 @@ import { initializeCity } from '../src/city/store'
 import { verifyCity } from '../src/city/verify'
 import type { AppMode } from '../src/config'
 import { loadMigrations, migrate } from '../src/db/migrations'
-import { createGenesisState } from '../src/engine'
+import { createGenesisState, WORLD_CONFIG_JUDGE } from '../src/engine'
 import { activate, addIdentity, addIntent, intentColumns, insertRow, propertyColumns, snapshot } from './activationFixtures'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
 
@@ -187,7 +187,7 @@ describe.skipIf(NO_TEST_DATABASE)('migration 0005: world core schema against a d
 
   function configRow(world: World, version: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
     const config = JSON.stringify({ contract: 'test-config/1', version })
-    return { world_id: world.worldId, version, play_installation_id: world.installationId, schema_version: 1, config_hash: sha256(config), config_canonical: config, verdict: 'accepted', rejection: null, judged_by: 'test-validator/1', ...overrides }
+    return { world_id: world.worldId, version, play_installation_id: world.installationId, schema_version: 1, config_hash: sha256(config), config_canonical: config, verdict: 'accepted', rejection: null, judged_by: WORLD_CONFIG_JUDGE, ...overrides }
   }
 
   /** An accepted copy is recorded with a geometry (0008): any well-formed one, here. */
