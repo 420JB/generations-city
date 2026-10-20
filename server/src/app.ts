@@ -31,6 +31,10 @@ import {
   PLAY_LOGOUT_ENDPOINT,
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
+  PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
+  PLAY_REHEARSAL_ENTRY_ENDPOINT,
+  PLAY_REHEARSAL_RELEASE_ENDPOINT,
+  PLAY_REHEARSAL_TICKET_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
   type PlayErrorBody,
   type RehearsalRouteErrorCode,
@@ -378,6 +382,48 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /** LOCAL REHEARSAL: the session's player's live district ticket, or none. Read only: a reload never issues a ticket. */
+  async function serveRehearsalTicket(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_TICKET_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
+    const presented = playCookie.read(req)
+    try {
+      return send(res, 200, await service.ticket(presented), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+      log.error('rehearsal ticket read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
+  /**
+   * A LOCAL REHEARSAL change (local mode with the rehearsal file only, `world/rehearsal.ts`). Past the common boundary
+   * (same origin, JSON only, size) it also needs an Origin header naming this service, then the per-session limit, keyed
+   * by the session credential (as stored: its hash), never by anything the body names; the rehearsal does the rest
+   * (`requireActor`: session, world, player, Play active now).
+   */
+  const rehearsalRoute = (
+    path: string,
+    limits: { client: readonly RateRule[]; user: readonly RateRule[] },
+    handle: (presented: string | null, body: Record<string, unknown>) => Promise<unknown>,
+    log: string,
+  ): PostRoute => ({
+    limit: limits.client,
+    failure: { code: 'play_session_unavailable', log },
+    async handle({ req, res, body }) {
+      if (req.headers.origin !== config.publicOrigin) return identityError(res, 403, 'origin_mismatch')
+      const presented = playCookie.read(req)
+      if (!withinLimit(res, `${path}:session`, presented ? hashSessionToken(presented).toString('hex') : '', limits.user)) return
+      try {
+        return send(res, 200, await handle(presented, body), PRIVATE)
+      } catch (err) {
+        if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+        if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+        throw err
+      }
+    },
+  })
+
   /** A sign-in route: the common boundary, then the auth service if there is one to ask. */
   const signIn = (limit: PostRoute['limit'], handle: (service: AuthService, ctx: PostContext) => Promise<void>): PostRoute => ({
     limit,
@@ -452,30 +498,17 @@ export function createApp(deps: AppDeps): RequestListener {
         send(res, 200, opened.response, { ...PRIVATE, 'set-cookie': playCookie.set(opened.token, opened.maxAgeSeconds) })
       },
     },
-    // LOCAL PROPERTY REHEARSAL, local mode with the rehearsal file only (`world/rehearsal.ts`). Past the common boundary
-    // (same origin, JSON only, size) it also needs an Origin header naming this service, then: the exact actor the page
-    // drew (`requireActor`: session, world, player, Play active now), the per-player limit, the NFT listed for that
-    // player, and the property store's own judgement under the city's lock. Nothing in the body is believed beyond
-    // which listed NFT and which plot.
+    // LOCAL PROPERTY REHEARSAL, local mode with the rehearsal file only (`world/rehearsal.ts`), each behind
+    // `rehearsalRoute`: the exact actor the page drew (`requireActor`: session, world, player, Play active now), the
+    // per-session limit, the NFT listed for that player, and the ticket and property stores' own judgement under the
+    // city's lock. Nothing in the body is believed beyond which ticket, which listed NFT and which plot.
     ...(rehearsal
       ? {
-          [PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT]: {
-            limit: LIMITS.playRehearsal.client,
-            failure: { code: 'play_session_unavailable', log: 'rehearsal activation failed' },
-            async handle({ req, res, body }) {
-              if (req.headers.origin !== config.publicOrigin) return identityError(res, 403, 'origin_mismatch')
-              const presented = playCookie.read(req)
-              // Keyed by the session credential (as stored: its hash), never by anything the body names.
-              if (!withinLimit(res, `${PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT}:session`, presented ? hashSessionToken(presented).toString('hex') : '', LIMITS.playRehearsal.user)) return
-              try {
-                return send(res, 200, await rehearsal.activate(presented, body), PRIVATE)
-              } catch (err) {
-                if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
-                if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
-                throw err
-              }
-            },
-          } satisfies PostRoute,
+          [PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT, LIMITS.playRehearsal, (presented, body) => rehearsal.activate(presented, body), 'rehearsal activation failed'),
+          // District tickets: entering the claim flow, selecting an NFT (an explicit rule may assign its district), leaving.
+          [PLAY_REHEARSAL_ENTRY_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_ENTRY_ENDPOINT, LIMITS.playRehearsalTicket, (presented, body) => rehearsal.enter(presented, body), 'rehearsal entry failed'),
+          [PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT, LIMITS.playRehearsalTicket, (presented, body) => rehearsal.assign(presented, body), 'rehearsal assignment failed'),
+          [PLAY_REHEARSAL_RELEASE_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_RELEASE_ENDPOINT, LIMITS.playRehearsalTicket, (presented, body) => rehearsal.release(presented, body), 'rehearsal release failed'),
         }
       : {}),
     // Ends the play session only. A wallet session in the same browser is a different cookie and is not touched.
@@ -548,6 +581,9 @@ export function createApp(deps: AppDeps): RequestListener {
         return servePlayCity(req, res, client)
       case PLAY_REHEARSAL_ASSETS_ENDPOINT:
         if (rehearsal) return serveRehearsalAssets(req, res, client, rehearsal)
+        break
+      case PLAY_REHEARSAL_TICKET_ENDPOINT:
+        if (rehearsal) return serveRehearsalTicket(req, res, client, rehearsal)
         break
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.

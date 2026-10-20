@@ -11,11 +11,13 @@ import {
   proposePropertyActivation,
   worldCityStateText,
   worldProperty,
+  type DistrictRuleMatch,
   type PropertyActivationRefusal,
   type PropertyTransition,
 } from '../engine'
 import type { Logger } from '../log'
 import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play/session'
+import { consumeTicket, DistrictTicketRefusal, lockTicketForCommit, ticketPlacementRefusal, type TicketPlacementRefusal, type TicketRow } from './rotation'
 import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type ConfirmActive } from './store'
 
 /**
@@ -92,6 +94,17 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type ConfirmA
  * database's own (`world_properties_guard`), the database's refusal is answered the same way.
  * Concurrent activations queue on the city's row lock, and each is judged on the city as the one
  * before it left it: two on one plot give one property and one `plot-unavailable`.
+ *
+ * DISTRICT TICKETS (P1-C2-D1, migration 0010). An activation may name the district ticket it uses
+ * (`ActivationOptions.ticket`; the local rehearsal always does). Then, under the city lock and after
+ * the idempotency answer, the ticket is locked (after the rotation) and must be the activator's live
+ * ticket of the rotation's current epoch, issued on the geometry that governs now; the plot must be
+ * one the engine offers in the ticket's district; an NFT an explicit rule assigns needs that rule's
+ * ticket (`district_rule_applies` for a fallback ticket), and conflicting rules are refused. The
+ * ticket is consumed (committed, its slot consumed, counted) after the property is written, in the
+ * same transaction, so a refused or failed activation consumes nothing and freezes nothing, and a
+ * repeat of a completed activation consumes nothing more. In a world with a rotation the database
+ * refuses a property that consumed no ticket.
  */
 export type WorldPropertyRefusalCode =
   | PropertyActivationRefusal
@@ -112,6 +125,20 @@ export type WorldPropertyRefusalCode =
   | 'config_superseded'
   /** A world's first property, and Play did not say in time which configuration it has active. Nothing was written. */
   | 'active_config_unverified'
+  /** The named district ticket is not the activator's live ticket in this world (unknown, someone else's, released or committed). */
+  | 'ticket_not_live'
+  /** The named district ticket's lease ran out. */
+  | 'ticket_expired'
+  /** The city's rotation or geometry changed since the ticket was issued: it no longer authorizes anything. */
+  | 'ticket_superseded'
+  /** The plot is not in the district the ticket assigns. */
+  | 'plot_outside_assignment'
+  /** An explicit rule assigns this NFT's district: a fallback ticket cannot place it. */
+  | 'district_rule_applies'
+  /** Explicit rules for this NFT name different districts, and no precedence between them is approved. */
+  | 'district_rule_ambiguous'
+  /** The rule ticket was issued for another NFT. */
+  | 'ticket_asset_mismatch'
 
 export class WorldPropertyRefusal extends Error {
   readonly code: WorldPropertyRefusalCode
@@ -163,15 +190,18 @@ export interface PropertyActivationResult {
   sequence: number
   /** Present when `fresh`: the engine's transition that was written. */
   transition?: PropertyTransition
+  /** Present when `fresh` and the activation used a district ticket: the ticket it consumed. */
+  ticketId?: string
 }
 
 /**
  * Points inside the write at which a test may make it fail, or act, to prove nothing is left half-written. `locked`: the
- * city is locked, the session not yet. `confirmed`: only for a world's first property, once Play confirmed its active
+ * city is locked, the session not yet. `ticket`: the named district ticket is locked and judged live for the plot.
+ * `consumed`: the ticket was consumed, after the property. `confirmed`: only for a world's first property, once Play confirmed its active
  * configuration and before anything is written. `freeze`: only for a world's first property, after its geometry freeze is
  * written.
  */
-export type ActivationStep = 'locked' | 'confirmed' | 'city' | 'event' | 'freeze' | 'property'
+export type ActivationStep = 'locked' | 'ticket' | 'confirmed' | 'city' | 'event' | 'freeze' | 'property' | 'consumed'
 
 export interface ActivationOptions {
   /**
@@ -185,6 +215,11 @@ export interface ActivationOptions {
    * locked (`PlaySessionService.activeConfig`). Without it a first property is refused (`active_config_unverified`).
    */
   activeConfig?: ConfirmActive
+  /**
+   * The district ticket this activation uses (migration 0010), and the explicit district rules the caller's trusted
+   * source says match the NFT. Required by the local rehearsal; a world with a rotation refuses a property without one.
+   */
+  ticket?: { id: string; matches: readonly DistrictRuleMatch[] }
 }
 
 export interface WorldPropertyStore {
@@ -200,6 +235,8 @@ export interface WorldPropertyStoreOptions {
 
 /** What `world_properties_guard` (0007) raises when the session is not live and of the world. Migrations never change, so neither does this text. */
 const GUARD_SESSION_NOT_LIVE = 'a world property is activated only in a live play session of its world'
+/** What `world_district_tickets_guard` (0010) raises when a ticket's lease ran out after the store checked it. */
+const GUARD_TICKET_EXPIRED = 'an expired district ticket cannot be committed'
 /** PL/pgSQL `RAISE EXCEPTION` without an ERRCODE. */
 const RAISE_EXCEPTION = 'P0001'
 
@@ -314,9 +351,22 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
             return { fresh: false, property: recordOf(existing), sequence: read.sequence }
           }
 
+          // The district ticket: the activator's, live, of the rotation's current epoch (locked after the rotation).
+          let held: TicketRow | null = null
+          if (options.ticket) {
+            const locked = await lockTicketForCommit(client, actor.scope.worldId, options.ticket.id, activator)
+            if (locked instanceof DistrictTicketRefusal) throw new WorldPropertyRefusal(locked.code as 'ticket_not_live' | 'ticket_expired' | 'ticket_superseded', locked.message)
+            held = locked
+          }
+
           const proposed = proposePropertyActivation(read.world, read.state, read.sequence, { asset, plotId })
           if (!proposed.ok) throw new WorldPropertyRefusal(proposed.reason)
           const t = proposed.transition
+          if (held && options.ticket) {
+            const refused: TicketPlacementRefusal | null = ticketPlacementRefusal(held, read, { districtKey: t.plot.districtKey, asset: assetKey(asset), matches: options.ticket.matches })
+            if (refused) throw new WorldPropertyRefusal(refused)
+            await onStep?.('ticket')
+          }
           if (options.refuseRuleGatedDistricts && read.config.districts.find((d) => d.key === t.plot.districtKey)?.gate) throw new WorldPropertyRefusal('district-rule-unverified')
           // The first property freezes the governing geometry for good: only while Play, asked now, has exactly that version active.
           if (!read.freeze) {
@@ -378,16 +428,23 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
             )
           ).rows[0]
           await onStep?.('property')
-          return { fresh: true, property: recordOf(row), sequence: t.to, transition: t }
+          // The ticket is consumed by exactly this property, in this transaction: committed, its slot consumed, counted.
+          if (held) {
+            await consumeTicket(client, held, row.id, t.to)
+            await onStep?.('consumed')
+          }
+          return { fresh: true, property: recordOf(row), sequence: t.to, transition: t, ...(held ? { ticketId: held.id } : {}) }
         })
       } catch (err) {
         if (err instanceof WorldPropertyRefusal) throw err
         if (err instanceof WorldRefusal) throw new WorldPropertyRefusal('world_unavailable', err.message)
         // The session expired after it was checked above and before the database checked it again: rolled back.
         if (err instanceof pg.DatabaseError && err.code === RAISE_EXCEPTION && err.message === GUARD_SESSION_NOT_LIVE) throw new WorldPropertyRefusal('session_ended', 'The play session ended before the activation was written.')
+        // The ticket's lease ran out after it was checked above and before the database checked it again: rolled back.
+        if (err instanceof pg.DatabaseError && err.code === RAISE_EXCEPTION && err.message === GUARD_TICKET_EXPIRED) throw new WorldPropertyRefusal('ticket_expired', 'Your district ticket expired before the activation was written.')
         throw err
       }
-      if (result.fresh) log.info('world property activated', { world: actor.scope.worldId, property: result.property.id, asset: assetKey(asset), plot: result.property.plotId, sequence: result.sequence })
+      if (result.fresh) log.info('world property activated', { world: actor.scope.worldId, property: result.property.id, asset: assetKey(asset), plot: result.property.plotId, sequence: result.sequence, ...(result.ticketId ? { ticket: result.ticketId } : {}) })
       return result
     },
   }

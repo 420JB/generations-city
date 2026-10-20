@@ -60,8 +60,11 @@ server/
     verify-cli.ts      `npm run city:verify`
     world/store.ts     persistent brand cities: founding, configuration versions, adoption, loading
     world/properties.ts  LOCAL ONLY: authoritative world property activation (migration 0007); only the local rehearsal uses it
-    world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs from a file, APP_MODE=local only (see e2e-city-play/README.md)
+    world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010)
+    world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
+    world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs and district rules from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
+    world/verifyTickets.ts  the district ticket half of `city:verify` (0010)
     world/ids.ts       UUIDv7 world ids
     db/pool.ts         pg pool
     db/transaction.ts  one transaction on one pooled connection, and when that connection may be reused
@@ -1236,7 +1239,11 @@ configuration and is not affected by anything here.
   configuration verdict is recorded only by the current judge, so an older build left
   running after `0008` fails its launches rather than recording a `world-evolution-v2`
   verdict for good). A judge change replaces `world_config_versions_current_judge()` in the
-  same migration that ships the new judge.
+  same migration that ships the new judge. Likewise `0010`: once a world has a district ticket
+  rotation, an adoption that does not move the rotation in the same transaction, and a property
+  that consumes no ticket, are refused at commit, so an older build's launch or rehearsal
+  activation in such a world fails rather than leaving tickets on a configuration that no
+  longer governs.
 
 ## Tests
 

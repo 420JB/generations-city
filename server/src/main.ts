@@ -7,7 +7,7 @@ import { createActivationService } from './activation/service'
 import { createApp, SERVICE_NAME } from './app'
 import { createAuthService } from './auth/service'
 import { createCityReader } from './city/store'
-import { ConfigError, loadConfig, type ServerConfig } from './config'
+import { ConfigError, DEFAULT_TICKET_TTL_SECONDS, loadConfig, type ServerConfig } from './config'
 import { defaultMigrationsDir } from './db/migrations'
 import { createPool } from './db/pool'
 import { createLogger, errorFields } from './log'
@@ -19,7 +19,8 @@ import { createPlayLaunchService } from './play/launch'
 import { createPlaySessionService, createPlaySessionStore } from './play/session'
 import { loadStaticSite } from './static'
 import { createWorldPropertyStore } from './world/properties'
-import { createLocalPropertyRehearsal, parseRehearsalGrants, type LocalPropertyRehearsal } from './world/rehearsal'
+import { createLocalPropertyRehearsal, parseRehearsalFile, type LocalPropertyRehearsal } from './world/rehearsal'
+import { createDistrictTicketStore } from './world/tickets'
 import { createWorldStore } from './world/store'
 
 const SHUTDOWN_GRACE_MS = 10_000
@@ -53,9 +54,10 @@ async function main() {
   let rehearsal: LocalPropertyRehearsal | null = null
   if (config.localRehearsalFile && playSessions && db) {
     try {
-      const grants = parseRehearsalGrants(JSON.parse(await readFile(config.localRehearsalFile, 'utf8')))
-      rehearsal = createLocalPropertyRehearsal({ mode: config.mode, grants, sessions: playSessions, store: createWorldPropertyStore(db, { mode: config.mode, log }) })
-      log.warn('LOCAL PROPERTY REHEARSAL ENABLED: test NFTs from a local file may be placed as permanent properties in this local database. Not verified ownership.', { players: grants.size })
+      const fixture = parseRehearsalFile(JSON.parse(await readFile(config.localRehearsalFile, 'utf8')))
+      const tickets = createDistrictTicketStore(db, { mode: config.mode, log, ttlSeconds: config.localTicketTtlSeconds ?? DEFAULT_TICKET_TTL_SECONDS })
+      rehearsal = createLocalPropertyRehearsal({ mode: config.mode, fixture, sessions: playSessions, store: createWorldPropertyStore(db, { mode: config.mode, log }), tickets })
+      log.warn('LOCAL PROPERTY REHEARSAL ENABLED: test NFTs and district rules from a local file stand in for Proofy Core eligibility; district tickets are issued and properties placed permanently in this local database. Not verified ownership.', { players: fixture.grants.size, districtRules: fixture.rules.length, ticketTtlSeconds: config.localTicketTtlSeconds })
     } catch (err) {
       log.error(`invalid local rehearsal file: ${err instanceof Error ? err.message : String(err)}`)
       process.exit(1)

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { isFoundingWard, wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader, SceneDistrictChip } from '../../ui/common'
@@ -6,10 +6,13 @@ import type { LoadedBrandCity } from '../load'
 import type { Placement } from './PreviewApp'
 
 /**
- * LOCAL PROPERTY REHEARSAL, as the standard city page presents it (P1-C2-B2B). Only the Proofy
- * Play page passes one, and only when the Rare City server runs a local rehearsal: the test NFTs
- * come from a local file on that server, never from a verified wallet or Proofy. Everything shown
- * here is decided again by the server, under the city's lock; nothing here authorizes anything.
+ * LOCAL PROPERTY REHEARSAL, as the standard city page presents it (P1-C2-B2B; district tickets
+ * P1-C2-D1). Only the Proofy Play page passes one, and only when the Rare City server runs a local
+ * rehearsal: the test NFTs and their district rules come from a local file on that server, never
+ * from a verified wallet or Proofy. The player does not choose a district: the server assigns one
+ * (a ticket from the city's rotation, or an explicit rule's district for the NFT they select), and
+ * the player chooses the exact plot in it. Everything shown here is decided again by the server,
+ * under the city's lock; nothing here authorizes anything.
  */
 
 /** A test NFT the server lists for the player, of one of this city's collections and not placed yet. */
@@ -23,13 +26,61 @@ export interface RehearsalNft {
 
 export type RehearsalResult = { ok: true; buildingId: string; fresh: boolean; sequence: number } | { ok: false; message: string }
 
+/** The district ticket the server issued the player, as the page shows it. */
+export interface AssignedTicket {
+  id: string
+  districtKey: string
+  /** `fallback`: the city's citywide rotation. `rule`: an explicit rule for one NFT. */
+  kind: 'fallback' | 'rule'
+  slot: { ordinal: number; generation: number; epoch: number } | null
+  rule: { ref: string; asset: string } | null
+  expiresAt: string
+}
+
+export type TicketResult = { ok: true; ticket: AssignedTicket | null } | { ok: false; message: string }
+
 export interface PlacementRehearsal {
   /** This city's unplaced test NFTs for the player. */
   nfts: readonly RehearsalNft[]
   /** How many of the player's test NFTs for this city already stand in it. */
   placed: number
-  /** Ask the server to place one. Resolves once the page shows the city as stored again. */
+  /** The district the server assigned the player now, or null: none held (enter to be assigned one). */
+  ticket: AssignedTicket | null
+  /** Why the player holds no ticket, when the server said. */
+  ticketNote: string | null
+  /** Enter the claim flow: the server assigns a district (or returns the one held). */
+  enter(): Promise<TicketResult>
+  /** The NFT the player selected: an explicit rule for it may assign another district. */
+  assign(asset: string): Promise<TicketResult>
+  /** Leave the claim flow: the district is released for the next entrant. */
+  leave(): Promise<TicketResult>
+  /** Ask the server to place one, with the ticket held. Resolves once the page shows the city as stored again. */
   activate(asset: string, plotId: string): Promise<RehearsalResult>
+}
+
+/** How the server assigned a ticket's district, in words. */
+function assignmentBasis(ticket: AssignedTicket): string {
+  return ticket.kind === 'rule' ? `explicit district rule ${ticket.rule?.ref ?? ''} for this NFT` : `the city's rotation, slot ${(ticket.slot?.ordinal ?? 0) + 1}`
+}
+
+/** The ticket's district as the page shows it everywhere: what the server assigned, on what basis, until when. */
+export function AssignedDistrict({ ticket, name }: { ticket: AssignedTicket; name: string }) {
+  return (
+    <span
+      className="assigned-district"
+      data-testid="assigned-district"
+      data-district={ticket.districtKey}
+      data-kind={ticket.kind}
+      data-ticket={ticket.id}
+      data-ordinal={ticket.slot?.ordinal ?? ''}
+      data-generation={ticket.slot?.generation ?? ''}
+      data-rule={ticket.rule?.ref ?? ''}
+      title={`Assigned by the server from ${assignmentBasis(ticket)}. Held until ${new Date(ticket.expiresAt).toLocaleTimeString()}.`}
+    >
+      <b>{name}</b> · {ticket.kind === 'rule' ? 'by rule' : `slot ${(ticket.slot?.ordinal ?? 0) + 1}`} · until{' '}
+      <time dateTime={ticket.expiresAt}>{new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+    </span>
+  )
 }
 
 /** A building's record exactly as the city stores it. */
@@ -59,15 +110,56 @@ export function RehearsalFlag() {
 
 type Stage = 'choose' | 'review' | 'activating'
 
-/** Choose a test NFT and a highlighted plot, review what is permanent, then ask the server. */
-export function RehearsalPlotPanel({ city, placement, rehearsal, onCancel, onActivated }: { city: LoadedBrandCity; placement: Placement; rehearsal: PlacementRehearsal; onCancel: () => void; onActivated: (result: Extract<RehearsalResult, { ok: true }>, nft: RehearsalNft) => void }) {
+/**
+ * Choose a test NFT (the server may assign its district by rule) and a highlighted plot in the district the server
+ * assigned, review what is permanent, then ask the server. The player never chooses the district.
+ */
+export function RehearsalPlotPanel({
+  city,
+  placement,
+  rehearsal,
+  onCancel,
+  onLeave,
+  onAssigned,
+  onActivated,
+}: {
+  city: LoadedBrandCity
+  placement: Placement
+  rehearsal: PlacementRehearsal
+  onCancel: () => void
+  /** The server answered for the selected NFT: the ticket that may place it (its district may have changed). */
+  onAssigned: (ticket: AssignedTicket | null) => void
+  /** The player left the claim flow: their district was released. */
+  onLeave: () => void
+  onActivated: (result: Extract<RehearsalResult, { ok: true }>, nft: RehearsalNft) => void
+}) {
   const d = sceneDistrict(city.scene, placement.districtId)
   const [asset, setAsset] = useState<string | null>(rehearsal.nfts.length === 1 ? rehearsal.nfts[0].asset : null)
   const [stage, setStage] = useState<Stage>('choose')
   const [error, setError] = useState<string | null>(null)
+  /** The NFT the server has answered for (its district is the ticket's). Another NFT is being asked about until it matches. */
+  const [assignedFor, setAssignedFor] = useState<string | null>(null)
   const nft = rehearsal.nfts.find((n) => n.asset === asset) ?? null
   const sel = placement.selected
   const newWard = placement.candidates[0]?.newWard ?? false
+  const ticket = rehearsal.ticket
+
+  // The server decides the selected NFT's district (an explicit rule may assign one) before any plot is chosen.
+  useEffect(() => {
+    if (!asset) return
+    let live = true
+    void rehearsal.assign(asset).then((result) => {
+      if (!live) return
+      if (!result.ok) return setError(result.message)
+      setAssignedFor(asset)
+      onAssigned(result.ticket)
+    })
+    return () => {
+      live = false
+    }
+    // Asked again only when the player selects another NFT.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asset])
 
   async function activate() {
     if (!nft || !sel) return
@@ -79,8 +171,19 @@ export function RehearsalPlotPanel({ city, placement, rehearsal, onCancel, onAct
     setStage('choose')
   }
 
+  const [leaving, setLeaving] = useState(false)
+  async function leave() {
+    setLeaving(true)
+    const result = await rehearsal.leave()
+    setLeaving(false)
+    if (result.ok) return onLeave()
+    setError(result.message)
+  }
+
+  const ready = !!nft && assignedFor === nft.asset && !!ticket && ticket.districtKey === placement.districtId
+
   return (
-    <section className="panel plot-panel rehearsal-panel" aria-label="Place a property" data-testid="rehearsal-panel" data-stage={stage}>
+    <section className="panel plot-panel rehearsal-panel" aria-label="Place a property" data-testid="rehearsal-panel" data-stage={stage} data-assigned={ready ? 'yes' : 'no'}>
       <PanelHeader kicker={<SceneDistrictChip district={d} small />} title="Place a property" onClose={onCancel} onBack={onCancel} />
       <RehearsalFlag />
 
@@ -95,7 +198,19 @@ export function RehearsalPlotPanel({ city, placement, rehearsal, onCancel, onAct
             {rehearsal.nfts.map((n) => (
               <li key={n.asset}>
                 <label className={`rehearsal-nft${n.asset === asset ? ' on' : ''}`}>
-                  <input type="radio" name="rehearsal-nft" value={n.asset} checked={n.asset === asset} disabled={stage !== 'choose'} onChange={() => setAsset(n.asset)} data-testid="rehearsal-nft" data-asset={n.asset} />
+                  <input
+                    type="radio"
+                    name="rehearsal-nft"
+                    value={n.asset}
+                    checked={n.asset === asset}
+                    disabled={stage !== 'choose'}
+                    onChange={() => {
+                      setError(null)
+                      setAsset(n.asset)
+                    }}
+                    data-testid="rehearsal-nft"
+                    data-asset={n.asset}
+                  />
                   <span className="grow">
                     {n.collectionName} <span className="mono">#{n.tokenId}</span>
                   </span>
@@ -109,9 +224,11 @@ export function RehearsalPlotPanel({ city, placement, rehearsal, onCancel, onAct
 
       <div className="rehearsal-step">
         <h3>2 · District</h3>
-        <p className="small" data-testid="rehearsal-district" data-district={d.id}>
-          <b>{d.title}</b>, chosen by you. <b>Rehearsal only:</b> choosing a district is test behavior. A live city assigns your default district when you enter it, and you choose only the exact plot.
+        <p className="small" data-testid="rehearsal-district" data-district={d.id} data-kind={ticket?.kind ?? ''} data-ordinal={ticket?.slot?.ordinal ?? ''}>
+          <b>{d.title}</b>, assigned to you by the server{ticket ? ` (${assignmentBasis(ticket)})` : ''}. You do not choose your district; you choose the exact plot in it. Held for you until{' '}
+          {ticket ? new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}; nothing is permanent until you activate.
         </p>
+        <p className="muted small">Local rehearsal: which NFTs you may place, and any district rule for them, come from a local test file on this server, not from Proofy.</p>
       </div>
 
       <div className="rehearsal-step">
@@ -143,9 +260,14 @@ export function RehearsalPlotPanel({ city, placement, rehearsal, onCancel, onAct
       )}
 
       {stage === 'choose' ? (
-        <button type="button" className="btn primary" disabled={!nft || !sel} onClick={() => setStage('review')} data-testid="rehearsal-review">
-          Review placement
-        </button>
+        <>
+          <button type="button" className="btn primary" disabled={!ready || !sel} onClick={() => setStage('review')} data-testid="rehearsal-review">
+            Review placement
+          </button>
+          <button type="button" className="chip rehearsal-leave" disabled={leaving} onClick={() => void leave()} data-testid="rehearsal-leave">
+            Leave · release my district
+          </button>
+        </>
       ) : (
         nft &&
         sel && (

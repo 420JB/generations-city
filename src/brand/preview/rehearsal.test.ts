@@ -1,7 +1,11 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { StoredPropertyCard, type StoredProperty } from './rehearsal'
+import { CitySceneContext } from '../../ui/city/scene'
+import { loadBrandCity } from '../load'
+import { HARBORLIGHT } from '../samples'
+import { DistrictPanel } from './panels'
+import { AssignedDistrict, StoredPropertyCard, type AssignedTicket, type StoredProperty } from './rehearsal'
 
 const stored = (activator: StoredProperty['activator']): StoredProperty => ({
   propertyId: '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1c',
@@ -32,5 +36,45 @@ describe('a stored property\'s original activator, as the card says it', () => {
     expect(html).toContain('Its original activator is unknown: it was placed before original activators were recorded, and none was recorded for it.')
     expect(html).toContain('data-activator="unrecorded"')
     expect(html).not.toMatch(/recorded permanently|activated by you/)
+  })
+})
+
+describe('the district a rehearsal player is assigned, as the page says it', () => {
+  const loaded = loadBrandCity(HARBORLIGHT.config, HARBORLIGHT.city)
+  if (!loaded.ok) throw new Error('sample city does not load')
+  const city = loaded.city
+  const player = { id: 'play-player', kind: 'player' as const, label: 'Ada', answers: {} }
+  const panel = (districtId: string, props: { rehearsal?: boolean; assigned?: string | null; onEnter?: () => void }) =>
+    renderToStaticMarkup(
+      createElement(CitySceneContext.Provider, { value: city.scene }, createElement(DistrictPanel, { city, districtId, member: player, onDistrict: () => {}, onWarp: () => {}, onChoosePlot: () => {}, onClose: () => {}, ...props })),
+    )
+  const ticket: AssignedTicket = { id: '019a0b1c-2d3e-7f40-8a5b-6c7d8e9f0a1b', districtKey: 'tidewater', kind: 'fallback', slot: { ordinal: 1, generation: 2, epoch: 1 }, rule: null, expiresAt: '2026-10-20T10:15:00.000Z' }
+
+  it('offers no district choice in a rehearsal: only the assigned district, or a way to be assigned one', () => {
+    expect(panel('tidewater', { rehearsal: true, assigned: 'tidewater' })).toContain('Choose your plot · local rehearsal')
+    // Another district, gated or not, leads to the assigned one.
+    for (const other of ['lantern-quay', 'compass-row']) expect(panel(other, { rehearsal: true, assigned: 'tidewater' })).toContain('Go to your district: Tidewater')
+    expect(panel('lantern-quay', { rehearsal: true, assigned: null, onEnter: () => {} })).toContain('Get your district · local rehearsal')
+    expect(panel('lantern-quay', { rehearsal: true, assigned: null })).toMatch(/disabled=""[^>]*data-testid="choose-plot"[^>]*>No test NFT to place/)
+    for (const html of [panel('tidewater', { rehearsal: true, assigned: 'tidewater' }), panel('saltmarsh', { rehearsal: true, assigned: 'tidewater' })]) expect(html).not.toMatch(/Choose a plot · local rehearsal|chosen by you/)
+  })
+
+  it('leaves the preview page as it was: a simulated viewer still previews any district', () => {
+    const html = panel('lantern-quay', {})
+    expect(html).toContain('Choose a plot · preview')
+    expect(html).not.toContain('data-assigned')
+  })
+
+  it('names the assignment and its basis: the rotation slot or the rule, and until when', () => {
+    const fallback = renderToStaticMarkup(createElement(AssignedDistrict, { ticket, name: 'Tidewater District' }))
+    expect(fallback).toContain('data-district="tidewater"')
+    expect(fallback).toContain('data-ordinal="1"')
+    expect(fallback).toContain('data-generation="2"')
+    expect(fallback).toContain('Tidewater District</b> · slot 2 · until')
+    expect(fallback).toContain("the city&#x27;s rotation, slot 2")
+    const rule = renderToStaticMarkup(createElement(AssignedDistrict, { ticket: { ...ticket, kind: 'rule', slot: null, rule: { ref: 'captains-to-tidewater', asset: 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1' } }, name: 'Tidewater District' }))
+    expect(rule).toContain('data-kind="rule"')
+    expect(rule).toContain('· by rule ·')
+    expect(rule).toContain('explicit district rule captains-to-tidewater for this NFT')
   })
 })

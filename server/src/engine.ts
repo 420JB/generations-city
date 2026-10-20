@@ -73,11 +73,17 @@ export {
 export {
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
+  PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
+  PLAY_REHEARSAL_ENTRY_ENDPOINT,
+  PLAY_REHEARSAL_RELEASE_ENDPOINT,
+  PLAY_REHEARSAL_TICKET_ENDPOINT,
   REHEARSAL_MARK,
   type RehearsalActivationResponse,
   type RehearsalAssetsResponse,
   type RehearsalErrorCode,
   type RehearsalRouteErrorCode,
+  type RehearsalTicket,
+  type RehearsalTicketResponse,
 } from '../../src/protocol/playRehearsal'
 // Persistent brand cities: how a world's configuration may change, and the state its city is stored with.
 export {
@@ -113,4 +119,6 @@ export {
 } from '../../src/world/gameplay'
 export { assetKey, nftAsset, parseAssetKey, type NftAsset } from '../../src/world/asset'
 export { worldProperty, type WorldProperty } from '../../src/world/property'
+// Default district assignment, pure: the rotation's district order and explicit-rule resolution (persisted in server/src/world/rotation.ts).
+export { defaultRotationDistricts, resolveDistrictRules, rotationDistrict, type AssignableDistrict, type DistrictRuleMatch, type DistrictRuleResolution } from '../../src/world/assignment'
 export type { World } from '../../src/world/definition'

@@ -80,9 +80,11 @@ const candidatesIn = (city: LoadedBrandCity, districtId: string): PreviewCandida
  *
  * The Play page may also pass `stored` (a building's record as the city stores it, for its panel)
  * and, in a local rehearsal only, `rehearsal`: the player may then place a test NFT on a plot they
- * choose. The city it is given may change (the page reads it again after a placement): plot
- * candidates always follow the city on the page, and a selected plot that is no longer free is
- * dropped.
+ * choose IN THE DISTRICT THE SERVER ASSIGNED THEM (their district ticket): placement always follows
+ * the ticket's district, moves when the server reassigns it (an explicit rule for the selected NFT),
+ * and closes when the ticket ends. The city it is given may change (the page reads it again after a
+ * placement): plot candidates always follow the city on the page, and a selected plot that is no
+ * longer free is dropped.
  */
 export function BrandCityPreview({
   city,
@@ -105,7 +107,12 @@ export function BrandCityPreview({
   // keeps no selected plot (and no placement at all in a district that is gone): the player chooses again.
   const geometry = city.world.layout.geometryFingerprint
   const [placing, setPlacing] = useState<{ districtId: string; selected: PreviewCandidate | null; geometry: string } | null>(null)
-  const placingNow = placing && (placing.geometry === geometry || city.world.districts.some((d) => d.key === placing.districtId)) ? placing : null
+  /** The player places for real (on the local server) only as themselves, never as a simulated viewer. */
+  const rehearsing = rehearsal && member?.kind === 'player' ? rehearsal : null
+  /** In a rehearsal, the district the server assigned the player (their ticket): the only one they place in, while they hold it. */
+  const assigned = rehearsing?.ticket?.districtKey ?? null
+  const placingAt = placing && rehearsing ? (assigned ? { ...placing, districtId: assigned, selected: placing.districtId === assigned ? placing.selected : null } : null) : placing
+  const placingNow = placingAt && (placingAt.geometry === geometry || city.world.districts.some((d) => d.key === placingAt.districtId)) ? placingAt : null
   const placingIn = placingNow?.districtId ?? null
   const candidates = useMemo(() => (placingIn ? candidatesIn(city, placingIn) : []), [city, placingIn])
   const placement: Placement | null = placingNow && {
@@ -113,8 +120,6 @@ export function BrandCityPreview({
     candidates,
     selected: placingNow.geometry === geometry && placingNow.selected && candidates.some((c) => c.plotId === placingNow.selected!.plotId) ? placingNow.selected : null,
   }
-  /** The player places for real (on the local server) only as themselves, never as a simulated viewer. */
-  const rehearsing = rehearsal && member?.kind === 'player' ? rehearsal : null
   const [focus, setFocus] = useState<{ buildingId: string; seq: number } | null>(null)
   const [frame, setFrame] = useState<{ seq: number; points: WorldPoint[] } | null>(null)
   const [homeSeq, setHomeSeq] = useState(0)
@@ -140,8 +145,9 @@ export function BrandCityPreview({
   /** Re-checked at every action, not only by the buttons' state (the server will check again for real). */
   const allowedIn = (districtId: string) => mayAct(previewClaimAccess(config.districts.find((x) => x.key === districtId)?.gate ?? null, member))
 
-  const startPlacement = (districtId: string) => {
-    if (!allowedIn(districtId)) return
+  /** Open the plot choice in a district and frame its free plots. */
+  const placeAt = (districtId: string) => {
+    if (!scene.districts.some((x) => x.id === districtId) || !allowedIn(districtId)) return
     const d = sceneDistrict(scene, districtId)
     const offered = candidatesIn(city, districtId)
     setPlacing({ districtId, selected: null, geometry })
@@ -149,18 +155,34 @@ export function BrandCityPreview({
     setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: offered.map((c) => plotWorldIn(d, c.ward, c.plot)) }))
   }
 
+  /** A rehearsal places only in the assigned district, whichever district the player was looking at. */
+  const startPlacement = (requested: string) => {
+    const districtId = rehearsing ? assigned : requested
+    if (districtId) placeAt(districtId)
+  }
+
   const capital = state.capital.holder ? sceneDistrict(scene, state.capital.holder) : null
   const crown = state.crown.holder ? state.buildings[state.crown.holder] : null
   const drawer =
     placement !== null && rehearsing ? (
       <RehearsalPlotPanel
-        key={placement.districtId}
+        // One panel for the whole claim: a district the server reassigns (a rule for the selected NFT) keeps the selection.
+        key="rehearsal-placement"
         city={city}
         placement={placement}
         rehearsal={rehearsing}
         onCancel={() => {
           setPlacing(null)
           setPanel({ kind: 'district', id: placement.districtId })
+        }}
+        onAssigned={(ticket) => {
+          // The server assigned another district for the selected NFT (an explicit rule): the camera goes there.
+          if (ticket && ticket.districtKey !== placing?.districtId) placeAt(ticket.districtKey)
+        }}
+        onLeave={() => {
+          setPlacing(null)
+          setPanel({ kind: 'district', id: placement.districtId })
+          say('You left the claim flow: your district was released for the next player. Nothing was placed.')
         }}
         onActivated={(result, nft) => {
           setPlacing(null)
@@ -180,7 +202,27 @@ export function BrandCityPreview({
         onClaim={() => allowedIn(placement.districtId) && say('Preview only: nothing was claimed. A live claim will be decided by the server (NFT ownership and, where set, the Proofy rule).')}
       />
     ) : panel?.kind === 'district' ? (
-      <DistrictPanel key={panel.id} city={city} districtId={panel.id} member={member} rehearsal={!!rehearsing} onDistrict={openDistrict} onWarp={warp} onChoosePlot={() => startPlacement(panel.id)} onClose={() => setPanel(null)} />
+      <DistrictPanel
+        key={panel.id}
+        city={city}
+        districtId={panel.id}
+        member={member}
+        rehearsal={!!rehearsing}
+        assigned={rehearsing ? assigned : undefined}
+        onEnter={
+          rehearsing && !assigned && rehearsing.nfts.length > 0
+            ? () =>
+                void rehearsing.enter().then((r) => {
+                  if (!r.ok) say(r.message)
+                  else if (r.ticket) say(`Your district: ${sceneDistrict(scene, r.ticket.districtKey).title}, assigned by the server. Choose your plot in it.`)
+                })
+            : undefined
+        }
+        onDistrict={openDistrict}
+        onWarp={warp}
+        onChoosePlot={() => startPlacement(panel.id)}
+        onClose={() => setPanel(null)}
+      />
     ) : panel?.kind === 'building' && state.buildings[panel.id] ? (
       <BuildingPreviewPanel
         key={panel.id}

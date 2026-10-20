@@ -101,6 +101,8 @@ export function DistrictPanel({
   districtId,
   member,
   rehearsal = false,
+  assigned,
+  onEnter,
   onDistrict,
   onWarp,
   onChoosePlot,
@@ -109,8 +111,12 @@ export function DistrictPanel({
   city: LoadedBrandCity
   districtId: string
   member: PreviewMember | null
-  /** The player may place a test NFT here for real, on the local server (a local rehearsal). */
+  /** The player may place a test NFT for real, on the local server (a local rehearsal), in the district the server assigned. */
   rehearsal?: boolean
+  /** In a rehearsal: the district the server assigned the player (their ticket), or null while they hold none. */
+  assigned?: string | null
+  /** In a rehearsal without a ticket: enter the claim flow (the server assigns a district). Absent: nothing to claim. */
+  onEnter?: () => void
   onDistrict: (id: string) => void
   onWarp: (buildingId: string) => void
   onChoosePlot: () => void
@@ -122,7 +128,22 @@ export function DistrictPanel({
   const buildings = useMemo(() => Object.values(state.buildings).filter((b) => b.districtId === districtId).sort((a, b) => totalBuilt(b) - totalBuilt(a)), [state.buildings, districtId])
   const plots = useMemo(() => districtPlots(city, districtId), [city, districtId])
   const held = scene.monuments.filter((m) => state.monuments[m.id].holder === districtId)
-  const allowed = mayAct(access)
+  // In a rehearsal the player never chooses a district: the button leads to the one the server assigned them.
+  const mine = rehearsal && assigned ? sceneDistrict(scene, assigned) : null
+  const allowed = rehearsal ? (assigned ? true : !!onEnter) : mayAct(access)
+  const action = !rehearsal
+    ? allowed
+      ? 'Choose a plot · preview'
+      : access.kind === 'visitor'
+        ? 'Sign in to claim'
+        : 'Claiming is restricted'
+    : mine
+      ? mine.id === districtId
+        ? 'Choose your plot · local rehearsal'
+        : `Go to your district: ${mine.title}`
+      : onEnter
+        ? 'Get your district · local rehearsal'
+        : 'No test NFT to place'
   return (
     <section className="panel district-panel" aria-label={`${d.title}`} data-testid="district-panel" data-district={districtId} data-access={access.kind}>
       <PanelHeader kicker="DISTRICT" title={d.title} onClose={onClose} />
@@ -160,12 +181,12 @@ export function DistrictPanel({
         </div>
         <AccessNote access={access} district={d} />
         <RuleRequirement access={access} />
-        <button type="button" className="btn primary" onClick={onChoosePlot} disabled={!allowed} data-testid="choose-plot">
-          {allowed ? (rehearsal ? 'Choose a plot · local rehearsal' : 'Choose a plot · preview') : access.kind === 'visitor' ? 'Sign in to claim' : 'Claiming is restricted'}
+        <button type="button" className="btn primary" onClick={rehearsal && !assigned ? onEnter : onChoosePlot} disabled={!allowed} data-testid="choose-plot" data-assigned={rehearsal ? (assigned ?? '') : undefined}>
+          {action}
         </button>
         <p className="muted small">
           {rehearsal
-            ? 'You may place one of your local test NFTs on a plot here, permanently, in this local city. The server checks your session, the NFT and the plot again.'
+            ? 'The server assigns your district when you enter (the city’s round-robin rotation, or a district rule for your NFT); you choose the exact plot in it. Your test NFT is placed permanently in this local city only, after the server checks your session, district ticket, NFT and plot again.'
             : 'Exploring is open to everyone. On a live city the server re-checks every claim and build with Proofy; nothing shown here can grant access.'}
         </p>
       </div>

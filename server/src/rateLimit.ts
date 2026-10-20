@@ -136,4 +136,6 @@ export const LIMITS = {
   playCity: { client: [perMinute(60)], user: [perMinute(30)] },
   /** Local property rehearsal (local deployments only): listing test NFTs and placing them. */
   playRehearsal: { client: [perMinute(30)], user: [perMinute(12)] },
+  /** Its district tickets (local deployments only): entering, selecting an NFT, leaving, reading. Short transactions, no Play read beyond requireActor's. */
+  playRehearsalTicket: { client: [perMinute(60)], user: [perMinute(30)] },
 } as const satisfies Record<string, { client: readonly RateRule[]; user?: readonly RateRule[] }>

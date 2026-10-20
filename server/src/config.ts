@@ -58,7 +58,16 @@ export interface ServerConfig {
    * It lists TEST NFTs per Discord player: rehearsal data, never verified holdings.
    */
   localRehearsalFile: string | null
+  /**
+   * How long a district ticket's lease lasts in the local rehearsal, in seconds (null without the rehearsal). Set by
+   * LOCAL_DISTRICT_TICKET_TTL_SECONDS (5 to 3600, default 900), only allowed with LOCAL_PROPERTY_REHEARSAL_FILE. Bounded:
+   * the database refuses a lease over an hour. No renewal policy is approved, so a lease is never extended.
+   */
+  localTicketTtlSeconds: number | null
 }
+
+/** The district ticket lease of the local rehearsal when LOCAL_DISTRICT_TICKET_TTL_SECONDS is not set. */
+export const DEFAULT_TICKET_TTL_SECONDS = 900
 
 export interface PlayConnection {
   /** Base URL of proofy-play-api. */
@@ -302,6 +311,18 @@ function readLocalRehearsal(env: Record<string, string | undefined>, mode: AppMo
   return file
 }
 
+/** The district ticket lease. Only with the local rehearsal: tickets exist nowhere else. */
+function readTicketTtl(env: Record<string, string | undefined>, rehearsal: string | null): number | null {
+  const raw = clean(env.LOCAL_DISTRICT_TICKET_TTL_SECONDS)
+  if (rehearsal === null) {
+    if (raw !== undefined) throw new ConfigError('LOCAL_DISTRICT_TICKET_TTL_SECONDS is only allowed with LOCAL_PROPERTY_REHEARSAL_FILE: district tickets exist only in the local rehearsal.')
+    return null
+  }
+  if (raw === undefined) return DEFAULT_TICKET_TTL_SECONDS
+  if (!/^[1-9][0-9]{0,3}$/.test(raw) || Number(raw) < 5 || Number(raw) > 3600) throw new ConfigError('LOCAL_DISTRICT_TICKET_TTL_SECONDS must be a whole number of seconds from 5 to 3600.')
+  return Number(raw)
+}
+
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
   const mode = readMode(env)
   const port = readPort(env)
@@ -309,6 +330,7 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
   const databaseUrl = readDatabaseUrl(env, mode)
   const play = readPlay(env, mode)
   if (play && !databaseUrl) throw new ConfigError('PLAY_API_URL needs DATABASE_URL: a Play launch opens the installation\'s persistent city.')
+  const localRehearsalFile = readLocalRehearsal(env, mode, play)
   return {
     mode,
     port,
@@ -324,6 +346,7 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     hstsMaxAge: readHstsMaxAge(env, mode),
     activationEnabled: readActivationEnabled(env),
     play,
-    localRehearsalFile: readLocalRehearsal(env, mode, play),
+    localRehearsalFile,
+    localTicketTtlSeconds: readTicketTtl(env, localRehearsalFile),
   }
 }

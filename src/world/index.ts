@@ -13,6 +13,7 @@
  *   rareCity    the legacy Rare Friends city as the first compatibility fixture
  *   cityState   the stored state of a world's city (version 1: founded empty; version 2: with properties)
  *   gameplay    pure property activation on an exact plot: discover, validate, propose, replay
+ *   assignment  the default district rotation's order and explicit-rule resolution (MCD 46B), pure
  *
  * What does not, on purpose:
  *   - No live route writes through this yet. The server's world property store (migration
@@ -20,11 +21,14 @@
  *     in `src/game` remains the authority for the Rare Friends city.
  *   - A populated world (`WorldCityState` version 2) records properties and wards only: no
  *     progress, ownership, economy or time, which wait on their own product decisions.
- *   - No allocator: nothing here assigns an NFT to a district or chooses a plot for anyone.
- *   - No district count, layout topology, or district/collection assignment rule.
+ *   - No allocator state: `assignment` says what a rotation is; issuing, reusing and consuming
+ *     district tickets is the server's (migration 0010). Nothing here chooses a plot for anyone.
+ *   - No district count or layout topology, and no explicit district/collection rule source:
+ *     `assignment` resolves rules a trusted caller supplies, and refuses conflicting ones.
  *   - No persistence: geometry fingerprints and property ids are computed, never stored, here.
  */
 export * from './asset'
+export * from './assignment'
 export * from './cityState'
 export * from './definition'
 export * from './gameplay'

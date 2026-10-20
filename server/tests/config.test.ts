@@ -6,12 +6,12 @@ const ORIGIN = 'https://rarecity.example'
 
 describe('server config', () => {
   it('defaults to local mode with no database, bound to loopback', () => {
-    expect(loadConfig({})).toEqual({ mode: 'local', port: 8787, host: '127.0.0.1', databaseUrl: null, commit: null, publicOrigin: 'http://127.0.0.1:8787', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'none', rateLimits: true, frameAncestors: [], hstsMaxAge: 0, activationEnabled: false, play: null, localRehearsalFile: null })
+    expect(loadConfig({})).toEqual({ mode: 'local', port: 8787, host: '127.0.0.1', databaseUrl: null, commit: null, publicOrigin: 'http://127.0.0.1:8787', rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'none', rateLimits: true, frameAncestors: [], hstsMaxAge: 0, activationEnabled: false, play: null, localRehearsalFile: null, localTicketTtlSeconds: null })
   })
 
   it('reads staging and production with their database and platform values', () => {
     const cfg = loadConfig({ APP_MODE: 'staging', NODE_ENV: 'production', PORT: '3000', DATABASE_URL: DB, RAILWAY_GIT_COMMIT_SHA: 'abc123', PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' })
-    expect(cfg).toEqual({ mode: 'staging', port: 3000, host: '0.0.0.0', databaseUrl: DB, commit: 'abc123', publicOrigin: ORIGIN, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'railway', rateLimits: true, frameAncestors: [], hstsMaxAge: 31_536_000, activationEnabled: false, play: null, localRehearsalFile: null })
+    expect(cfg).toEqual({ mode: 'staging', port: 3000, host: '0.0.0.0', databaseUrl: DB, commit: 'abc123', publicOrigin: ORIGIN, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com', ownership: 'robinhood', trustedProxy: 'railway', rateLimits: true, frameAncestors: [], hstsMaxAge: 31_536_000, activationEnabled: false, play: null, localRehearsalFile: null, localTicketTtlSeconds: null })
     expect(loadConfig({ APP_MODE: 'production', DATABASE_URL: DB.replace('postgres:', 'postgresql:'), PUBLIC_ORIGIN: ORIGIN, TRUSTED_PROXY: 'railway' }).mode).toBe('production')
     expect(loadConfig({ APP_MODE: 'local', DATABASE_URL: DB, HOST: '::' })).toMatchObject({ mode: 'local', databaseUrl: DB, host: '::' })
   })

@@ -143,19 +143,21 @@ and its `world.property.activated` event. Every city answer carries the stored p
 read-only projection of each district (open wards, plot candidates), and `city:verify` replays
 every activation through the engine.
 
-**Local property rehearsal (P1-C2-B2B): LOCAL ONLY, NOT a production authorization.** The whole
-player flow, on the standard city page: a launched player picks one of their TEST NFTs, a district
-and a highlighted plot, reviews what is permanent, and activates a Tier 0 property; the page reads
-the city again, warps to it and shows the stored record. `serve.ts` starts the server this way, and
-`rehearsal.spec.ts` drives it.
+**Local property rehearsal (P1-C2-B2B, district tickets P1-C2-D1): LOCAL ONLY, NOT a production
+authorization.** The whole player flow, on the standard city page: a launched player is ASSIGNED a
+district by the server on entry (a district ticket, below), picks one of their TEST NFTs and a
+highlighted plot in that district, reviews what is permanent, and activates a Tier 0 property; the
+page reads the city again, warps to it and shows the stored record. `serve.ts` starts the server this
+way, and `rehearsal.spec.ts`, `tickets.spec.ts` and `world-policy.spec.ts` drive it.
 
 - It exists only with `APP_MODE=local` AND `LOCAL_PROPERTY_REHEARSAL_FILE` (a JSON file
   `{ "kind": "rare-city/local-property-rehearsal-v1", "players": { "<discord user id>": ["<CAIP-19
-  asset id>", …] } }`). Config refuses the file in any other mode; the app mounts no route without
-  it (`GET /v1/play/rehearsal/assets` and `POST /v1/play/rehearsal/activations` are a plain `404` /
-  `405`); the rehearsal module refuses to be built outside local mode; the property store refuses any
-  mode or database but local; and the database itself refuses a world property in any database not
-  stamped local (`world_properties_guard`), so no staging or production world city can advance.
+  asset id>", …] } }`, or version 2, below). Config refuses the file in any other mode; the app
+  mounts no route without it (`GET /v1/play/rehearsal/assets`, `GET …/ticket` and the POST routes
+  `…/entry`, `…/assignment`, `…/release`, `…/activations` are a plain `404` / `405`); the rehearsal
+  module refuses to be built outside local mode; the ticket and property stores refuse any mode or
+  database but local; and the database itself refuses a ticket, slot, rotation or world property in
+  any database not stamped local (0007, 0010), so no staging or production world city can advance.
 - The file is test data, never ownership: no contract can say which NFTs a Proofy player holds. The
   page labels it everywhere (LOCAL REHEARSAL · TEST NFT). The browser names only one NFT the server
   lists for the session's player, and the server checks that again.
@@ -167,10 +169,10 @@ the city again, warps to it and shows the stored record. `serve.ts` starts the s
 - The same player repeating an activation gets the same property back (`fresh: false`); anyone else
   is refused with no session or player in the answer. A session ended during an activation is a typed
   refusal and nothing is written.
-- Choosing the district by hand is REHEARSAL-ONLY test behavior, labelled as such on the page. On a
-  live city a player's default district is assigned on authenticated, eligible city entry
-  (citywide round-robin tickets, abandoned slots reused; matching collection/trait rules override
-  it), and the player chooses only the exact plot. Not implemented yet.
+- The player never chooses a district (owner-locked, MCD 46B). The server assigns it on entry from
+  the city's citywide round-robin rotation, or from an explicit district rule for the NFT they
+  select, and the player chooses only the exact plot inside it. The manual district choice of
+  P1-C2-B2B is gone.
 - The owner's locked world policies apply to it (next section): the first property freezes the
   district geometry, and every property records its original activator.
 
@@ -236,6 +238,80 @@ audit:
   Older instances must still be stopped before migrating (`server/README.md`, Migrations).
 - **Unknown stays unknown.** A property written before 0008 has no recorded activator; the page says
   so (`viewer.unrecordedActivations`) instead of implying a private record exists.
+
+**District tickets (P1-C2-D1, migration 0010): the locked default assignment, LOCAL ONLY.** MCD 46A
+and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local rehearsal only:
+
+- **Entry.** A launch from Proofy Play is the player's city entry: the page asks the server for a
+  district (`POST /v1/play/rehearsal/entry`, the exact session, world and player the page drew;
+  `requireActor`, Play active now). The server issues one only if the rehearsal file lists an
+  unplaced NFT of this city for the session's player (`403 not_eligible` otherwise: no ticket). An
+  anonymous view, a generic sign-in, a reload or a new tab never issue one: a reload only reads the
+  ticket held (`GET …/ticket`). A player who holds an active ticket gets that same ticket back from
+  every entry, relaunch, tab or session (one active ticket per player per world, a database unique
+  index), so nobody skips a district or hoards slots by logging in again. After a property is
+  placed, "Get your district" is the next claim: a new, independently checked ticket.
+- **Rotation.** One per world, shared by every collection: the governing configuration's districts in
+  configuration order, leaving out districts with a Proofy rule (nothing can check one, so it cannot
+  be anyone's default; the exact default topology stays OPEN in the MCD, this is an engineering
+  choice). Slot ordinal `n` names `districts[(n - epoch start) mod length]`. A, B and C entering in
+  that order hold districts 1, 2 and 3 at the same time, without waiting, and may place in any order.
+- **Gap reuse.** A ticket ends exactly once: released by its holder (`POST …/release`, the panel's
+  "Leave · release my district"), expired server-side by the database's clock (no browser unload is
+  needed or trusted), superseded by a rotation change, or committed by the activation that consumed
+  it. A released, expired or superseded fallback slot returns to the gap pool in the same
+  transaction, and the next entrant receives the LOWEST free ordinal before any new one, at the slot's
+  next GENERATION, as a new ticket id. A page still naming the old ticket cannot commit
+  (`ticket_not_live` / `ticket_expired`). The high-water mark (ordinals ever issued) and the committed
+  count are separate numbers.
+- **Lease.** `LOCAL_DISTRICT_TICKET_TTL_SECONDS` (5 to 3600, default 900; only with the rehearsal
+  file); the database refuses a lease over an hour. A lease is never renewed (no renewal policy is
+  approved): switching NFTs keeps the lease the player had.
+- **Explicit rules (local fixture only).** Rehearsal file version 2 (`rare-city/local-property-
+  rehearsal-v2`) may list an NFT as `{ "asset": "<id>", "traits": { "<name>": "<value>" } }` and
+  declares `"districtRules": [{ "id", "collection": { "chain", "contract" }, "traits"?, "district" }]`.
+  A rule applies to an NFT of its collection with every listed trait, in a city that has its
+  district. When the player selects an NFT (`POST …/assignment`) and a rule applies, the server
+  releases their unused fallback slot to the gap pool and issues a rule ticket for that NFT and the
+  rule's district, before any plot is chosen; the page moves the placement there. A fallback ticket
+  cannot place an NFT a rule assigns (`district_rule_applies`); a rule ticket places only its NFT. A
+  rule naming a district with a Proofy rule is refused (`district_rule_unverified`). These are TEST
+  DATA standing in for Proofy Core rule results, never reported as verified.
+- **Commit.** Only inside the property activation's transaction, under the city lock: the ticket is
+  locked after the rotation and must be the activator's live ticket of the rotation's current epoch,
+  issued on the geometry that governs now; the plot must be in its district. Geometry check, ticket
+  check, freeze (first property), property, event, sequence and the ticket's consumption commit
+  together or not at all; a refused or failed activation consumes nothing and freezes nothing; a
+  repeat of a completed activation returns the property and consumes nothing more. In a world with a
+  rotation the database refuses a property that consumed no ticket.
+- **Geometry.** Every ticket records the configuration version, hash, layout geometry and district
+  geometry it was issued on, and its rotation epoch. An adoption that changes the default districts
+  or their geometry (possible only before the first property, or by a change of which districts carry
+  a Proofy rule) begins a new epoch IN THE ADOPTION'S TRANSACTION: every active ticket is superseded,
+  every unconsumed slot of the old epoch retired, and each superseded fallback ticket with time left is
+  reissued to its holder, in their old order, for no longer than it had. A rule ticket is superseded
+  and not reissued (the player selects the NFT again). A presentation-only version keeps tickets and
+  epoch. The database refuses an adoption that leaves the rotation behind. The stale-map protection
+  (`config_superseded`) and Play's active-configuration check for a first property are unchanged.
+- **Locks and transactions.** Always city row (FOR SHARE to issue, FOR UPDATE to adopt or activate),
+  play session (FOR SHARE), rotation, tickets, slots. Every transaction is short; none is open while a
+  player browses or chooses a plot. Nothing provisional advances a sequence or writes an event.
+- **`city:verify`** checks every rotation, slot and ticket (`server/src/world/verifyTickets.ts`).
+
+**Explicit district rule precedence: UNRESOLVED (production), separate from the default algorithm.**
+The default round-robin algorithm above is the owner's locked rule. What is NOT decided (MCD 46A "Not
+locked"; 46B "Still open"), and therefore not implemented as a production rule source:
+
+- the precedence of overlapping collection, trait and combined rules. Here, rules that apply to one
+  NFT and name different districts are REFUSED (`district_rule_ambiguous`), never ordered by a
+  guess; rules that name the same district agree and all their ids are recorded;
+- whether one NFT may qualify for several groupings, fallback for unmatched assets beyond the
+  default rotation, and whether explicit-rule claims should rebalance the fallback rotation (they do
+  not consume it here);
+- where production rule results come from: Proofy Core's verified NFT, trait and role evaluation
+  (no contract yet), never a browser and never Play's configuration (schema v1 has no rule field, and
+  none was added);
+- lease length, renewal and multi-NFT claim limits beyond one active ticket per player.
 
 **Collection claim policy: the Play configuration change it needs.** Today Rare City's Play
 configuration schema version 1 (`src/brand/core/playConfig.ts`) describes a collection as exactly

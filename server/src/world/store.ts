@@ -28,6 +28,7 @@ import {
 import type { LogFields, Logger } from '../log'
 import { canonicalJson } from '../play/canonical'
 import { uuidv7 } from './ids'
+import { rotationBasis, syncAssignmentRotation } from './rotation'
 
 /**
  * PERSISTENT BRAND CITIES: one world per Proofy Play installation, in the tables of migration
@@ -449,6 +450,11 @@ export function createWorldStore(db: Database, { mode, log, onFoundingStep }: Wo
         await client.query('INSERT INTO world_config_adoptions (world_id, adoption_seq, version) VALUES ($1, $2, $3)', [worldId, latest.adoption_seq + 1, pinned.version])
         notes.push(['world configuration adopted', { world: worldId, version: pinned.version, adoption: latest.adoption_seq + 1 }])
         governing = pinned.version
+        // The world's district ticket rotation, if it has one, follows the adoption in this transaction (0010): a new
+        // basis, and a new epoch (active tickets superseded and reissued in order) if the default districts moved.
+        const scope: WorldScope = { worldId, environment: launch.environment, gameKey: launch.gameKey, installationId: launch.installationId, discordGuildId: launch.discordGuildId }
+        const rotated = await syncAssignmentRotation(client, scope, judged.world, rotationBasis(pinned.version, pinned.configHash, judged.world, judged.config))
+        if (rotated) notes.push(['district ticket rotation follows the adoption', { world: worldId, version: pinned.version, epoch: rotated.epoch }])
       }
     }
 
@@ -657,6 +663,20 @@ export async function lockWorldForChange(client: PoolClient, scope: WorldScope):
   const { instance, sequence, state, freeze } = await readFounded(client, bound, true)
   const { row, judged, adoption } = await governingOf(client, scope.worldId, freeze)
   // The state must be one the world's own geometry can hold, as every read requires.
+  districtsOf(scope.worldId, judged.world, state)
+  return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingConfigHash: row.config_hash, governingAdoption: adoption, freeze }
+}
+
+/**
+ * For district tickets (`tickets.ts`), on THEIR transaction: the world `scope` names, read exactly as `lockWorldForChange`
+ * reads it, with its city row locked FOR SHARE only. Issuing a ticket changes no city: it needs the city to stay as read
+ * (no adoption or activation, which lock it FOR UPDATE, in between) while letting other entrants issue at the same time.
+ */
+export async function lockWorldForAssignment(client: PoolClient, scope: WorldScope): Promise<LockedWorld> {
+  const bound = await boundTo(client, scope)
+  await client.query('SELECT 1 FROM city WHERE id = $1 FOR SHARE', [bound.city_id])
+  const { instance, sequence, state, freeze } = await readFounded(client, bound, false)
+  const { row, judged, adoption } = await governingOf(client, scope.worldId, freeze)
   districtsOf(scope.worldId, judged.world, state)
   return { cityId: bound.city_id, instance, sequence, state, world: judged.world, config: judged.config, governingVersion: row.version, governingConfigHash: row.config_hash, governingAdoption: adoption, freeze }
 }

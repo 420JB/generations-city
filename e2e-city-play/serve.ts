@@ -8,7 +8,7 @@
  *   2. as Rare City: register its configuration schema (`npm run play:register-schema:dev`);
  *   3. migrate the DISPOSABLE database named by CITY_PLAY_DATABASE_URL (a `*_test` database,
  *      stamped local), where every launch founds or opens its installation's persistent city;
- *   4. write the LOCAL PROPERTY REHEARSAL file (`rehearsal.ts`: test NFTs for two made-up players);
+ *   4. write the LOCAL PROPERTY REHEARSAL file (`rehearsal.ts`: test NFTs, traits and district rules for four made-up players);
  *   5. start the server (`server/src/main.ts`) with PLAY_API_URL, that credential, that database and
  *      LOCAL_PROPERTY_REHEARSAL_FILE (APP_MODE=local: the server refuses the file in any other mode).
  *

@@ -31,6 +31,7 @@ import {
 } from '../engine'
 import { canonicalJson } from '../play/canonical'
 import { parityProblem, worldCityId, type PropertyRow } from './store'
+import { verifyDistrictTickets, type TicketVerifyReport } from './verifyTickets'
 
 /**
  * `city:verify` for persistent brand cities: is every world in this database one an
@@ -69,6 +70,7 @@ import { parityProblem, worldCityId, type PropertyRow } from './store'
  *               are adopted, never the one already governing; each keeps every collection the
  *               adoptions before it established (collections are additive); and each from the one
  *               that governed the first property on draws the frozen geometry.
+ *   tickets     (migration 0010) the district rotation, its slots and tickets, as `verifyTickets.ts` says.
  * Across worlds: no installation, Discord server (per game) or city belongs to two worlds.
  */
 export interface WorldVerifyReport {
@@ -85,6 +87,8 @@ export interface WorldVerifyReport {
   propertiesWithoutActivator: number
   /** The sequence at which the world's first property froze its district geometry (0008), or null. */
   geometryFrozenAt: number | null
+  /** Its district ticket rotation (0010), or null if nobody has entered it through a build that issues tickets. */
+  districtTickets: TicketVerifyReport | null
 }
 
 export type AddViolation = (rule: string, detail: string) => void
@@ -227,6 +231,7 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       properties: 0,
       propertiesWithoutActivator: 0,
       geometryFrozenAt: null,
+      districtTickets: null,
     }
     reports.push(report)
 
@@ -448,6 +453,10 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
   }
 
   for (const p of properties) if (!worlds.some((w) => w.id === p.world_id)) add('properties', `property ${p.id} names world ${p.world_id}, which does not exist`)
+
+  // District tickets (0010): the rotation, its slots and tickets.
+  const tickets = await verifyDistrictTickets(client, add)
+  for (const r of reports) r.districtTickets = tickets.get(r.id) ?? null
 
   // Across worlds: what the binding keys and the city key already promise, checked from the rows.
   const twice = <T>(values: T[]) => values.filter((v, i) => values.indexOf(v) !== i)
