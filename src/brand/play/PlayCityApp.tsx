@@ -113,6 +113,7 @@ const REHEARSAL_REFUSALS: Record<RehearsalErrorCode | 'invalid_request', string>
   plot_outside_assignment: 'That plot is not in your assigned district. Choose a plot in your district.',
   district_rule_applies: 'A district rule assigns this NFT’s district. Select the NFT again so the server can assign it.',
   district_rule_ambiguous: 'District rules for this NFT name different districts, and no order between them is approved yet, so it cannot be placed.',
+  district_rule_ref_too_long: 'Too many district rules apply to this NFT for its district to be recorded, so it cannot be placed. The rules need fixing first.',
   ticket_asset_mismatch: 'Your district was assigned for another NFT. Select this NFT again so the server can assign its district.',
 }
 

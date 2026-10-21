@@ -195,6 +195,8 @@ export type RehearsalErrorCode =
   | 'district_rule_applies'
   /** Explicit rules for this NFT name different districts, and no precedence is approved: it cannot be placed. */
   | 'district_rule_ambiguous'
+  /** Explicit rules for this NFT agree, but there are too many for its district ticket to record them all: it cannot be placed. */
+  | 'district_rule_ref_too_long'
   /** The rule ticket was issued for another NFT. */
   | 'ticket_asset_mismatch'
 

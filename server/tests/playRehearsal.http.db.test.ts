@@ -14,7 +14,7 @@ import { createPlaySessionService, createPlaySessionStore } from '../src/play/se
 import { createWorldPropertyStore } from '../src/world/properties'
 import { createLocalPropertyRehearsal, matchingRules, parseRehearsalFile, parseRehearsalGrants, REHEARSAL_FILE_KIND, REHEARSAL_FILE_KIND_V2 } from '../src/world/rehearsal'
 import { createWorldStore } from '../src/world/store'
-import { createDistrictTicketStore } from '../src/world/tickets'
+import { createDistrictTicketStore, type TicketStep } from '../src/world/tickets'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
 import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
 import { TEST_ORIGIN, testConfig } from './testConfig'
@@ -58,6 +58,16 @@ const GRANTS = {
     { id: 'admirals-to-compass', collection: { chain: 'eip155:8453', contract: '0x000000000000000000000000000000000000a001' }, traits: { Rank: 'Admiral' }, district: 'compass-row' },
   ],
 }
+/** The same fixture, and keeper #43 of Ada's, which four rules with 64-character ids all assign to Tidewater: 259 characters of ids. */
+const LONG_RULE_IDS = ['a', 'b', 'c', 'd'].map((c) => c.repeat(64))
+const GRANTS_LONG_RULES = {
+  ...GRANTS,
+  players: { ...GRANTS.players, [ADA.discordUserId]: [...GRANTS.players[ADA.discordUserId], { asset: keeper(43), traits: { Ledger: 'Long' } }] },
+  districtRules: [
+    ...GRANTS.districtRules,
+    ...LONG_RULE_IDS.map((id) => ({ id, collection: { chain: 'eip155:8453', contract: '0x000000000000000000000000000000000000a001' }, traits: { Ledger: 'Long' }, district: 'tidewater' })),
+  ],
+}
 const ACTIVATIONS = '/v1/play/rehearsal/activations'
 const ASSETS = '/v1/play/rehearsal/assets'
 const TICKET = '/v1/play/rehearsal/ticket'
@@ -74,7 +84,7 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
   const t = useTestSchema()
 
   /** Play with installations A and B, the real launch path, world, session, ticket and property stores, and the HTTP app. */
-  async function boot(options: { mode?: AppMode; rehearsal?: boolean; rateLimits?: boolean; ttlSeconds?: number } = {}) {
+  async function boot(options: { mode?: AppMode; rehearsal?: boolean; rateLimits?: boolean; ttlSeconds?: number; fixture?: unknown; onTicketStep?: (step: TicketStep) => void | Promise<void> } = {}) {
     await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })
     const p = fakePlay()
     p.install(INSTALLATION_A, GUILD_A)
@@ -84,11 +94,11 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     const worlds = createWorldStore(t.db, { mode: 'local', log: silentLogger })
     const launch = createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city', worlds })
     const sessions = createPlaySessionService({ store: createPlaySessionStore(t.db), worlds, play: p.play, environment: 'dev', gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0 })
-    const tickets = createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: options.ttlSeconds ?? 600 })
+    const tickets = createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: options.ttlSeconds ?? 600, onStep: options.onTicketStep })
     const rehearsal =
       options.rehearsal === false
         ? null
-        : createLocalPropertyRehearsal({ mode: 'local', fixture: parseRehearsalFile(GRANTS), sessions, store: createWorldPropertyStore(t.db, { mode: 'local', log: silentLogger }), tickets })
+        : createLocalPropertyRehearsal({ mode: 'local', fixture: parseRehearsalFile(options.fixture ?? GRANTS), sessions, store: createWorldPropertyStore(t.db, { mode: 'local', log: silentLogger }), tickets })
     const server = createServer(createApp({ config: testConfig({ mode: options.mode ?? 'local', rateLimits: options.rateLimits ?? false }), db: t.db, migrationsDir: MIGRATIONS_DIR, log: silentLogger, playLaunch: launch, playSessions: sessions, rehearsal }))
     servers.push(server)
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -351,6 +361,37 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     expect(await (await activate(bea, keeper(3), 'lantern-quay-w0-p0')).json()).toEqual({ error: 'ticket_expired' })
     expect((await current(bea)).ticket).toBeNull()
     expect((await enter(ada)).ticket).toMatchObject({ slot: { ordinal: 0, generation: 3 } })
+    expect(await properties()).toBe(0)
+  })
+
+  it('selecting an NFT as the lease runs out answers 409 ticket_expired, not a session error; the ticket and its slot stay as they were', async () => {
+    let armed = false
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const { launchAs, enter, assign, properties } = await boot({ ttlSeconds: 1, onTicketStep: async (step) => { if (step === 'reassigning' && armed) await sleep(1_200) } })
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const fallback = (await enter(ada)).ticket!
+    const slot = async () => (await t.db.query<{ state: string; generation: number }>('SELECT state, generation FROM world_assignment_slots WHERE world_id = $1 AND ordinal = 0', [ada.actor.worldId])).rows[0]
+    armed = true
+    // The Captain NFT: a rule assigns Tidewater, and the lease is over before the rule ticket is written.
+    const res = await assign(ada, keeper(40))
+    expect([res.status, await res.json()]).toEqual([409, { error: 'ticket_expired' }])
+    expect((await t.db.query<{ status: string }>('SELECT status FROM world_district_tickets WHERE id = $1', [fallback.id])).rows[0].status).toBe('active')
+    expect((await t.db.query<{ n: number }>("SELECT count(*)::int AS n FROM world_district_tickets WHERE kind = 'rule'")).rows[0].n).toBe(0)
+    expect(await slot()).toEqual({ state: 'held', generation: 1 })
+    expect(await properties()).toBe(0)
+    expect(await verifyCity(t.db)).toMatchObject({ ok: true })
+  })
+
+  it('rules whose ids together are longer than a ticket records answer 409 district_rule_ref_too_long; the ticket stays as it was', async () => {
+    const { launchAs, enter, assign, activate, current, properties } = await boot({ fixture: GRANTS_LONG_RULES })
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const fallback = (await enter(ada)).ticket!
+    const res = await assign(ada, keeper(43))
+    expect([res.status, await res.json()]).toEqual([409, { error: 'district_rule_ref_too_long' }])
+    expect((await current(ada)).ticket).toMatchObject({ id: fallback.id, kind: 'fallback', slot: { ordinal: 0, generation: 1 } })
+    // Nor can the fallback ticket place it.
+    const placed = await activate(ada, keeper(43), 'lantern-quay-w0-p0')
+    expect([placed.status, await placed.json()]).toEqual([409, { error: 'district_rule_ref_too_long' }])
     expect(await properties()).toBe(0)
   })
 

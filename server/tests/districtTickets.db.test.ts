@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { copyFile, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import type pg from 'pg'
+import pg from 'pg'
 import { describe, expect, it } from 'vitest'
 import { verifyCity } from '../src/city/verify'
 import { migrate } from '../src/db/migrations'
 import { createPool } from '../src/db/pool'
-import { nftAsset, type DistrictRuleMatch, type NftAsset } from '../src/engine'
+import { MAX_RULE_REF_LENGTH, nftAsset, type DistrictRuleMatch, type NftAsset } from '../src/engine'
 import { silentLogger } from '../src/log'
 import { createPlayLaunchService } from '../src/play/launch'
 import { createPlaySessionService, createPlaySessionStore, PlaySessionError, type OpenedPlaySession } from '../src/play/session'
@@ -344,6 +344,69 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       expect(await frozen(a.response.world.id)).toBe(false)
       expect(await statusOf(ta.id)).toBe('active')
     })
+
+    it('switch against expiry: a lease that runs out between the check and the replacement ticket is refused ticket_expired, both ways; nothing changes', async () => {
+      // The lease is checked (`namedTicket`), the old ticket released, then held at `reassigning` until the lease is over:
+      // the database refuses the replacement, which keeps that lease, as already expired.
+      let armed = false
+      const env = await setup({ ttlSeconds: 1, onTicketStep: async (step) => { if (step === 'reassigning' && armed) await sleep(1_200) } })
+      const a = await env.open(INSTALLATION_A, ADA)
+      const worldId = a.response.world.id
+      const everything = async () => ({
+        tickets: (await t.db.query('SELECT id, status, end_reason, expires_at FROM world_district_tickets WHERE world_id = $1 ORDER BY issued_at, id', [worldId])).rows,
+        slots: await slotsOf(worldId),
+        rotation: await rotation(worldId),
+        sequence: await sequenceOf(worldId),
+        frozen: await frozen(worldId),
+        properties: (await one<{ n: number }>('SELECT count(*)::int AS n FROM world_properties WHERE world_id = $1', [worldId])).n,
+        events: (await one<{ n: number }>('SELECT count(*)::int AS n FROM city_events')).n,
+      })
+
+      // Fallback to rule: refused, typed. The fallback ticket is still active and its slot still held, no rule ticket exists.
+      const ta = (await env.enter(a, [tide(1)])).ticket
+      const before = await everything()
+      armed = true
+      expect(await refusalOf(env.assign(a, ta, tide(1), [{ id: 'r1', district: 'dune' }]))).toBe('ticket_expired')
+      armed = false
+      expect(await everything()).toEqual(before)
+      expect(before).toMatchObject({ slots: [{ ordinal: 0, generation: 1, state: 'held' }], sequence: 1, frozen: false, properties: 0 })
+
+      // The slot was never lost: once the lease is expired, the next entrant receives it at its next generation.
+      const b = await env.open(INSTALLATION_A, BEA)
+      expect((await env.enter(b, [keeper(2)])).ticket).toMatchObject({ districtKey: 'lantern-quay', ordinal: 0, generation: 2 })
+      expect(await statusOf(ta.id)).toBe('expired')
+
+      // Rule back to fallback: refused, typed. The rule ticket is still active and the freed slot still free.
+      const c = await env.open(INSTALLATION_A, CY)
+      const tc = (await env.enter(c, [tide(3), keeper(3)])).ticket
+      const ruled = (await env.assign(c, tc, tide(3), [{ id: 'r1', district: 'dune' }])).ticket
+      const held = await everything()
+      expect(held.slots.find((x) => x.ordinal === Number(tc.ordinal))).toMatchObject({ state: 'free' })
+      armed = true
+      expect(await refusalOf(env.assign(c, ruled, keeper(3)))).toBe('ticket_expired')
+      armed = false
+      expect(await everything()).toEqual(held)
+      expect(await statusOf(ruled.id)).toBe('active')
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true })
+    })
+
+    it('switch against expiry: only that refusal of the database is ticket_expired; any other error inside a switch is not reclassified', async () => {
+      const env = await setup()
+      const a = await env.open(INSTALLATION_A, ADA)
+      const ta = (await env.enter(a, [tide(1)])).ticket
+      // A different refusal raised where the replacement is inserted (a test-only trigger in this disposable schema).
+      await t.db.query("CREATE FUNCTION test_other_refusal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'some other refusal'; END $$")
+      await t.db.query("CREATE TRIGGER test_other_refusal BEFORE INSERT ON world_district_tickets FOR EACH ROW WHEN (NEW.kind = 'rule') EXECUTE FUNCTION test_other_refusal()")
+      const err = await env.assign(a, ta, tide(1), [{ id: 'r1', district: 'dune' }]).then(() => null, (e: unknown) => e)
+      expect(err).toBeInstanceOf(pg.DatabaseError)
+      expect(err).toMatchObject({ code: 'P0001', message: 'some other refusal' })
+      expect(err).not.toBeInstanceOf(DistrictTicketRefusal)
+      await t.db.query('DROP TRIGGER test_other_refusal ON world_district_tickets')
+      // Rolled back: the fallback ticket is as it was, and the switch then works.
+      expect(await statusOf(ta.id)).toBe('active')
+      expect((await env.assign(a, ta, tide(1), [{ id: 'r1', district: 'dune' }])).ticket).toMatchObject({ kind: 'rule', districtKey: 'dune' })
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true })
+    })
   })
 
   describe('activation', () => {
@@ -497,6 +560,47 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       expect((await env.assign(a, current, keeper(1), [{ id: 'elsewhere', district: 'orchard' }])).ticket).toMatchObject({ kind: 'fallback' })
       const now = (await env.tickets.current(await env.live(a)))!
       expect(await refusalOf(env.assign(a, now, keeper(1), [{ id: 'captains', district: 'compass-row' }]))).toBe('district_rule_unverified')
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true })
+    })
+
+    it('rules whose ids together are longer than a ticket records are refused, typed, before anything is written; the exact limit is recorded; the database still refuses more', async () => {
+      const env = await setup()
+      const a = await env.open(INSTALLATION_A, ADA)
+      const worldId = a.response.world.id
+      // Each id valid on its own (at most 64 characters), every rule naming one district.
+      const rules = (...lengths: number[]): DistrictRuleMatch[] => lengths.map((n, i) => ({ id: 'abcd'[i].repeat(n), district: 'dune' }))
+      const four = rules(64, 64, 64, 64)
+      const exact = rules(64, 64, 64, 5)
+      const over = rules(64, 64, 64, 6)
+      const t0 = (await env.enter(a, [tide(1)])).ticket
+      const ticketsOf = async () => (await t.db.query('SELECT id, kind, status, rule_ref FROM world_district_tickets WHERE world_id = $1 ORDER BY issued_at, id', [worldId])).rows
+      const before = { tickets: await ticketsOf(), slots: await slotsOf(worldId) }
+      // Four long ids (259 characters) and one past the limit (201): refused at selection, and nothing changes.
+      for (const matches of [four, over]) {
+        expect(await refusalOf(env.assign(a, t0, tide(1), matches))).toBe('district_rule_ref_too_long')
+        expect({ tickets: await ticketsOf(), slots: await slotsOf(worldId) }).toEqual(before)
+      }
+      // The fallback ticket cannot place the NFT those rules decide either; nothing is written or frozen.
+      expect(await refusalOf(env.activate(a, t0, tide(1), 'lantern-quay-w0-p0', four))).toBe('district_rule_ref_too_long')
+      expect([await sequenceOf(worldId), await frozen(worldId)]).toEqual([1, false])
+      // Ambiguity is still decided first: conflicting districts are ambiguous however long the ids.
+      expect(await refusalOf(env.assign(a, t0, tide(1), [...four, { id: 'e'.repeat(64), district: 'saltmarsh' }]))).toBe('district_rule_ambiguous')
+      // Exactly the limit: issued, every id recorded, and the rule ticket places the NFT.
+      const ruled = await env.assign(a, t0, tide(1), exact)
+      expect(ruled).toMatchObject({ changed: true, ticket: { kind: 'rule', districtKey: 'dune', ruleRef: exact.map((r) => r.id).join(',') } })
+      expect((await one<{ n: number }>('SELECT char_length(rule_ref)::int AS n FROM world_district_tickets WHERE id = $1', [ruled.ticket.id])).n).toBe(MAX_RULE_REF_LENGTH)
+      expect((await env.activate(a, ruled.ticket, tide(1), 'dune-w0-p0', exact)).property.plotId).toBe('dune-w0-p0')
+      expect(await statusOf(ruled.ticket.id)).toBe('committed')
+      // The database's own limit stays: past the guards (replica role), a 201-character ref is still refused by its CHECK.
+      const client = await t.db.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(`SET LOCAL session_replication_role = 'replica'`)
+        await expect(client.query('UPDATE world_district_tickets SET rule_ref = $2 WHERE id = $1', [ruled.ticket.id, over.map((r) => r.id).join(',')])).rejects.toMatchObject({ code: '23514', constraint: 'wdt_rule_shape' })
+      } finally {
+        await client.query('ROLLBACK')
+        client.release()
+      }
       expect(await verifyCity(t.db)).toMatchObject({ ok: true })
     })
 

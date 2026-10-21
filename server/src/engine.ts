@@ -120,5 +120,5 @@ export {
 export { assetKey, nftAsset, parseAssetKey, type NftAsset } from '../../src/world/asset'
 export { worldProperty, type WorldProperty } from '../../src/world/property'
 // Default district assignment, pure: the rotation's district order and explicit-rule resolution (persisted in server/src/world/rotation.ts).
-export { defaultRotationDistricts, resolveDistrictRules, rotationDistrict, type AssignableDistrict, type DistrictRuleMatch, type DistrictRuleResolution } from '../../src/world/assignment'
+export { defaultRotationDistricts, MAX_RULE_REF_LENGTH, resolveDistrictRules, rotationDistrict, type AssignableDistrict, type DistrictRuleMatch, type DistrictRuleResolution } from '../../src/world/assignment'
 export type { World } from '../../src/world/definition'

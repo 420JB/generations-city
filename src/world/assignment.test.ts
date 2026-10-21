@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultRotationDistricts, resolveDistrictRules, rotationDistrict } from './assignment'
+import { defaultRotationDistricts, MAX_RULE_REF_LENGTH, resolveDistrictRules, rotationDistrict } from './assignment'
 
 const gate = { verificationRuleId: 41, label: 'Captains' }
 
@@ -34,5 +34,24 @@ describe('explicit district rules', () => {
 
   it('refuses to choose between rules naming different districts: no precedence is approved', () => {
     expect(resolveDistrictRules([{ id: 'by-collection', district: 'tidewater' }, { id: 'by-trait', district: 'lantern-quay' }], city)).toEqual({ kind: 'ambiguous', districts: ['lantern-quay', 'tidewater'] })
+  })
+
+  it('records every agreeing rule id up to the database\'s 200 characters, and refuses more, never shortening', () => {
+    expect(MAX_RULE_REF_LENGTH).toBe(200)
+    // Each id valid (at most 64 characters); the comma-joined ref is what is measured.
+    const rules = (...lengths: number[]) => lengths.map((n, i) => ({ id: 'abcd'[i].repeat(n), district: 'tidewater' }))
+    const exact = resolveDistrictRules(rules(64, 64, 64, 5), city)
+    expect(exact).toEqual({ kind: 'rule', district: 'tidewater', ruleRef: ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64), 'ddddd'].join(',') })
+    expect(exact.kind === 'rule' && exact.ruleRef.length).toBe(200)
+    const over = resolveDistrictRules(rules(64, 64, 64, 6), city)
+    expect(over).toEqual({ kind: 'overlong', district: 'tidewater', ruleRef: ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64), 'dddddd'].join(',') })
+    expect(over.kind === 'overlong' && over.ruleRef.length).toBe(201)
+    // Four long ids: every one is kept in the ref it reports, none discarded.
+    const four = resolveDistrictRules(rules(64, 64, 64, 64), city)
+    expect(four.kind === 'overlong' && four.ruleRef.split(',').map((id) => id.length)).toEqual([64, 64, 64, 64])
+    // A repeated id counts once; rules for districts this city lacks do not count.
+    expect(resolveDistrictRules([...rules(64, 64, 64, 5), { id: 'a'.repeat(64), district: 'tidewater' }, { id: 'e'.repeat(64), district: 'orchard' }], city)).toEqual(exact)
+    // Conflicting districts are still ambiguous, however long the ids.
+    expect(resolveDistrictRules([...rules(64, 64, 64, 64), { id: 'e'.repeat(64), district: 'saltmarsh' }], city)).toEqual({ kind: 'ambiguous', districts: ['saltmarsh', 'tidewater'] })
   })
 })

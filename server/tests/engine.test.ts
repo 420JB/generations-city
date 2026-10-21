@@ -43,6 +43,7 @@ describe('shared engine under Node', () => {
       'CITY_ENDPOINT',
       'FAMILY_DISTRICTS',
       'FRIENDS_ENDPOINT',
+      'MAX_RULE_REF_LENGTH',
       'PLAY_CITY_ENDPOINT',
       'PLAY_CONFIG_JSON_SCHEMA',
       'PLAY_CONFIG_SCHEMA_VERSION',

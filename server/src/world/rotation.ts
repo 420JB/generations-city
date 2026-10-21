@@ -31,6 +31,8 @@ export type DistrictTicketRefusalCode =
   | 'ticket_superseded'
   /** Explicit rules matching the NFT name different districts, and no precedence is approved. */
   | 'district_rule_ambiguous'
+  /** Explicit rules matching the NFT agree, but their ids together are longer than a ticket can record (`MAX_RULE_REF_LENGTH`). */
+  | 'district_rule_ref_too_long'
   /** An explicit rule assigns the NFT to a district with a Proofy rule, which nothing can check yet. */
   | 'district_rule_unverified'
   | 'asset-not-in-world'
@@ -357,7 +359,7 @@ export async function lockTicketForCommit(client: PoolClient, worldId: string, t
   return named
 }
 
-export type TicketPlacementRefusal = 'ticket_superseded' | 'plot_outside_assignment' | 'district_rule_applies' | 'district_rule_ambiguous' | 'ticket_asset_mismatch'
+export type TicketPlacementRefusal = 'ticket_superseded' | 'plot_outside_assignment' | 'district_rule_applies' | 'district_rule_ambiguous' | 'district_rule_ref_too_long' | 'ticket_asset_mismatch'
 
 /** Why a locked live ticket may not place this NFT on a plot of this district, or null. Judged on the governing world under the city lock. */
 export function ticketPlacementRefusal(t: TicketRow, read: Pick<LockedWorld, 'world'>, placement: { districtKey: string; asset: string; matches: readonly DistrictRuleMatch[] }): TicketPlacementRefusal | null {
@@ -366,6 +368,7 @@ export function ticketPlacementRefusal(t: TicketRow, read: Pick<LockedWorld, 'wo
   if (t.kind === 'rule' && t.asset !== placement.asset) return 'ticket_asset_mismatch'
   const decided = resolveDistrictRules(placement.matches, new Set(read.world.districts.map((d) => d.key)))
   if (decided.kind === 'ambiguous') return 'district_rule_ambiguous'
+  if (decided.kind === 'overlong') return 'district_rule_ref_too_long'
   if (t.kind === 'fallback' && decided.kind === 'rule') return 'district_rule_applies'
   if (t.kind === 'rule' && (decided.kind !== 'rule' || decided.district !== t.district_key)) return 'ticket_superseded'
   if (placement.districtKey !== t.district_key) return 'plot_outside_assignment'

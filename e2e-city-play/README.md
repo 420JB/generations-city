@@ -266,7 +266,9 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   count are separate numbers.
 - **Lease.** `LOCAL_DISTRICT_TICKET_TTL_SECONDS` (5 to 3600, default 900; only with the rehearsal
   file); the database refuses a lease over an hour. A lease is never renewed (no renewal policy is
-  approved): switching NFTs keeps the lease the player had.
+  approved): switching NFTs keeps the lease the player had. A switch whose lease runs out while it is
+  being written is refused `ticket_expired`, and nothing changes (the old ticket and its slot stay as
+  they were until the lease is expired).
 - **Explicit rules (local fixture only).** Rehearsal file version 2 (`rare-city/local-property-
   rehearsal-v2`) may list an NFT as `{ "asset": "<id>", "traits": { "<name>": "<value>" } }` and
   declares `"districtRules": [{ "id", "collection": { "chain", "contract" }, "traits"?, "district" }]`.
@@ -304,7 +306,9 @@ locked"; 46B "Still open"), and therefore not implemented as a production rule s
 
 - the precedence of overlapping collection, trait and combined rules. Here, rules that apply to one
   NFT and name different districts are REFUSED (`district_rule_ambiguous`), never ordered by a
-  guess; rules that name the same district agree and all their ids are recorded;
+  guess; rules that name the same district agree and all their ids are recorded (a ticket records at
+  most 200 characters of comma-joined ids, the database's limit; more is REFUSED,
+  `district_rule_ref_too_long`, never shortened or partly recorded);
 - whether one NFT may qualify for several groupings, fallback for unmatched assets beyond the
   default rotation, and whether explicit-rule claims should rebalance the fallback rotation (they do
   not consume it here);

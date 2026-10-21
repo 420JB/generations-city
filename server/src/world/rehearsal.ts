@@ -190,6 +190,7 @@ const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
   plot_outside_assignment: [422, 'plot_outside_assignment'],
   district_rule_applies: [409, 'district_rule_applies'],
   district_rule_ambiguous: [409, 'district_rule_ambiguous'],
+  district_rule_ref_too_long: [409, 'district_rule_ref_too_long'],
   ticket_asset_mismatch: [409, 'ticket_asset_mismatch'],
 }
 

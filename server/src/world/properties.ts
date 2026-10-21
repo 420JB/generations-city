@@ -137,6 +137,8 @@ export type WorldPropertyRefusalCode =
   | 'district_rule_applies'
   /** Explicit rules for this NFT name different districts, and no precedence between them is approved. */
   | 'district_rule_ambiguous'
+  /** Explicit rules for this NFT agree, but their ids together are longer than a ticket can record. */
+  | 'district_rule_ref_too_long'
   /** The rule ticket was issued for another NFT. */
   | 'ticket_asset_mismatch'
 

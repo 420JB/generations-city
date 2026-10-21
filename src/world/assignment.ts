@@ -33,6 +33,13 @@ export function rotationDistrict(districts: readonly string[], epochStart: numbe
   return districts[(ordinal - epochStart) % districts.length]
 }
 
+/**
+ * The longest `ruleRef` a rule ticket can record: the database's own limit (migration 0010, `wdt_rule_shape`), which
+ * stays. Every rule id is short, but enough of them applying to one NFT add up to more; that is refused, typed, before
+ * anything is written, and never shortened: a ticket records every rule that decided it, or none.
+ */
+export const MAX_RULE_REF_LENGTH = 200
+
 /** An explicit rule that matched an NFT: its id and the district it assigns. */
 export interface DistrictRuleMatch {
   id: string
@@ -46,6 +53,8 @@ export type DistrictRuleResolution =
   | { kind: 'rule'; district: string; ruleRef: string }
   /** Rules that apply name different districts, and no precedence is approved: refused. */
   | { kind: 'ambiguous'; districts: string[] }
+  /** Every rule that applies names one district, but their ids together are longer than a ticket can record: refused. */
+  | { kind: 'overlong'; district: string; ruleRef: string }
 
 /**
  * What the explicit rules that matched an NFT decide in one city. A rule applies only in a city that has its district
@@ -56,5 +65,7 @@ export function resolveDistrictRules(matches: readonly DistrictRuleMatch[], city
   if (applying.length === 0) return { kind: 'none' }
   const districts = [...new Set(applying.map((m) => m.district))].sort()
   if (districts.length > 1) return { kind: 'ambiguous', districts }
-  return { kind: 'rule', district: districts[0], ruleRef: [...new Set(applying.map((m) => m.id))].sort().join(',') }
+  const ruleRef = [...new Set(applying.map((m) => m.id))].sort().join(',')
+  if (ruleRef.length > MAX_RULE_REF_LENGTH) return { kind: 'overlong', district: districts[0], ruleRef }
+  return { kind: 'rule', district: districts[0], ruleRef }
 }

@@ -1,9 +1,9 @@
-import type { PoolClient } from 'pg'
+import pg, { type PoolClient } from 'pg'
 import { environmentStamp } from '../city/store'
 import type { AppMode } from '../config'
 import type { Database } from '../db/pool'
 import { withTransaction } from '../db/transaction'
-import { assetKey, resolveDistrictRules, worldProperty, type DistrictRuleMatch, type NftAsset } from '../engine'
+import { assetKey, MAX_RULE_REF_LENGTH, resolveDistrictRules, worldProperty, type DistrictRuleMatch, type NftAsset } from '../engine'
 import type { Logger } from '../log'
 import type { LivePlaySession } from '../play/session'
 import {
@@ -67,7 +67,7 @@ import { lockWorldForAssignment, WorldRefusal, type LockedWorld, type WorldScope
 export { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalCode } from './rotation'
 
 /** Points inside a ticket transaction at which a test may act, to prove what concurrency does. */
-export type TicketStep = 'entry-locked' | 'issued' | 'released'
+export type TicketStep = 'entry-locked' | 'issued' | 'released' | 'reassigning'
 
 export interface DistrictTicketStoreOptions {
   mode: AppMode
@@ -92,6 +92,25 @@ export interface DistrictTicketStore {
   assign(actor: LivePlaySession, ticketId: string, asset: NftAsset, matches: readonly DistrictRuleMatch[]): Promise<{ ticket: DistrictTicket; changed: boolean }>
   /** The player leaves the claim flow: the ticket ends and its slot returns to the gap pool. Returns the released ticket. */
   release(actor: LivePlaySession, ticketId: string): Promise<DistrictTicket>
+}
+
+/** What `world_district_tickets_guard` (0010) raises when a ticket would be issued with its lease already over. Migrations never change, so neither does this text. */
+const GUARD_TICKET_ISSUED_EXPIRED = 'a district ticket cannot be issued already expired'
+/** PL/pgSQL `RAISE EXCEPTION` without an ERRCODE. */
+const RAISE_EXCEPTION = 'P0001'
+
+/**
+ * A replacement ticket keeps the lease of the one it replaces, which may run out after `namedTicket` checked it and before
+ * the database checks it again on insert. Only that refusal, by its exact text, is the player's `ticket_expired`; it is
+ * thrown, so the whole transaction rolls back (the old ticket stays as it was, and its slot with it). Anything else is rethrown.
+ */
+async function replacement<T>(insert: Promise<T>): Promise<T> {
+  try {
+    return await insert
+  } catch (err) {
+    if (err instanceof pg.DatabaseError && err.code === RAISE_EXCEPTION && err.message === GUARD_TICKET_ISSUED_EXPIRED) throw new DistrictTicketRefusal('ticket_expired', 'Your district ticket expired before another could be assigned in its place.')
+    throw err
+  }
 }
 
 const LOCK_TIMEOUT = '5s'
@@ -207,6 +226,8 @@ export function createDistrictTicketStore(db: Database, { mode, log, ttlSeconds,
         const decided = resolveDistrictRules(matches, new Set(read.world.districts.map((d) => d.key)))
         if (decided.kind === 'ambiguous')
           return new DistrictTicketRefusal('district_rule_ambiguous', `Explicit district rules for this NFT name different districts (${decided.districts.join(', ')}), and no precedence between them is approved.`)
+        if (decided.kind === 'overlong')
+          return new DistrictTicketRefusal('district_rule_ref_too_long', `The explicit district rules for this NFT agree, but their ids together are ${decided.ruleRef.length} characters, more than a ticket records (${MAX_RULE_REF_LENGTH}).`)
         // A replacement keeps the lease the player had: selecting another NFT never extends it.
         const issue: Issue = { scope: actor.scope, actor: player, sessionRef: actor.id, world: read.world, lease: { until: named.expires_at } }
         if (decided.kind === 'rule') {
@@ -214,12 +235,14 @@ export function createDistrictTicketStore(db: Database, { mode, log, ttlSeconds,
           if (named.kind === 'rule' && named.asset === key && named.district_key === decided.district && named.rule_ref === decided.ruleRef) return { ticket: named, changed: false }
           // The rule decides this NFT's district: the fallback slot goes back to the gap pool, unused, before any plot is chosen.
           await releaseTicket(client, named, 'reassigned')
-          return { ticket: await insertTicket(client, rotation, issue, { kind: 'rule', district: decided.district, asset: key, ruleRef: decided.ruleRef }), changed: true }
+          await onStep?.('reassigning')
+          return { ticket: await replacement(insertTicket(client, rotation, issue, { kind: 'rule', district: decided.district, asset: key, ruleRef: decided.ruleRef })), changed: true }
         }
         if (named.kind === 'fallback') return { ticket: named, changed: false }
         // A rule ticket, and the player selected an NFT no rule assigns: back to the rotation.
         await releaseTicket(client, named, 'reassigned')
-        return { ticket: await issueFallback(client, rotation, issue), changed: true }
+        await onStep?.('reassigning')
+        return { ticket: await replacement(issueFallback(client, rotation, issue)), changed: true }
       })
       if (result.changed) log.info('district ticket reassigned', { world: actor.scope.worldId, ticket: result.ticket.id, kind: result.ticket.kind, district: result.ticket.district_key })
       return { ticket: ticketOf(result.ticket), changed: result.changed }
