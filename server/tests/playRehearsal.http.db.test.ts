@@ -494,9 +494,12 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     const oneTicket = await Promise.all(Array.from({ length: 6 }, (_, i) => activate(ada, keeper(100 + i), `${ada.ticket!.districtKey}-w0-p1`)))
     expect(oneTicket.filter((r) => r.status === 200)).toHaveLength(1)
     expect(new Set(await Promise.all(oneTicket.filter((r) => r.status !== 200).map(async (r) => `${r.status} ${JSON.stringify(await r.json())}`)))).toEqual(new Set(['409 {"error":"ticket_not_live"}']))
-    // The same request many times at once: one property, the rest the same answer.
+    // The same request many times at once: one property, the rest the same answer. On a plot no placement above took:
+    // the NFT race may have won any of p3 to p10, and this ticket may be on that district again.
     await enter(ada)
-    const sameBoth = await Promise.all(Array.from({ length: 6 }, () => activate(ada, keeper(1), `${ada.ticket!.districtKey}-w0-p5`)))
+    const taken = new Set((await t.db.query<{ plot_id: string }>('SELECT plot_id FROM world_properties')).rows.map((r) => r.plot_id))
+    const freePlot = Array.from({ length: 8 }, (_, i) => `${ada.ticket!.districtKey}-w0-p${i + 3}`).find((plot) => !taken.has(plot))!
+    const sameBoth = await Promise.all(Array.from({ length: 6 }, () => activate(ada, keeper(1), freePlot)))
     const answers = (await Promise.all(sameBoth.map((r) => r.json()))) as RehearsalActivationResponse[]
     expect(answers.filter((a) => a.fresh)).toHaveLength(1)
     expect(new Set(answers.map((a) => a.property.id)).size).toBe(1)

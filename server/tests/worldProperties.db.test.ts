@@ -1532,9 +1532,9 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       await recordAsOldBuild(worldId, six.version, DOC_4_SIX, 'rejected')
       const before = await rows()
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11], current: 11 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11, 12], current: 12 })
       expect(await rows()).toEqual(before)
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 11 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 12 })
 
       // The historical verdict stays readable and in force: a launch pinned to it is refused, nothing is recorded again.
       env.p.activate(INSTALLATION_A, six.version)
@@ -1569,7 +1569,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const present = async () => (await t.db.query<{ n: number }>(`SELECT (SELECT count(*) FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND g.tgname = 'world_config_versions_current_judge') + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'world_config_versions_current_judge') AS n`, [t.schema])).rows[0].n
       expect(Number(await present())).toBe(0)
       expect((await t.db.query('SELECT max(version) AS v FROM schema_migrations')).rows[0].v).toBe(8)
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11], current: 11 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11, 12], current: 12 })
       expect(Number(await present())).toBe(2)
     })
 

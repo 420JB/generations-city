@@ -572,7 +572,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket policies D1 to D4 (migration 
         const COLUMNS = 'id, status, issued_at, expires_at, ended_at, end_reason, ordinal, generation, district_key, epoch'
         const before = (await t.db.query(`SELECT ${COLUMNS} FROM world_district_tickets ORDER BY id`)).rows
         const slots = await slotsOf(worldId)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11], current: 11 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12], current: 12 })
         expect((await t.db.query(`SELECT ${COLUMNS} FROM world_district_tickets ORDER BY id`)).rows).toEqual(before)
         expect(await slotsOf(worldId)).toEqual(slots)
         expect(await one('SELECT claim_window, gate_rule_id, authorization_source, supersede_cause FROM world_district_tickets WHERE id = $1', [legacy.id])).toEqual({ claim_window: null, gate_rule_id: null, authorization_source: null, supersede_cause: null })
@@ -599,7 +599,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket policies D1 to D4 (migration 
         expect(await t.tables()).not.toContain('world_claim_windows')
         expect((await t.db.query("SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'world_district_tickets' AND column_name = 'claim_window'", [t.schema])).rowCount).toBe(0)
         expect((await one<{ src: string }>("SELECT p.prosrc AS src FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'world_district_tickets_guard'", [t.schema])).src).not.toMatch(/claim window/)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11], current: 11 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12], current: 12 })
         const pinned = (await t.db.query<{ proname: string; proconfig: string[] | null }>(
           "SELECT p.proname, p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname IN ('world_config_district_rule', 'world_claim_windows_guard', 'world_claim_window_opened_by_ticket', 'world_district_tickets_guard', 'world_district_ticket_ended_whole') ORDER BY p.proname", [t.schema])).rows
         expect(pinned.map((p) => p.proname)).toEqual(['world_claim_window_opened_by_ticket', 'world_claim_windows_guard', 'world_config_district_rule', 'world_district_ticket_ended_whole', 'world_district_tickets_guard'])
@@ -645,6 +645,121 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket policies D1 to D4 (migration 
       expect(details).toEqual(expect.arrayContaining([expect.stringMatching(/^windows: .*does not last exactly 900 seconds/), expect.stringMatching(/^windows: .*ending at another time/), expect.stringMatching(/^rules: .*records Proofy rule 41/), expect.stringMatching(/^rules: .*not local test data/)]))
       // And the activation path refuses the forged rule ticket, typed.
       expect(await refusalOf(env.activate(b, rb, tide(2), 'dune-w0-p0', TO_DUNE))).toBe('ticket_superseded')
+    })
+  })
+
+  describe('city:verify judges a withdrawn rule ticket by the epoch it was withdrawn in', () => {
+    const HARBOR_MASTER = { ...DOC, districts: DOC.districts.map((x) => (x.key === 'compass-row' ? { ...x, proofyRule: { verificationRuleId: 47, label: 'Harbor Master role' } } : x)) }
+    const SALT = { ...HARBOR_MASTER, districts: HARBOR_MASTER.districts.map((x) => (x.key === 'saltmarsh' ? { ...x, proofyRule: { verificationRuleId: 48, label: 'Salt role' } } : x)) }
+    /** Past the guards (replica role), in this disposable schema: a forgery city:verify alone must catch. */
+    const unguarded = async (sql: string, params: unknown[]) => {
+      const client = await t.db.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(`SET LOCAL session_replication_role = 'replica'`)
+        await client.query(sql, params)
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK')
+        throw err
+      } finally {
+        client.release()
+      }
+    }
+    const violations = async () => {
+      const report = await verifyCity(t.db)
+      return report.ok ? [] : (report as { violations: { rule: string; detail: string }[] }).violations.map((v) => `${v.rule}: ${v.detail}`)
+    }
+
+    /**
+     * Real transitions only: in epoch 1 Bea places a property and a rule change (D4) withdraws Ada's rule ticket; then two
+     * rotation changes (saltmarsh restricted, then unrestricted again) move the rotation to epochs 2 and 3, superseding and
+     * reissuing Cy's fallback ticket each time; in epoch 3 Dee's rule ticket is withdrawn when her answer is.
+     */
+    async function history() {
+      const env = await setup()
+      const [a, b, c, d] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA), await env.open(INSTALLATION_A, CY), await env.open(INSTALLATION_A, DEE)]
+      const worldId = a.response.world.id
+      await env.activate(b, await env.ticketOf(b, [keeper(2)]), keeper(2), 'lantern-quay-w0-p0')
+      env.source.answer(GUILD_A, ADA, 41, true)
+      const captain = (await env.assign(a, await env.ticketOf(a, [keeper(7)]), keeper(7), CAPTAINS)).ticket
+      const fallback = await env.ticketOf(c, [keeper(3)])
+      env.p.publish(INSTALLATION_A, HARBOR_MASTER)
+      await env.open(INSTALLATION_A, EVE)
+      expect(await rotation(worldId)).toMatchObject({ epoch: 1, basis_config_version: 2 })
+      expect(await causeOf(captain.id)).toEqual({ status: 'superseded', supersede_cause: 'rules' })
+      expect(await violations()).toEqual([])
+      env.p.publish(INSTALLATION_A, SALT)
+      await env.open(INSTALLATION_A, EVE)
+      expect(await rotation(worldId)).toMatchObject({ epoch: 2, basis_config_version: 3 })
+      expect(await causeOf(fallback.id)).toEqual({ status: 'superseded', supersede_cause: 'rotation' })
+      return { captain, fallback, worldId, env, c, d }
+    }
+
+    it('a rule ticket withdrawn in an earlier epoch verifies after one rotation change, and after another', async () => {
+      const { captain, worldId, env, c, d } = await history()
+      // A: withdrawn in epoch 1, verified in epoch 2.
+      expect(await one('SELECT epoch, status, supersede_cause, kind FROM world_district_tickets WHERE id = $1', [captain.id])).toEqual({ epoch: 1, status: 'superseded', supersede_cause: 'rules', kind: 'rule' })
+      expect(await violations()).toEqual([])
+      // B: another rotation change, to epoch 3; Cy's reissued ticket is reissued again, and Dee's rule ticket is withdrawn in epoch 3.
+      env.p.publish(INSTALLATION_A, HARBOR_MASTER)
+      await env.open(INSTALLATION_A, EVE)
+      expect(await rotation(worldId)).toMatchObject({ epoch: 3, basis_config_version: 4 })
+      expect(await env.tickets.current(await env.live(c))).toMatchObject({ epoch: 3, kind: 'fallback', status: 'active' })
+      env.source.answer(GUILD_A, DEE, 47, true)
+      const dee = (await env.assign(d, await env.ticketOf(d, [keeper(4)]), keeper(4), CAPTAINS)).ticket
+      env.source.answer(GUILD_A, DEE, 47, null)
+      await env.enter(c, [keeper(3)])
+      expect(await causeOf(dee.id)).toEqual({ status: 'superseded', supersede_cause: 'rules' })
+      expect(await one('SELECT epoch FROM world_district_tickets WHERE id = $1', [captain.id])).toEqual({ epoch: 1 })
+      expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ properties: 1, districtTickets: { epoch: 3, committed: 1 } }] })
+    })
+
+    it('a forged future epoch, an active ticket of another epoch and the historical tampering already caught are each reported, exactly', async () => {
+      const { captain, fallback, worldId, env, c, d } = await history()
+      env.p.publish(INSTALLATION_A, HARBOR_MASTER)
+      await env.open(INSTALLATION_A, EVE)
+      env.source.answer(GUILD_A, DEE, 47, true)
+      const dee = (await env.assign(d, await env.ticketOf(d, [keeper(4)]), keeper(4), CAPTAINS)).ticket
+      env.source.answer(GUILD_A, DEE, 47, null)
+      await env.enter(c, [keeper(3)])
+      const live = (await env.tickets.current(await env.live(c)))!
+      expect([await rotation(worldId), await causeOf(dee.id), live.epoch]).toEqual([expect.objectContaining({ epoch: 3 }), { status: 'superseded', supersede_cause: 'rules' }, 3])
+      expect(await violations()).toEqual([])
+      const ticket = (id: string) => `world ${worldId} ticket ${id}`
+      /** One forgery at a time, past the guards: city:verify reports exactly `expected`, then the row is put back and it verifies again. */
+      const forged = async (sql: string, params: unknown[], undo: string, expected: string[]) => {
+        await unguarded(sql, params)
+        expect(await violations()).toEqual(expected)
+        await unguarded(undo, params)
+        expect(await violations()).toEqual([])
+      }
+      const withdrawn = (id: string) => `rules: ${ticket(id)} was superseded by a rule change, but is not a rule ticket of an epoch its rotation has reached`
+      const future = (id: string) => `tickets: ${ticket(id)} names epoch 4; its rotation has reached only epoch 3`
+      // C: a withdrawn rule ticket, or any ended one, claiming an epoch the rotation has not reached.
+      await forged('UPDATE world_district_tickets SET epoch = 4 WHERE id = $1', [captain.id], 'UPDATE world_district_tickets SET epoch = 1 WHERE id = $1', [future(captain.id), withdrawn(captain.id)])
+      await forged('UPDATE world_district_tickets SET epoch = 4 WHERE id = $1', [dee.id], 'UPDATE world_district_tickets SET epoch = 3 WHERE id = $1', [future(dee.id), withdrawn(dee.id)])
+      for (const status of ['committed', 'released']) {
+        const { id, epoch } = await one<{ id: string; epoch: number }>('SELECT id, epoch FROM world_district_tickets WHERE world_id = $1 AND status = $2 ORDER BY issued_at LIMIT 1', [worldId, status])
+        await forged('UPDATE world_district_tickets SET epoch = 4 WHERE id = $1', [id], `UPDATE world_district_tickets SET epoch = ${epoch} WHERE id = $1`, [future(id)])
+      }
+      // D: an active ticket of an earlier epoch, or of one the rotation has not reached.
+      for (const epoch of [2, 1, 4])
+        await forged(`UPDATE world_district_tickets SET epoch = ${epoch} WHERE id = $1`, [live.id], 'UPDATE world_district_tickets SET epoch = 3 WHERE id = $1', [`tickets: ${ticket(live.id)} is active in epoch ${epoch}; the rotation is in epoch 3`])
+      // E: what was already caught still is. A fallback ticket "withdrawn by a rule change"; a ticket superseded by a rotation
+      // change its rotation has not left (the current epoch, or a future one); a superseded ticket that does not say why.
+      await forged("UPDATE world_district_tickets SET supersede_cause = 'rules' WHERE id = $1", [fallback.id], "UPDATE world_district_tickets SET supersede_cause = 'rotation' WHERE id = $1", [withdrawn(fallback.id)])
+      await forged("UPDATE world_district_tickets SET supersede_cause = 'rotation' WHERE id = $1", [dee.id], "UPDATE world_district_tickets SET supersede_cause = 'rules' WHERE id = $1", [
+        `rules: ${ticket(dee.id)} was superseded by a rotation change, but its rotation is still in its epoch`,
+      ])
+      await forged('UPDATE world_district_tickets SET epoch = 4 WHERE id = $1', [fallback.id], 'UPDATE world_district_tickets SET epoch = 1 WHERE id = $1', [
+        future(fallback.id),
+        `rules: ${ticket(fallback.id)} was superseded by a rotation change, but its rotation is still in its epoch`,
+      ])
+      await forged('UPDATE world_district_tickets SET supersede_cause = NULL WHERE id = $1', [captain.id], "UPDATE world_district_tickets SET supersede_cause = 'rules' WHERE id = $1", [`rules: ${ticket(captain.id)} was superseded without saying why`])
+      // An epoch below the first is not even storable, guards or none.
+      await expect(unguarded('UPDATE world_district_tickets SET epoch = 0 WHERE id = $1', [captain.id])).rejects.toThrow(/wdt_ordinal_shape/)
+      expect(await violations()).toEqual([])
     })
   })
 })

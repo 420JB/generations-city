@@ -14,8 +14,8 @@ import { defaultRotationDistricts, judgeWorldConfig, rotationDistrict } from '..
  *             its position names; one of an older epoch is retired or consumed; held exactly when the
  *             ticket of its current generation is active, consumed exactly when that ticket is committed;
  *             each generation 1 .. current was issued exactly once (no stale generation, none skipped);
- *   tickets   at most one active per player; an active ticket is of the current epoch and its lease has
- *             not run out, on its rotation's layout geometry (or it is merely waiting for the next ticket transaction to expire it, which is
+ *   tickets   at most one active per player; none of an epoch the rotation has not reached; an active
+ *             ticket is of the current epoch and its lease has not run out, on its rotation's layout geometry (or it is merely waiting for the next ticket transaction to expire it, which is
  *             reported as a count, not a violation); a committed one names a property of its world on
  *             its district and geometry, at the sequence it records, activated by its holder (and, for a
  *             rule ticket, its NFT); no property consumed two tickets;
@@ -31,7 +31,16 @@ import { defaultRotationDistricts, judgeWorldConfig, rotationDistrict } from '..
  *   rules     a fallback ticket names an unrestricted district of its configuration; a rule ticket
  *             records exactly the Proofy rule its configuration names for its district, a restricted
  *             district's authorization only from 'local-fixture'; a ticket superseded since 0011 says
- *             why, and a rule change superseded only rule tickets of the epoch that governs.
+ *             why, and a rule change superseded only rule tickets (of the epoch that governed then: the
+ *             rotation's, or an earlier one if a rotation change followed).
+ *
+ * And, once migration 0012 is applied (the same policies, held by the database):
+ *   leases    no open claim window and no active ticket lasts longer than 900 seconds (a legacy lease
+ *             0012 cut records the end it had before; a ticket that ended in a window before 0012 cut
+ *             it ends at the window's former end);
+ *   governing an active ticket issued since 0011 stands on the configuration that governs NOW: a
+ *             fallback one on a district of the rotation that it leaves unrestricted, a rule one
+ *             recording exactly the Proofy rule it names for its district.
  */
 export interface TicketVerifyReport {
   epoch: number
@@ -95,6 +104,10 @@ interface TicketRow {
   district_rule: string | null
   /** Issued since migration 0011 was applied: it must be in a claim window. */
   since_0011: boolean
+  /** Ends at most 900 seconds after it was issued (checked once 0012 is applied). */
+  within_lease: boolean
+  /** The Proofy rule the GOVERNING configuration (the world's latest adoption) names for its district (0012). */
+  governing_rule: string | null
 }
 
 interface WindowRow {
@@ -112,6 +125,8 @@ interface WindowRow {
   opened_by_ticket: boolean
   /** Tickets in the window whose holder or end is not the window's. */
   strays: number
+  /** Ends at most 900 seconds after it opened (checked once 0012 is applied). */
+  within_lease: boolean
 }
 
 interface PropertyRow {
@@ -136,6 +151,15 @@ async function hasTicketPolicy(client: PoolClient): Promise<boolean> {
   return (await client.query<{ present: boolean }>(`SELECT to_regclass('world_claim_windows') IS NOT NULL AS present`)).rows[0].present
 }
 
+/** True when this database's guards hold the ticket policies themselves (migration 0012: legacy leases cut, configuration gates). */
+async function hasTicketHardening(client: PoolClient): Promise<boolean> {
+  return (
+    await client.query<{ present: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = to_regclass('world_claim_windows') AND a.attname = 'legacy_expires_at' AND NOT a.attisdropped) AS present`,
+    )
+  ).rows[0].present
+}
+
 export async function verifyDistrictTickets(client: PoolClient, add: AddViolation): Promise<Map<string, TicketVerifyReport>> {
   const reports = new Map<string, TicketVerifyReport>()
   if (!(await hasTicketTables(client))) return reports
@@ -144,20 +168,32 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
   ).rows
   const slots = (await client.query<SlotRow>('SELECT world_id, ordinal, epoch, district_key, generation, state FROM world_assignment_slots ORDER BY world_id, ordinal')).rows
   const policy = await hasTicketPolicy(client)
+  const hardened = policy && (await hasTicketHardening(client))
+  const governingRule = hardened
+    ? `world_config_district_rule(t.world_id, (SELECT a.version FROM world_config_adoptions a WHERE a.world_id = t.world_id ORDER BY a.adoption_seq DESC LIMIT 1), t.district_key)`
+    : 'NULL'
   const tickets = (
     await client.query<TicketRow>(
       policy
         ? `SELECT id, world_id, actor_discord_user_id, actor_core_user_id, kind, district_key, district_geometry_fingerprint, layout_geometry_fingerprint, epoch, ordinal, generation, asset, status,
                   (expires_at <= clock_timestamp()) AS lapsed, property_id, committed_sequence, claim_window, gate_rule_id, authorization_source, supersede_cause,
                   world_config_district_rule(world_id, config_version, district_key) AS district_rule,
-                  issued_at >= (SELECT m.applied_at FROM schema_migrations m WHERE m.version = 11) AS since_0011
-             FROM world_district_tickets ORDER BY world_id, issued_at, id`
+                  issued_at >= (SELECT m.applied_at FROM schema_migrations m WHERE m.version = 11) AS since_0011,
+                  (expires_at <= issued_at + interval '900 seconds') AS within_lease, ${governingRule} AS governing_rule
+             FROM world_district_tickets t ORDER BY world_id, issued_at, id`
         : `SELECT id, world_id, actor_discord_user_id, actor_core_user_id, kind, district_key, district_geometry_fingerprint, layout_geometry_fingerprint, epoch, ordinal, generation, asset, status,
                   (expires_at <= clock_timestamp()) AS lapsed, property_id, committed_sequence, NULL AS claim_window, NULL AS gate_rule_id, NULL AS authorization_source, NULL AS supersede_cause,
-                  NULL AS district_rule, false AS since_0011
+                  NULL AS district_rule, false AS since_0011, true AS within_lease, NULL AS governing_rule
              FROM world_district_tickets ORDER BY world_id, issued_at, id`,
     )
   ).rows
+  // A window 0012 cut (legacy_expires_at): a ticket that had ended in it before ends at the window's former end, and one
+  // 0012 cut ends at its new end (or, issued after the cut end, one microsecond after its issuance, as 0012 cut it).
+  const strayEnd = hardened
+    ? `(t.expires_at <> w.expires_at AND NOT (w.legacy_expires_at IS NOT NULL
+          AND ((t.legacy_expires_at IS NULL AND t.status <> 'active' AND t.expires_at = w.legacy_expires_at)
+               OR (t.legacy_expires_at IS NOT NULL AND t.expires_at = greatest(w.expires_at, t.issued_at + interval '1 microsecond')))))`
+    : 't.expires_at <> w.expires_at'
   const windows = policy
     ? (
         await client.query<WindowRow>(
@@ -166,7 +202,9 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
                   (CASE WHEN w.closed_at IS NULL THEN NULL ELSE w.closed_at >= w.expires_at END) AS closed_after_expiry,
                   EXISTS (SELECT 1 FROM world_district_tickets t WHERE t.claim_window = w.id AND t.issued_at = w.opened_at) AS opened_by_ticket,
                   (SELECT count(*)::int FROM world_district_tickets t WHERE t.claim_window = w.id
-                      AND (t.world_id <> w.world_id OR t.actor_discord_user_id <> w.actor_discord_user_id OR t.actor_core_user_id <> w.actor_core_user_id OR t.expires_at <> w.expires_at)) AS strays
+                      AND (t.world_id <> w.world_id OR t.actor_discord_user_id <> w.actor_discord_user_id OR t.actor_core_user_id <> w.actor_core_user_id
+                           OR ${strayEnd})) AS strays,
+                  (w.expires_at <= w.opened_at + interval '900 seconds') AS within_lease
              FROM world_claim_windows w ORDER BY w.world_id, w.opened_at, w.id`,
         )
       ).rows
@@ -237,6 +275,8 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
     for (const t of mineTickets) {
       const tLabel = `world ${r.world_id} ticket ${t.id}`
       if (t.status === 'active' && t.epoch !== r.epoch) add('tickets', `${tLabel} is active in epoch ${t.epoch}; the rotation is in epoch ${r.epoch}`)
+      // Issued in its rotation's epoch, which only ever moves on: no ticket, however it ended, names one not reached yet.
+      if (t.status !== 'active' && t.epoch > r.epoch) add('tickets', `${tLabel} names epoch ${t.epoch}; its rotation has reached only epoch ${r.epoch}`)
       if (t.status === 'active' && t.layout_geometry_fingerprint !== r.layout_geometry_fingerprint) add('tickets', `${tLabel} is active on another layout geometry than its rotation's`)
       if (t.status !== 'committed') continue
       const p = properties.find((x) => x.id === t.property_id)
@@ -249,6 +289,7 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
     if (new Set(consumed).size !== consumed.length) add('tickets', `${label} has a property that consumed two tickets`)
 
     if (policy) verifyTicketPolicy(r, mineTickets, windows.filter((w) => w.world_id === r.world_id), properties, add)
+    if (hardened) verifyTicketHardening(r, mineTickets, windows.filter((w) => w.world_id === r.world_id), add)
 
     // Coverage: since the rotation began, every property consumed a ticket.
     for (const p of properties.filter((x) => x.world_id === r.world_id && x.activated_at >= r.created_at))
@@ -287,7 +328,22 @@ function verifyTicketPolicy(r: RotationRow, mine: readonly TicketRow[], windows:
     if (t.kind === 'rule' && t.since_0011 && t.gate_rule_id !== t.district_rule) add('rules', `${tLabel} records Proofy rule ${t.gate_rule_id ?? 'none'}; its configuration names ${t.district_rule ?? 'none'} for its district`)
     if (t.authorization_source !== null && t.authorization_source !== 'local-fixture') add('rules', `${tLabel} is authorized by ${t.authorization_source}, not local test data`)
     if (t.status === 'superseded' && t.since_0011 && t.supersede_cause !== 'rotation' && t.supersede_cause !== 'rules') add('rules', `${tLabel} was superseded without saying why`)
-    if (t.supersede_cause === 'rules' && (t.kind !== 'rule' || t.epoch !== r.epoch)) add('rules', `${tLabel} was superseded by a rule change, but is not a rule ticket of the epoch that governs`)
+    // Withdrawn while active, so in the epoch that governed then (0011's commit check): a later rotation change leaves it in an earlier one.
+    if (t.supersede_cause === 'rules' && (t.kind !== 'rule' || t.epoch > r.epoch)) add('rules', `${tLabel} was superseded by a rule change, but is not a rule ticket of an epoch its rotation has reached`)
     if (t.supersede_cause === 'rotation' && t.epoch >= r.epoch) add('rules', `${tLabel} was superseded by a rotation change, but its rotation is still in its epoch`)
+  }
+}
+
+/** The 900-second bound on every open lease, and live tickets against the configuration that governs now (0012). */
+function verifyTicketHardening(r: RotationRow, mine: readonly TicketRow[], windows: readonly WindowRow[], add: AddViolation): void {
+  const districts = Array.isArray(r.districts) ? (r.districts as string[]) : []
+  for (const w of windows) if (w.open && !w.within_lease) add('windows', `world ${r.world_id} claim window ${w.id} is open and lasts longer than 900 seconds`)
+  for (const t of mine) {
+    if (t.status !== 'active') continue
+    const tLabel = `world ${r.world_id} ticket ${t.id}`
+    if (!t.within_lease) add('windows', `${tLabel} is active and lasts longer than 900 seconds`)
+    if (!t.since_0011) continue
+    if (t.kind === 'fallback' && (t.governing_rule !== null || !districts.includes(t.district_key))) add('rules', `${tLabel} is an active fallback ticket on a district the governing configuration does not leave in its rotation`)
+    if (t.kind === 'rule' && t.gate_rule_id !== t.governing_rule) add('rules', `${tLabel} records Proofy rule ${t.gate_rule_id ?? 'none'}; the governing configuration names ${t.governing_rule ?? 'none'} for its district`)
   }
 }

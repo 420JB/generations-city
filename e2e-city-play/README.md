@@ -272,7 +272,11 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   out (a fresh claim then opens a new window: no lockout beyond the window the player opened).
   `LOCAL_DISTRICT_TICKET_TTL_SECONDS` no longer exists: the server refuses to start with it set to
   anything but `900`. A switch or re-entry whose window runs out while it is being written is
-  refused `ticket_expired`, and nothing changes.
+  refused `ticket_expired`, and nothing changes. A lease issued before 0011 (0010 allowed up to an
+  hour) is cut by migration 0012 to end 900 seconds after its claim was first issued (for a 0010
+  reissue, the ticket it replaced), never later than it was; one whose cut end has passed is
+  expired then, its slot returned to the gap pool and its window lapsed. A cut ticket or window
+  records its former end (`legacy_expires_at`); nothing that had already ended changes.
 - **Explicit rules (local fixture only).** Rehearsal file version 2 (`rare-city/local-property-
   rehearsal-v2`) may list an NFT as `{ "asset": "<id>", "traits": { "<name>": "<value>" } }` and
   declares `"districtRules": [{ "id", "collection": { "chain", "contract" }, "traits"?, "district" }]`.
@@ -337,6 +341,15 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
 - **Locks and transactions.** Always city row (FOR SHARE to issue, FOR UPDATE to adopt or activate),
   play session (FOR SHARE), rotation, tickets, slots. Every transaction is short; none is open while a
   player browses or chooses a plot. Nothing provisional advances a sequence or writes an event.
+- **Database gates (migration 0012).** Beyond the service's own checks, the database judges, from
+  the persisted configuration copies only (the latest adoption, that version's canonical text and
+  recorded geometry): a rotation is exactly its governing version's unrestricted districts in
+  order; an adoption leaves no live ticket that version does not authorize (a fallback ticket on an
+  unrestricted district of the rotation; a rule ticket recording exactly the Proofy rule the version
+  names for its district), so a rule-only change must supersede the affected rule tickets in its
+  own transaction; and a ticket commits only against the version that governs at that moment, while
+  the rotation follows it. This is consistency with stored configuration, never eligibility: NFT
+  holdings, traits, roles and rule answers are still the trusted source's (locally the fixture).
 - **`city:verify`** checks every rotation, slot and ticket (`server/src/world/verifyTickets.ts`).
 
 **What is still not decided or not available (production).** Policies D1 to D4 above are the
@@ -348,7 +361,18 @@ owner's locked rules. Still outside this repository:
   ticket and never shown as verified;
 - whether one NFT may qualify for several groupings, and whether explicit-rule claims should
   rebalance the fallback rotation (they do not consume it here);
-- multi-NFT claim limits beyond one active ticket per player.
+- multi-NFT claim limits beyond one active ticket per player;
+- **OPEN (owner decision, audit L1):** in a city with unrestricted districts, entry is judged by
+  NFT alone (an authenticated player with an unplaced NFT of the city), so a player whose EVERY NFT
+  an explicit rule sends to a restricted district they do not qualify for still receives a
+  provisional fallback ticket at once. It never activates (every selection and activation of such
+  an NFT is refused `district_rule_unqualified` / `district_rule_unverified`, and the NFT cannot be
+  placed on the fallback district either), but it holds a rotation slot and opens a 900-second
+  claim window until it is released or runs out: later entrants are assigned past that slot
+  meanwhile (it returns to the gap pool, oldest first, so nobody is skipped for good), and the
+  player sees an assigned district they cannot use. Whether entry should first check that at least
+  one NFT is placeable is not decided; behavior is unchanged and covered by a regression test
+  (`server/tests/districtTicketHardening.db.test.ts`).
 
 **Collection claim policy: the Play configuration change it needs.** Today Rare City's Play
 configuration schema version 1 (`src/brand/core/playConfig.ts`) describes a collection as exactly
