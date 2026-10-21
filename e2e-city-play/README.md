@@ -251,10 +251,8 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   every entry, relaunch, tab or session (one active ticket per player per world, a database unique
   index), so nobody skips a district or hoards slots by logging in again. After a property is
   placed, "Get your district" is the next claim: a new, independently checked ticket.
-- **Rotation.** One per world, shared by every collection: the governing configuration's districts in
-  configuration order, leaving out districts with a Proofy rule (nothing can check one, so it cannot
-  be anyone's default; the exact default topology stays OPEN in the MCD, this is an engineering
-  choice). Slot ordinal `n` names `districts[(n - epoch start) mod length]`. A, B and C entering in
+- **Rotation.** One per world, shared by every collection: the governing configuration's UNRESTRICTED
+  districts (no Proofy rule) in configuration order (owner-locked, policy D1). Slot ordinal `n` names `districts[(n - epoch start) mod length]`. A, B and C entering in
   that order hold districts 1, 2 and 3 at the same time, without waiting, and may place in any order.
 - **Gap reuse.** A ticket ends exactly once: released by its holder (`POST …/release`, the panel's
   "Leave · release my district"), expired server-side by the database's clock (no browser unload is
@@ -264,11 +262,17 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   next GENERATION, as a new ticket id. A page still naming the old ticket cannot commit
   (`ticket_not_live` / `ticket_expired`). The high-water mark (ordinals ever issued) and the committed
   count are separate numbers.
-- **Lease.** `LOCAL_DISTRICT_TICKET_TTL_SECONDS` (5 to 3600, default 900; only with the rehearsal
-  file); the database refuses a lease over an hour. A lease is never renewed (no renewal policy is
-  approved): switching NFTs keeps the lease the player had. A switch whose lease runs out while it is
-  being written is refused `ticket_expired`, and nothing changes (the old ticket and its slot stay as
-  they were until the lease is expired).
+- **Lease (policy D2, locked 2026-10-21; migration 0011).** A player's CLAIM WINDOW in a world
+  opens with the first ticket issued to them and lasts EXACTLY 900 seconds, set by the database's
+  clock (`world_claim_windows`; the window guard overwrites whatever a caller asks for). Every
+  ticket issued to them while it is open ends exactly when it ends: a reload, relaunch or other tab
+  gets the same ticket; an NFT switch, leaving and entering again, or a reissue after a rotation
+  change gets a new ticket with the SAME end. Nothing renews it. It closes when one of its tickets
+  becomes a property (the next NFT then opens a new window, without signing out) or once it has run
+  out (a fresh claim then opens a new window: no lockout beyond the window the player opened).
+  `LOCAL_DISTRICT_TICKET_TTL_SECONDS` no longer exists: the server refuses to start with it set to
+  anything but `900`. A switch or re-entry whose window runs out while it is being written is
+  refused `ticket_expired`, and nothing changes.
 - **Explicit rules (local fixture only).** Rehearsal file version 2 (`rare-city/local-property-
   rehearsal-v2`) may list an NFT as `{ "asset": "<id>", "traits": { "<name>": "<value>" } }` and
   declares `"districtRules": [{ "id", "collection": { "chain", "contract" }, "traits"?, "district" }]`.
@@ -276,9 +280,44 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   district. When the player selects an NFT (`POST …/assignment`) and a rule applies, the server
   releases their unused fallback slot to the gap pool and issues a rule ticket for that NFT and the
   rule's district, before any plot is chosen; the page moves the placement there. A fallback ticket
-  cannot place an NFT a rule assigns (`district_rule_applies`); a rule ticket places only its NFT. A
-  rule naming a district with a Proofy rule is refused (`district_rule_unverified`). These are TEST
-  DATA standing in for Proofy Core rule results, never reported as verified.
+  cannot place an NFT a rule assigns (`district_rule_applies`); a rule ticket places only its NFT.
+  These are TEST DATA standing in for Proofy Core rule results, never reported as verified.
+- **Restricted districts (policy D1, locked 2026-10-21).** A district with a Proofy rule is
+  RESTRICTED: never in the default rotation. File version 3 (`rare-city/local-property-rehearsal-v3`)
+  adds `"ruleResults": [{ "guild"?, "discordUserId", "verificationRuleId", "qualifies": true | false
+  | null }]`, the local stand-in for Core's `access/check` (`guild` limits a result to one Discord
+  server). A restricted district is reached only by a rule ticket: an explicit rule names it for the
+  NFT AND its Proofy rule answers `true` for the session's player in the session's server. `false`
+  refuses (`district_rule_unqualified`, 403); no result, `null`, or results that disagree refuse
+  (`district_rule_unverified`, 403). The ticket records the district's rule id and that the answer
+  was `local-fixture` (the database accepts no other source until a verified Core contract exists);
+  the activation asks again under the city lock and refuses if the answer, the rule or the NFT's
+  rules changed. A city whose EVERY district is restricted has an empty rotation: entry answers
+  `{ "ticket": null, "awaiting": "asset" }` to a player with an NFT such a rule ticket could place
+  (nothing is held meanwhile, so nobody waits), and the player's selection
+  (`POST …/assignment` with `"ticketId": null`, allowed only where entry can assign nothing) issues
+  it. Anyone else is refused at entry, typed, and may still view the city. Where unrestricted
+  districts exist, entry still assigns one at once.
+- **Conflicting rules (policy D3, locked 2026-10-21).** Rules that apply to one NFT and name
+  different districts are REFUSED (`district_rule_ambiguous`) until the administrator fixes them,
+  at entry (all-restricted city), at selection and at activation, before any plot is chosen, whatever
+  their order, ids or types, and even where the player qualifies for one of them; the page never
+  names a district, so no plot choice gets around it. Rules naming the same district agree: their
+  ids are recorded sorted and deduplicated (at most 200 characters, `district_rule_ref_too_long`
+  beyond, never shortened).
+- **Rule changes (policy D4, locked 2026-10-21).** A change of the rotation (the unrestricted
+  districts, their order, or the geometry) supersedes EVERY pending ticket in the adoption's own
+  transaction (below). A change of rules only (explicit fixture rules, rule results, holdings, or a
+  restricted district's Proofy rule in a new configuration version) supersedes EXACTLY the rule
+  tickets it affects, recorded as `supersede_cause: "rules"`: a rule ticket stands only while its
+  holder still holds its NFT, the NFT's rules name the same district with the same rule ids, the
+  district has the same Proofy rule, and that rule still answers `true`. A fallback ticket names no
+  NFT and no rule, and an NFT's rules are judged again when it is placed, so a rule-only change never
+  touches it. Unaffected tickets keep their id, district, ordinal, generation and end. Affected
+  holders keep their claim window and are assigned again only by a new, fully checked request of
+  their own. A restricted district's rule change is applied in the adoption's transaction; a fixture
+  change by the first ticket transaction in the world after the restart that loads it (until then
+  the activation refuses an affected ticket). Committed properties and ticket history never change.
 - **Commit.** Only inside the property activation's transaction, under the city lock: the ticket is
   locked after the rotation and must be the activator's live ticket of the rotation's current epoch,
   issued on the geometry that governs now; the plot must be in its district. Geometry check, ticket
@@ -291,8 +330,8 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   or their geometry (possible only before the first property, or by a change of which districts carry
   a Proofy rule) begins a new epoch IN THE ADOPTION'S TRANSACTION: every active ticket is superseded,
   every unconsumed slot of the old epoch retired, and each superseded fallback ticket with time left is
-  reissued to its holder, in their old order, for no longer than it had. A rule ticket is superseded
-  and not reissued (the player selects the NFT again). A presentation-only version keeps tickets and
+  reissued to its holder, in their old order, in their claim window (never longer). A rule ticket is
+  superseded and not reissued (the player selects the NFT again). A presentation-only version keeps tickets and
   epoch. The database refuses an adoption that leaves the rotation behind. The stale-map protection
   (`config_superseded`) and Play's active-configuration check for a first property are unchanged.
 - **Locks and transactions.** Always city row (FOR SHARE to issue, FOR UPDATE to adopt or activate),
@@ -300,22 +339,16 @@ and 46B (owner-locked 2026-10-15, amended 2026-10-16), implemented for the local
   player browses or chooses a plot. Nothing provisional advances a sequence or writes an event.
 - **`city:verify`** checks every rotation, slot and ticket (`server/src/world/verifyTickets.ts`).
 
-**Explicit district rule precedence: UNRESOLVED (production), separate from the default algorithm.**
-The default round-robin algorithm above is the owner's locked rule. What is NOT decided (MCD 46A "Not
-locked"; 46B "Still open"), and therefore not implemented as a production rule source:
+**What is still not decided or not available (production).** Policies D1 to D4 above are the
+owner's locked rules. Still outside this repository:
 
-- the precedence of overlapping collection, trait and combined rules. Here, rules that apply to one
-  NFT and name different districts are REFUSED (`district_rule_ambiguous`), never ordered by a
-  guess; rules that name the same district agree and all their ids are recorded (a ticket records at
-  most 200 characters of comma-joined ids, the database's limit; more is REFUSED,
-  `district_rule_ref_too_long`, never shortened or partly recorded);
-- whether one NFT may qualify for several groupings, fallback for unmatched assets beyond the
-  default rotation, and whether explicit-rule claims should rebalance the fallback rotation (they do
-  not consume it here);
-- where production rule results come from: Proofy Core's verified NFT, trait and role evaluation
-  (no contract yet), never a browser and never Play's configuration (schema v1 has no rule field, and
-  none was added);
-- lease length, renewal and multi-NFT claim limits beyond one active ticket per player.
+- where production rule results come from: Proofy Core's verified NFT, trait, role and rule
+  evaluation (no contract yet), never a browser and never Play's configuration (schema v1 has no
+  rule field, and none was added). Locally the fixture stands in, marked `local-fixture` in every
+  ticket and never shown as verified;
+- whether one NFT may qualify for several groupings, and whether explicit-rule claims should
+  rebalance the fallback rotation (they do not consume it here);
+- multi-NFT claim limits beyond one active ticket per player.
 
 **Collection claim policy: the Play configuration change it needs.** Today Rare City's Play
 configuration schema version 1 (`src/brand/core/playConfig.ts`) describes a collection as exactly

@@ -91,9 +91,12 @@ export interface RehearsalActivationRequest extends RehearsalActorRequest {
   ticketId: string
 }
 
-/** `POST /v1/play/rehearsal/assignment` request. Exactly these keys. */
+/**
+ * `POST /v1/play/rehearsal/assignment` request. Exactly these keys. `ticketId` null names the ticket the player holds, or,
+ * in a city whose every district is restricted (entry answered `awaiting: "asset"`), none: the selected NFT's rule decides.
+ */
 export interface RehearsalAssignmentRequest extends RehearsalActorRequest {
-  ticketId: string
+  ticketId: string | null
   asset: string
 }
 
@@ -116,6 +119,11 @@ export interface RehearsalTicket {
   slot: { ordinal: number; generation: number; epoch: number } | null
   /** A rule ticket's rule ids and the NFT it is for. */
   rule: { ref: string; asset: string } | null
+  /**
+   * A rule ticket on a RESTRICTED district: the district's Proofy verification rule, and where the positive answer came
+   * from. Always `local-fixture` here: local test data standing in for Proofy Core, never a verified answer.
+   */
+  authorization: { verificationRuleId: number; source: 'local-fixture' } | null
   /** The governing configuration version and layout geometry it was issued on. */
   configVersion: number
   layoutGeometryFingerprint: string
@@ -125,12 +133,14 @@ export interface RehearsalTicket {
 
 /**
  * The ticket routes' answer. `ticket` is the player's live ticket after the call (null: none, or released). `fresh`: a
- * ticket was issued by this call (entry), or the assignment changed it.
+ * ticket was issued by this call (entry), or the assignment changed it. `awaiting: "asset"` (entry only, ticket null):
+ * every district of this city is restricted, so the district depends on the NFT; select it to be assigned its district.
  */
 export interface RehearsalTicketResponse {
   rehearsal: RehearsalMark
   ticket: RehearsalTicket | null
   fresh: boolean
+  awaiting: 'asset' | null
 }
 
 /** A property as the rehearsal route answers with it. No session, no player: provenance stays on the server. */
@@ -173,15 +183,17 @@ export type RehearsalErrorCode =
   | 'unknown_plot'
   /** The plot is taken, or not one the city offers now. */
   | 'plot_unavailable'
-  /** The plot's district has a Proofy rule, which nothing can check yet. */
+  /** The district is restricted (a Proofy rule) and there is no answer to its rule for this player (missing, unknown or conflicting). */
   | 'district_rule_unverified'
+  /** The district is restricted (a Proofy rule) and its rule answered that this player does not qualify. */
+  | 'district_rule_unqualified'
   /** This deployment or database does not write properties. */
   | 'mutations_held'
   /** The city moved during the activation; nothing was written. Try again. */
   | 'sequence_conflict'
   /** The local file lists no unplaced NFT of this city for the player: no district ticket was issued. */
   | 'not_eligible'
-  /** Every district of this city has a Proofy rule: there is no default district to assign. */
+  /** Every district of this city is restricted, and no explicit rule places this NFT (or any of the player's) in one. */
   | 'no_default_district'
   /** The named district ticket is not the player's live ticket in this city (unknown, released or already used). */
   | 'ticket_not_live'
@@ -249,14 +261,21 @@ function parseRehearsalTicket(v: unknown): RehearsalTicket | null {
     if (!isRecord(r) || typeof r.ref !== 'string' || r.ref.length === 0 || r.ref.length > 200 || !parseAssetKey(r.asset) || v.slot !== null) return null
     rule = { ref: r.ref, asset: r.asset as string }
   }
-  return { id: v.id, kind: v.kind, districtKey: v.districtKey, slot, rule, configVersion: v.configVersion, layoutGeometryFingerprint: v.layoutGeometryFingerprint, issuedAt: v.issuedAt, expiresAt: v.expiresAt }
+  let authorization: RehearsalTicket['authorization'] = null
+  if (v.authorization !== null) {
+    const a = v.authorization
+    if (v.kind !== 'rule' || !isRecord(a) || !nonNegInt(a.verificationRuleId) || a.verificationRuleId < 1 || a.source !== 'local-fixture') return null
+    authorization = { verificationRuleId: a.verificationRuleId, source: 'local-fixture' }
+  }
+  return { id: v.id, kind: v.kind, districtKey: v.districtKey, slot, rule, authorization, configVersion: v.configVersion, layoutGeometryFingerprint: v.layoutGeometryFingerprint, issuedAt: v.issuedAt, expiresAt: v.expiresAt }
 }
 
 export function parseRehearsalTicketResponse(body: unknown): RehearsalTicketResponse | null {
-  if (!isRecord(body) || !parseMark(body.rehearsal) || typeof body.fresh !== 'boolean') return null
-  if (body.ticket === null) return { rehearsal: REHEARSAL_MARK, ticket: null, fresh: body.fresh }
-  const ticket = parseRehearsalTicket(body.ticket)
-  return ticket ? { rehearsal: REHEARSAL_MARK, ticket, fresh: body.fresh } : null
+  if (!isRecord(body) || !parseMark(body.rehearsal) || typeof body.fresh !== 'boolean' || (body.awaiting !== null && body.awaiting !== 'asset')) return null
+  if (body.ticket === null) return { rehearsal: REHEARSAL_MARK, ticket: null, fresh: body.fresh, awaiting: body.awaiting }
+  // A ticket is held: nothing is awaited.
+  const ticket = body.awaiting === null ? parseRehearsalTicket(body.ticket) : null
+  return ticket ? { rehearsal: REHEARSAL_MARK, ticket, fresh: body.fresh, awaiting: null } : null
 }
 
 export function parseRehearsalActivationResponse(body: unknown): RehearsalActivationResponse | null {

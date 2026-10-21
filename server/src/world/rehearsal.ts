@@ -10,9 +10,11 @@ import {
   type RehearsalErrorCode,
   type RehearsalTicket,
   type RehearsalTicketResponse,
+  type RuleAnswer,
 } from '../engine'
 import { PlaySessionError, type ExpectedActor, type LivePlaySession, type PlaySessionService } from '../play/session'
 import { createPropertyActivationService, WorldPropertyRefusal, type WorldPropertyRefusalCode, type WorldPropertyStore } from './properties'
+import type { TicketEligibility } from './rotation'
 import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalCode, type DistrictTicketStore } from './tickets'
 
 /**
@@ -36,20 +38,30 @@ import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalC
  *     NFT an explicit fixture rule assigns swaps it for that rule's ticket (`…/assignment`); leaving
  *     releases it (`…/release`); an activation must name it, and consumes it. A reload only reads it
  *     (`GET …/ticket`): it never issues one.
- *   - Districts with a Proofy rule are never a default district, and are refused: no contract can check one.
+ *   - RESTRICTED districts (a Proofy rule) are never a default district (D1). One is reached only by an
+ *     explicit fixture rule for the NFT AND a positive fixture RULE RESULT (file version 3) for the
+ *     session's player: the local stand-in for Proofy Core's `access/check`. A missing, `null` or
+ *     conflicting result, or `false`, refuses. In a city whose every district is restricted, entry
+ *     answers `awaiting: "asset"` and the player's selection of an NFT (`…/assignment` with
+ *     `ticketId: null`) issues its rule ticket. None of this is a verified Core answer.
  *   - Who acts is `requireActor` for every change: the cookie's live session must be exactly the one
  *     the page drew (session, world, player), and Play must answer `active` now (no cache, no grace).
  *   - The page names the geometry it drew; under the city's lock it must be the governing one, and a
  *     world's first property also needs Play to name the governing version as active (`properties.ts`).
  *
  * Still open, and not replaced here: F5 (browser-bound launch), F7 (fresh membership and entitlement),
- * F3 (Play game status), Core NFT/role eligibility and rule results, the precedence of overlapping
- * explicit rules, and a separate non-owner database role.
+ * F3 (Play game status), Core NFT/role/trait eligibility and verified rule results, and a separate
+ * non-owner database role. Conflicting explicit rules are refused (D3), never ordered.
  */
 
-/** The rehearsal file's `kind`: v1 lists NFTs only; v2 also gives NFTs traits and declares explicit district rules. */
+/**
+ * The rehearsal file's `kind`: v1 lists NFTs only; v2 also gives NFTs traits and declares explicit district rules; v3 also
+ * gives Proofy rule results for players (restricted districts, D1).
+ */
 export const REHEARSAL_FILE_KIND = 'rare-city/local-property-rehearsal-v1'
 export const REHEARSAL_FILE_KIND_V2 = 'rare-city/local-property-rehearsal-v2'
+export const REHEARSAL_FILE_KIND_V3 = 'rare-city/local-property-rehearsal-v3'
+const MAX_RULE_RESULTS = 1_000
 const MAX_PLAYERS = 200
 const MAX_ASSETS_PER_PLAYER = 200
 const MAX_RULES = 100
@@ -77,11 +89,24 @@ export interface RehearsalDistrictRule {
   district: string
 }
 
-/** The whole local fixture: grants, each NFT's traits, explicit district rules. */
+/**
+ * A Proofy rule result of the local fixture: what Proofy Core's `access/check` (`checkType: "rule"`) would answer for one
+ * player and one verification rule, `qualifies` true, false or null. `guild` limits it to one Discord server; without
+ * it, it holds in every server (local test data: a Core rule id names one rule of one server). TEST DATA, never verified.
+ */
+export interface RehearsalRuleResult {
+  guild: string | null
+  discordUserId: string
+  verificationRuleId: number
+  qualifies: RuleAnswer
+}
+
+/** The whole local fixture: grants, each NFT's traits, explicit district rules, Proofy rule results. */
 export interface RehearsalFixture {
   grants: RehearsalGrants
   traits: ReadonlyMap<string, Readonly<Record<string, string>>>
   rules: readonly RehearsalDistrictRule[]
+  results: readonly RehearsalRuleResult[]
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -103,10 +128,13 @@ function parseTraits(where: string, v: unknown): Record<string, string> {
  * NFT's traits the same wherever it is listed. Throws with the reason otherwise.
  */
 export function parseRehearsalFile(raw: unknown): RehearsalFixture {
-  const v2 = isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V2
-  const keys = v2 ? 'districtRules,kind,players' : 'kind,players'
+  const v3 = isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V3
+  const v2 = v3 || (isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V2)
+  const keys = v3 ? 'districtRules,kind,players,ruleResults' : v2 ? 'districtRules,kind,players' : 'kind,players'
   if (!isRecord(raw) || Object.keys(raw).sort().join() !== keys || (raw.kind !== REHEARSAL_FILE_KIND && !v2) || !isRecord(raw.players))
-    throw new Error(`a local rehearsal file is exactly { "kind": "${REHEARSAL_FILE_KIND}", "players": { … } }, or { "kind": "${REHEARSAL_FILE_KIND_V2}", "players": { … }, "districtRules": [ … ] }`)
+    throw new Error(
+      `a local rehearsal file is exactly { "kind": "${REHEARSAL_FILE_KIND}", "players": { … } }, { "kind": "${REHEARSAL_FILE_KIND_V2}", "players": { … }, "districtRules": [ … ] }, or { "kind": "${REHEARSAL_FILE_KIND_V3}", "players", "districtRules", "ruleResults": [ … ] }`,
+    )
   const entries = Object.entries(raw.players)
   if (entries.length > MAX_PLAYERS) throw new Error(`a local rehearsal file lists at most ${MAX_PLAYERS} players`)
   const grants = new Map<string, readonly NftAsset[]>()
@@ -143,7 +171,23 @@ export function parseRehearsalFile(raw: unknown): RehearsalFixture {
       rules.push({ id: r.id, chain: probe.chain, contract: probe.contract, traits: r.traits === undefined ? null : Object.freeze(parseTraits(`district rule ${r.id}`, r.traits)), district: r.district })
     }
   }
-  return { grants, traits, rules: Object.freeze(rules) }
+  const results: RehearsalRuleResult[] = []
+  if (v3) {
+    if (!Array.isArray(raw.ruleResults) || raw.ruleResults.length > MAX_RULE_RESULTS) throw new Error(`ruleResults is a list of at most ${MAX_RULE_RESULTS} results`)
+    for (const r of raw.ruleResults) {
+      if (!isRecord(r) || !['discordUserId,qualifies,verificationRuleId', 'discordUserId,guild,qualifies,verificationRuleId'].includes(Object.keys(r).sort().join()))
+        throw new Error('a rule result is exactly { "discordUserId", "verificationRuleId", "qualifies" } and optionally "guild"')
+      if (typeof r.discordUserId !== 'string' || !DISCORD_ID.test(r.discordUserId)) throw new Error(`rule result for ${JSON.stringify(r.discordUserId)}: not a Discord user id`)
+      if (r.guild !== undefined && (typeof r.guild !== 'string' || !DISCORD_ID.test(r.guild))) throw new Error(`rule result guild ${JSON.stringify(r.guild)} is not a Discord server id`)
+      if (typeof r.verificationRuleId !== 'number' || !Number.isSafeInteger(r.verificationRuleId) || r.verificationRuleId < 1) throw new Error(`rule result ${JSON.stringify(r.verificationRuleId)} is not a Proofy verification rule id`)
+      if (r.qualifies !== true && r.qualifies !== false && r.qualifies !== null) throw new Error('a rule result qualifies true, false or null (unknown)')
+      const result: RehearsalRuleResult = { guild: (r.guild as string | undefined) ?? null, discordUserId: r.discordUserId, verificationRuleId: r.verificationRuleId, qualifies: r.qualifies }
+      if (results.some((x) => x.guild === result.guild && x.discordUserId === result.discordUserId && x.verificationRuleId === result.verificationRuleId))
+        throw new Error(`rule ${result.verificationRuleId} has two results for player ${result.discordUserId}${result.guild ? ` in ${result.guild}` : ''}`)
+      results.push(Object.freeze(result))
+    }
+  }
+  return { grants, traits, rules: Object.freeze(rules), results: Object.freeze(results) }
 }
 
 /** The grants of a rehearsal file (either version). */
@@ -156,6 +200,30 @@ export function matchingRules(fixture: Pick<RehearsalFixture, 'traits' | 'rules'
     .filter((r) => r.chain === asset.chain && r.contract === asset.contract && Object.entries(r.traits ?? {}).every(([k, v]) => own[k] === v))
     .map((r) => ({ id: r.id, district: r.district }))
 }
+
+/**
+ * The fixture's answer to a Proofy rule for a player of a Discord server: the results for that player and rule, in that
+ * server or in any. None, or results that disagree (ambiguous evidence), answer `null`: unknown, which never qualifies.
+ */
+export function ruleAnswerOf(fixture: Pick<RehearsalFixture, 'results'>, where: { guildId: string; discordUserId: string }, verificationRuleId: number): RuleAnswer {
+  const found = fixture.results.filter((r) => r.discordUserId === where.discordUserId && r.verificationRuleId === verificationRuleId && (r.guild === null || r.guild === where.guildId))
+  if (found.length === 0) return null
+  return found.every((r) => r.qualifies === found[0].qualifies) ? found[0].qualifies : null
+}
+
+/** The ticket store's eligibility, from the local fixture: TEST DATA standing in for Proofy Core. */
+export function rehearsalEligibility(given: RehearsalFixture | RehearsalGrants): TicketEligibility {
+  const fixture = fixtureOf(given)
+  return {
+    source: 'local-fixture',
+    assets: (player) => fixture.grants.get(player.discordUserId) ?? [],
+    matches: (asset) => matchingRules(fixture, asset),
+    ruleAnswer: (where, rule) => ruleAnswerOf(fixture, where, rule),
+  }
+}
+
+/** A fixture, or a bare grants map as v1 gave it (no traits, rules or results). */
+const fixtureOf = (given: RehearsalFixture | RehearsalGrants): RehearsalFixture => (given instanceof Map ? { grants: given, traits: new Map(), rules: [], results: [] } : (given as RehearsalFixture))
 
 /** A refusal of the rehearsal routes, as the status and `{ "error": code }` it is answered with. */
 export class RehearsalRefusal extends Error {
@@ -180,6 +248,7 @@ const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
   'plot-unavailable': [409, 'plot_unavailable'],
   'district-rule-unverified': [403, 'district_rule_unverified'],
   district_rule_unverified: [403, 'district_rule_unverified'],
+  district_rule_unqualified: [403, 'district_rule_unqualified'],
   mutations_held: [403, 'mutations_held'],
   sequence_conflict: [409, 'sequence_conflict'],
   not_eligible: [403, 'not_eligible'],
@@ -213,6 +282,8 @@ export function rehearsalTicket(t: DistrictTicket): RehearsalTicket {
     districtKey: t.districtKey,
     slot: t.kind === 'fallback' && t.ordinal !== null && t.generation !== null ? { ordinal: t.ordinal, generation: t.generation, epoch: t.epoch } : null,
     rule: t.kind === 'rule' && t.ruleRef !== null && t.asset !== null ? { ref: t.ruleRef, asset: t.asset } : null,
+    // A restricted district's rule, and that the answer was local test data: never presented as verified.
+    authorization: t.authorization && t.authorization.source === 'local-fixture' ? { verificationRuleId: t.authorization.verificationRuleId, source: 'local-fixture' } : null,
     configVersion: t.configVersion,
     layoutGeometryFingerprint: t.layoutGeometryFingerprint,
     issuedAt: t.issuedAt,
@@ -237,7 +308,7 @@ export interface LocalPropertyRehearsal {
 
 export interface LocalPropertyRehearsalOptions {
   mode: AppMode
-  /** The parsed rehearsal file. (A bare grants map, as v1 gave, is a fixture without traits or rules.) */
+  /** The parsed rehearsal file. (A bare grants map, as v1 gave, is a fixture without traits, rules or results.) The ticket store must be built on the same one (`rehearsalEligibility`). */
   fixture: RehearsalFixture | RehearsalGrants
   sessions: Pick<PlaySessionService, 'session' | 'requireActor' | 'activeConfig'>
   store: WorldPropertyStore
@@ -258,9 +329,12 @@ const ticketIdOf = (body: Record<string, unknown>) => {
   return body.ticketId
 }
 
+/** An assignment may name no ticket (`null`): the one the player holds, or none in a city whose every district is restricted. */
+const heldTicketIdOf = (body: Record<string, unknown>) => (body.ticketId === null ? null : ticketIdOf(body))
+
 export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, store, tickets }: LocalPropertyRehearsalOptions): LocalPropertyRehearsal {
   if (mode !== 'local') throw new Error(`the local property rehearsal runs only with APP_MODE=local, not ${mode}`)
-  const fixture: RehearsalFixture = given instanceof Map ? { grants: given, traits: new Map(), rules: [] } : (given as RehearsalFixture)
+  const fixture = fixtureOf(given)
   const service = createPropertyActivationService({ sessions, store })
   const listed = (player: string) => fixture.grants.get(player) ?? []
   const granted = (player: string, key: string) => listed(player).some((a) => assetKey(a) === key)
@@ -288,25 +362,25 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
     async ticket(presented) {
       const session = await sessions.session(presented)
       const held = await ticketCall(() => tickets.current(session))
-      return { rehearsal: REHEARSAL_MARK, ticket: held ? rehearsalTicket(held) : null, fresh: false }
+      return { rehearsal: REHEARSAL_MARK, ticket: held ? rehearsalTicket(held) : null, fresh: false, awaiting: null }
     },
 
     async enter(presented, body) {
       const who = await actor(presented, actorOf(body, ACTOR_KEYS))
       // Eligibility is the server-trusted local file for the session's player, never anything the request says.
-      const entered = await ticketCall(() => tickets.enter(who, listed(who.player.discordUserId)))
-      return { rehearsal: REHEARSAL_MARK, ticket: rehearsalTicket(entered.ticket), fresh: entered.fresh }
+      const entered = await ticketCall(() => tickets.enter(who))
+      return { rehearsal: REHEARSAL_MARK, ticket: entered.ticket ? rehearsalTicket(entered.ticket) : null, fresh: entered.fresh, awaiting: entered.awaiting }
     },
 
     async assign(presented, body) {
       const expected = actorOf(body, ASSIGNMENT_KEYS)
-      const ticketId = ticketIdOf(body)
+      const ticketId = heldTicketIdOf(body)
       const asset = parseAssetKey(body.asset)
       if (!asset) throw new RehearsalRefusal(400, 'invalid_asset')
       const who = await actor(presented, expected)
       if (!granted(who.player.discordUserId, assetKey(asset))) throw new RehearsalRefusal(403, 'rehearsal_asset_not_granted')
-      const assigned = await ticketCall(() => tickets.assign(who, ticketId, asset, matchingRules(fixture, asset)))
-      return { rehearsal: REHEARSAL_MARK, ticket: rehearsalTicket(assigned.ticket), fresh: assigned.changed }
+      const assigned = await ticketCall(() => tickets.assign(who, ticketId, asset))
+      return { rehearsal: REHEARSAL_MARK, ticket: rehearsalTicket(assigned.ticket), fresh: assigned.changed, awaiting: null }
     },
 
     async release(presented, body) {
@@ -314,7 +388,7 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
       const ticketId = ticketIdOf(body)
       const who = await actor(presented, expected)
       await ticketCall(() => tickets.release(who, ticketId))
-      return { rehearsal: REHEARSAL_MARK, ticket: null, fresh: false }
+      return { rehearsal: REHEARSAL_MARK, ticket: null, fresh: false, awaiting: null }
     },
 
     async activate(presented, body) {
@@ -335,8 +409,9 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
           { asset, plotId, geometryFingerprint },
           {
             refuseRuleGatedDistricts: true,
-            // The district ticket the plot was chosen under, and the explicit rules the trusted fixture says match this NFT.
-            ticket: { id: ticketId, matches: matchingRules(fixture, asset) },
+            // The district ticket the plot was chosen under, the explicit rules the trusted fixture says match this NFT, and
+            // its Proofy rule results, asked again for a restricted district under the city's lock.
+            ticket: { id: ticketId, matches: matchingRules(fixture, asset), ruleAnswer: (where, rule) => ruleAnswerOf(fixture, where, rule), source: 'local-fixture' },
             // The player Proofy Play redeemed for the session, never one the request names, must be listed for this NFT.
             authorize: (who) => {
               if (!granted(who.player.discordUserId, assetKey(asset))) throw new RehearsalRefusal(403, 'rehearsal_asset_not_granted')

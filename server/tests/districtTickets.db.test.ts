@@ -7,103 +7,31 @@ import { describe, expect, it } from 'vitest'
 import { verifyCity } from '../src/city/verify'
 import { migrate } from '../src/db/migrations'
 import { createPool } from '../src/db/pool'
-import { MAX_RULE_REF_LENGTH, nftAsset, type DistrictRuleMatch, type NftAsset } from '../src/engine'
+import { MAX_RULE_REF_LENGTH, nftAsset, type DistrictRuleMatch } from '../src/engine'
 import { silentLogger } from '../src/log'
-import { createPlayLaunchService } from '../src/play/launch'
-import { createPlaySessionService, createPlaySessionStore, PlaySessionError, type OpenedPlaySession } from '../src/play/session'
-import { createPropertyActivationService, createWorldPropertyStore, WorldPropertyRefusal, type ActivationStep } from '../src/world/properties'
 import { worldTicketsOf } from '../src/world/rotation'
-import { createWorldStore } from '../src/world/store'
-import { createDistrictTicketStore, DistrictTicketRefusal, type DistrictTicket, type TicketStep } from '../src/world/tickets'
+import type { ActivationStep } from '../src/world/properties'
+import { createDistrictTicketStore, DistrictTicketRefusal } from '../src/world/tickets'
 import { snapshot } from './activationFixtures'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
-import { ADA, BEA, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
+import { ADA, BEA, GUILD_A, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
+import { contract, DOC, keeper, player, refusalOf, ROTATION, sleep, testSource, ticketWorld, tide } from './ticketHarness'
 
 /**
  * DISTRICT TICKETS (P1-C2-D1, migration 0010) against a disposable Postgres: the owner-locked citywide
  * round-robin default assignment of MCD 46B, through the real launch path, world store, session
  * service, ticket store and property store. The numbered proofs are the milestone's.
  */
-const contract = (n: number) => `0x${'0'.repeat(36)}${n.toString(16).padStart(4, '0')}`
-const district = (key: string, gate: null | { verificationRuleId: number; label: string } = null) => ({ key, name: key.replace(/-/g, ' '), accent: '#5aa9ff', monument: null, proofyRule: gate })
-/** Four default districts and one gated one, two collections on two chains. */
-const DOC = {
-  cityName: 'Harborlight',
-  brand: { name: 'Harborlight', logo: null },
-  capital: { name: 'Beacon Hall', crest: null },
-  collections: [
-    { key: 'harbor-keepers', chain: 'eip155:8453', contract: contract(0xa001), displayName: 'Harbor Keepers' },
-    { key: 'tide-pass', chain: 'eip155:1', contract: contract(0xa002), displayName: 'Tide Pass' },
-  ],
-  districts: [district('lantern-quay'), district('tidewater'), district('saltmarsh'), district('compass-row', { verificationRuleId: 41, label: 'Verified Captain role' }), district('dune')],
-}
-const ROTATION = ['lantern-quay', 'tidewater', 'saltmarsh', 'dune']
 /** The same collections on other ground: the districts reversed (a geometry change allowed before the first property). */
 const DOC_REVERSED = { ...DOC, districts: [...DOC.districts].reverse() }
 /** Presentation only: the same districts and geometry. */
 const DOC_RENAMED = { ...DOC, cityName: 'Harborlight Renamed' }
-const keeper = (id: number | string): NftAsset => nftAsset({ chain: 'eip155:8453', contract: contract(0xa001), tokenId: String(id) })!
-const tide = (id: number | string): NftAsset => nftAsset({ chain: 'eip155:1', contract: contract(0xa002), tokenId: String(id) })!
-const player = (n: number, name = `P${n}`) => ({ discordUserId: `9${String(n).padStart(17, '0')}`, coreUserId: `core-p${n}`, displayName: name })
 const CY = player(3, 'Cy')
 const DEE = player(4, 'Dee')
 
-type Opened = OpenedPlaySession
-
-async function refusalOf(work: Promise<unknown>): Promise<string> {
-  const err = await work.then(
-    () => null,
-    (e: unknown) => e,
-  )
-  if (err instanceof WorldPropertyRefusal || err instanceof DistrictTicketRefusal || err instanceof PlaySessionError) return err.code
-  throw err ?? new Error('expected a refusal, got success')
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
 describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a disposable Postgres', () => {
   const t = useTestSchema()
-
-  async function setup(
-    options: { ttlSeconds?: number; db?: pg.Pool; migrated?: boolean; play?: ReturnType<typeof fakePlay>; onStep?: (step: ActivationStep) => void | Promise<void>; onTicketStep?: (step: TicketStep) => void | Promise<void> } = {},
-  ) {
-    const db = options.db ?? t.db
-    if (!options.migrated) await migrate(db, { dir: MIGRATIONS_DIR, environment: 'local' })
-    // One Play per database: run ids are Play's, and a second fake would hand out the same ones again.
-    const p = options.play ?? fakePlay()
-    if (!options.play) {
-      p.install(INSTALLATION_A, GUILD_A)
-      p.install(INSTALLATION_B, GUILD_B)
-      p.publish(INSTALLATION_A, DOC)
-      p.publish(INSTALLATION_B, DOC)
-    }
-    const worlds = createWorldStore(db, { mode: 'local', log: silentLogger })
-    const launch = createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city', worlds })
-    const sessions = createPlaySessionService({ store: createPlaySessionStore(db), worlds, play: p.play, environment: 'dev', gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0 })
-    const store = createWorldPropertyStore(db, { mode: 'local', log: silentLogger, onStep: options.onStep })
-    const tickets = createDistrictTicketStore(db, { mode: 'local', log: silentLogger, ttlSeconds: options.ttlSeconds ?? 600, onStep: options.onTicketStep })
-    const activation = createPropertyActivationService({ sessions, store })
-    let runs = 0
-    const open = async (installation: string, who = ADA, presented: string | null = null) =>
-      sessions.open(await launch.open({ runToken: p.launch(installation, `run-${++runs}-${randomUUID()}`, { player: who }) }), presented)
-    const actorOf = (o: Opened) => ({ sessionRef: o.response.viewer.session.ref, worldId: o.response.world.id, discordUserId: o.response.viewer.player.discordUserId })
-    const live = (o: Opened) => sessions.requireActor(o.token, actorOf(o))
-    /** City entry, eligible by `assets` (the trusted fixture's list for the player). */
-    const enter = async (o: Opened, assets: NftAsset[] = [keeper(1)]) => tickets.enter(await live(o), assets)
-    const assign = async (o: Opened, ticket: DistrictTicket, asset: NftAsset, matches: DistrictRuleMatch[] = []) => tickets.assign(await live(o), ticket.id, asset, matches)
-    const release = async (o: Opened, ticket: DistrictTicket) => tickets.release(await live(o), ticket.id)
-    const drawnOf = async (o: Opened) => (await sessions.city(await sessions.session(o.token))).world.definition.geometryFingerprint
-    const activate = async (o: Opened, ticket: { id: string }, asset: NftAsset, plotId: string, matches: DistrictRuleMatch[] = [], drawn?: string) =>
-      activation.activate(o.token, actorOf(o), { asset, plotId, geometryFingerprint: drawn ?? (await drawnOf(o)) }, { ticket: { id: ticket.id, matches } })
-    return { p, worlds, launch, sessions, store, tickets, activation, open, actorOf, live, enter, assign, release, activate, drawnOf }
-  }
-
-  const one = async <T extends pg.QueryResultRow>(sql: string, params: unknown[] = []) => (await t.db.query<T>(sql, params)).rows[0]
-  const rotation = (worldId: string) => one<{ epoch: number; high_water: string; committed_count: string; districts: string[]; basis_config_version: number }>('SELECT epoch, high_water, committed_count, districts, basis_config_version FROM world_assignment_rotations WHERE world_id = $1', [worldId])
-  const slotsOf = async (worldId: string) => (await t.db.query<{ ordinal: string; generation: number; state: string; district_key: string; epoch: number }>('SELECT ordinal, generation, state, district_key, epoch FROM world_assignment_slots WHERE world_id = $1 ORDER BY ordinal', [worldId])).rows.map((s) => ({ ...s, ordinal: Number(s.ordinal) }))
-  const sequenceOf = async (worldId: string) => Number((await one<{ sequence: string }>('SELECT c.sequence FROM city c JOIN worlds w ON w.city_id = c.id WHERE w.id = $1', [worldId])).sequence)
-  const frozen = async (worldId: string) => (await one<{ n: number }>('SELECT count(*)::int AS n FROM world_geometry_freezes WHERE world_id = $1', [worldId])).n === 1
-  const statusOf = async (id: string) => (await one<{ status: string }>('SELECT status FROM world_district_tickets WHERE id = $1', [id])).status
+  const { setup, one, rotation, slotsOf, sequenceOf, frozen, statusOf, leaveOnly } = ticketWorld(t)
 
   describe('entry and the round robin', () => {
     it('1. A, B and C entering in order hold districts 1, 2 and 3 at once, without waiting for each other', async () => {
@@ -112,31 +40,32 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const ta = await env.enter(a)
       const tb = await env.enter(b)
       const tc = await env.enter(c)
-      expect([ta, tb, tc].map((e) => [e.fresh, e.ticket.districtKey, e.ticket.ordinal, e.ticket.generation, e.ticket.kind, e.ticket.status])).toEqual([
-        [true, 'lantern-quay', 0, 1, 'fallback', 'active'],
-        [true, 'tidewater', 1, 1, 'fallback', 'active'],
-        [true, 'saltmarsh', 2, 1, 'fallback', 'active'],
+      expect([ta, tb, tc].map((e) => [e.fresh, e.awaiting, e.ticket!.districtKey, e.ticket!.ordinal, e.ticket!.generation, e.ticket!.kind, e.ticket!.status])).toEqual([
+        [true, null, 'lantern-quay', 0, 1, 'fallback', 'active'],
+        [true, null, 'tidewater', 1, 1, 'fallback', 'active'],
+        [true, null, 'saltmarsh', 2, 1, 'fallback', 'active'],
       ])
       // Each is bound to the governing configuration and geometry, and to its holder.
       const worldId = a.response.world.id
       expect(ta.ticket).toMatchObject({ worldId, installationId: INSTALLATION_A, actor: { discordUserId: ADA.discordUserId, coreUserId: ADA.coreUserId }, configVersion: 1, epoch: 1, layoutGeometryFingerprint: a.response.world.definition.geometryFingerprint })
-      expect(Date.parse(ta.ticket.expiresAt) - Date.parse(ta.ticket.issuedAt)).toBeGreaterThan(599_000)
+      // Exactly the locked lease (D2), from the instant of issuance.
+      expect(Date.parse(ta.ticket!.expiresAt) - Date.parse(ta.ticket!.issuedAt)).toBe(900_000)
       // Provisional: no property, no event, no sequence, no freeze. The rotation skips the rule-gated district.
       expect(await sequenceOf(worldId)).toBe(1)
       expect(await frozen(worldId)).toBe(false)
       expect(await rotation(worldId)).toMatchObject({ epoch: 1, high_water: '3', committed_count: '0', districts: ROTATION })
       // The fourth and fifth go on round the rotation; the gated district is nobody's default.
-      expect((await env.enter(await env.open(INSTALLATION_A, DEE))).ticket.districtKey).toBe('dune')
-      expect((await env.enter(await env.open(INSTALLATION_A, player(5)))).ticket).toMatchObject({ districtKey: 'lantern-quay', ordinal: 4 })
+      expect((await env.ticketOf(await env.open(INSTALLATION_A, DEE))).districtKey).toBe('dune')
+      expect((await env.ticketOf(await env.open(INSTALLATION_A, player(5))))).toMatchObject({ districtKey: 'lantern-quay', ordinal: 4 })
       expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ districtTickets: { epoch: 1, highWater: 5, committed: 0, active: 5, free: 0 } }] })
     })
 
     it('2. B and C activate in their districts while A stays idle; A keeps District 1', async () => {
       const env = await setup()
       const [a, b, c] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA), await env.open(INSTALLATION_A, CY)]
-      const ta = (await env.enter(a)).ticket
-      const tb = (await env.enter(b, [keeper(2)])).ticket
-      const tc = (await env.enter(c, [keeper(3)])).ticket
+      const ta = (await env.ticketOf(a))
+      const tb = (await env.ticketOf(b, [keeper(2)]))
+      const tc = (await env.ticketOf(c, [keeper(3)]))
       // C first, then B: order of activation is the players', not the rotation's.
       const placedC = await env.activate(c, tc, keeper(3), 'saltmarsh-w0-p0')
       const placedB = await env.activate(b, tb, keeper(2), 'tidewater-w0-p1')
@@ -154,8 +83,8 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
     it('3. A cancels: the next eligible entrant receives A\'s released slot (oldest gap first); placed properties do not move', async () => {
       const env = await setup()
       const [a, b, c, d] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA), await env.open(INSTALLATION_A, CY), await env.open(INSTALLATION_A, DEE)]
-      const ta = (await env.enter(a)).ticket
-      const tb = (await env.enter(b, [keeper(2)])).ticket
+      const ta = (await env.ticketOf(a))
+      const tb = (await env.ticketOf(b, [keeper(2)]))
       await env.enter(c, [keeper(3)])
       await env.activate(b, tb, keeper(2), 'tidewater-w0-p0')
       const released = await env.release(a, ta)
@@ -163,21 +92,21 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const worldId = a.response.world.id
       expect((await slotsOf(worldId))[0]).toMatchObject({ ordinal: 0, state: 'free', generation: 1 })
       // D gets District 1 from the gap pool, at the slot's next generation, with a new ticket id.
-      const td = (await env.enter(d, [keeper(4)])).ticket
+      const td = (await env.ticketOf(d, [keeper(4)]))
       expect([td.ordinal, td.generation, td.districtKey, td.id === ta.id]).toEqual([0, 2, 'lantern-quay', false])
       // A, entering again, takes the next new slot: no gaps left.
-      expect((await env.enter(a)).ticket).toMatchObject({ ordinal: 3, generation: 1, districtKey: 'dune' })
+      expect((await env.ticketOf(a))).toMatchObject({ ordinal: 3, generation: 1, districtKey: 'dune' })
       // B's property is where B put it.
       expect((await one<{ plot_id: string }>('SELECT plot_id FROM world_properties WHERE world_id = $1', [worldId])).plot_id).toBe('tidewater-w0-p0')
       // Two gaps: the lower ordinal is reused first, whatever order they were released in.
       const e = await env.open(INSTALLATION_A, player(5))
       const f = await env.open(INSTALLATION_A, player(6))
-      const te = (await env.enter(e, [keeper(5)])).ticket
-      const tf = (await env.enter(f, [keeper(6)])).ticket
+      const te = (await env.ticketOf(e, [keeper(5)]))
+      const tf = (await env.ticketOf(f, [keeper(6)]))
       await env.release(f, tf)
       await env.release(e, te)
       expect([te.ordinal, tf.ordinal]).toEqual([4, 5])
-      const g = (await env.enter(await env.open(INSTALLATION_A, player(7)), [keeper(7)])).ticket
+      const g = (await env.ticketOf(await env.open(INSTALLATION_A, player(7)), [keeper(7)]))
       expect([g.ordinal, g.generation]).toEqual([4, 2])
       expect(await verifyCity(t.db)).toMatchObject({ ok: true })
     })
@@ -186,7 +115,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const players = Array.from({ length: 16 }, (_, i) => player(100 + i))
       const opened = await Promise.all(players.map((who) => env.open(INSTALLATION_A, who)))
-      const entered = await Promise.all(opened.map((o, i) => env.enter(o, [keeper(100 + i)])))
+      const entered = (await Promise.all(opened.map((o, i) => env.ticketOf(o, [keeper(100 + i)])))).map((ticket) => ({ ticket }))
       const pairs = entered.map((e) => `${e.ticket.ordinal}/${e.ticket.generation}`)
       expect(new Set(pairs).size).toBe(16)
       expect(entered.map((e) => e.ticket.ordinal).sort((x, y) => x! - y!)).toEqual(Array.from({ length: 16 }, (_, i) => i))
@@ -199,7 +128,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       await Promise.all(leaving.map((i) => env.release(opened[i], entered[i].ticket)))
       const gaps = leaving.map((i) => entered[i].ticket.ordinal!).sort((x, y) => x - y)
       const more = Array.from({ length: 8 }, (_, i) => player(200 + i))
-      const again = await Promise.all((await Promise.all(more.map((who) => env.open(INSTALLATION_A, who)))).map((o, i) => env.enter(o, [keeper(200 + i)])))
+      const again = (await Promise.all((await Promise.all(more.map((who) => env.open(INSTALLATION_A, who)))).map((o, i) => env.ticketOf(o, [keeper(200 + i)])))).map((ticket) => ({ ticket }))
       const got = again.map((e) => [e.ticket.ordinal!, e.ticket.generation!] as const).sort((x, y) => x[0] - y[0])
       expect(got).toEqual([...gaps.map((g) => [g, 2]), [16, 1], [17, 1], [18, 1]])
       expect(await rotation(worldId)).toMatchObject({ high_water: '19' })
@@ -209,9 +138,9 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
     it('5. a reload, re-entry, relaunch or new session returns the same ticket: nobody skips a district by logging in again', async () => {
       const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
-      const first = (await env.enter(a)).ticket
+      const first = await env.ticketOf(a)
       const repeats = await Promise.all(Array.from({ length: 6 }, () => env.enter(a)))
-      expect(repeats.every((r) => !r.fresh && r.ticket.id === first.id)).toBe(true)
+      expect(repeats.every((r) => !r.fresh && r.ticket?.id === first.id)).toBe(true)
       // A relaunch in the same browser (a new session) and a launch in another browser: still the same ticket.
       const relaunched = await env.open(INSTALLATION_A, ADA, a.token)
       const elsewhere = await env.open(INSTALLATION_A, ADA)
@@ -220,7 +149,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const reader = await env.open(INSTALLATION_A, BEA)
       expect(await env.tickets.current(await env.live(reader))).toBeNull()
       expect(await rotation(a.response.world.id)).toMatchObject({ high_water: '1' })
-      expect((await env.enter(reader, [keeper(2)])).ticket.ordinal).toBe(1)
+      expect((await env.ticketOf(reader, [keeper(2)])).ordinal).toBe(1)
       // The one-active-ticket-per-player rule is the database's own: a second active ticket cannot be written.
       await expect(t.db.query(`INSERT INTO world_district_tickets SELECT * FROM world_district_tickets WHERE id = $1`, [first.id])).rejects.toThrow()
     })
@@ -240,11 +169,11 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
 
   describe('expiry, cancellation and stale generations', () => {
     it('6. an expired or released ticket cannot commit; nothing is written or frozen, and the slot is reused', async () => {
-      const env = await setup({ ttlSeconds: 1 })
+      const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
       const worldId = a.response.world.id
-      const ta = (await env.enter(a)).ticket
-      await sleep(1_300)
+      const ta = await env.ticketOf(a)
+      await leaveOnly(worldId, ADA, -0.3)
       const drawn = await env.drawnOf(a)
       const asked = env.p.calls.length
       expect(await refusalOf(env.activate(a, ta, keeper(1), 'lantern-quay-w0-p0', [], drawn))).toBe('ticket_expired')
@@ -255,7 +184,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       // The server expires it on the next ticket transaction (no browser unload needed), and the slot goes to the next entrant.
       expect(await env.tickets.current(await env.live(a))).toBeNull()
       const b = await env.open(INSTALLATION_A, BEA)
-      const tb = (await env.enter(b, [keeper(2)])).ticket
+      const tb = (await env.ticketOf(b, [keeper(2)]))
       expect([tb.ordinal, tb.generation]).toEqual([0, 2])
       expect(await statusOf(ta.id)).toBe('expired')
       expect(await refusalOf(env.activate(a, ta, keeper(1), 'lantern-quay-w0-p0'))).toBe('ticket_expired')
@@ -263,7 +192,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       // Released: refused as no longer live.
       const env2 = await setup({ migrated: true, play: env.p })
       const c = await env2.open(INSTALLATION_B, CY)
-      const tc = (await env2.enter(c)).ticket
+      const tc = (await env2.ticketOf(c))
       await env2.release(c, tc)
       expect(await refusalOf(env2.activate(c, tc, keeper(1), 'lantern-quay-w0-p0'))).toBe('ticket_not_live')
       expect(await refusalOf(env2.release(c, tc))).toBe('ticket_not_live')
@@ -275,9 +204,9 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
       const d = await env.open(INSTALLATION_A, DEE)
-      const stale = (await env.enter(a)).ticket
+      const stale = (await env.ticketOf(a))
       await env.release(a, stale)
-      const fresh = (await env.enter(d, [keeper(1), keeper(4)])).ticket
+      const fresh = (await env.ticketOf(d, [keeper(1), keeper(4)]))
       expect([fresh.ordinal, fresh.generation]).toEqual([stale.ordinal, stale.generation! + 1])
       // A's old page names the old ticket, on the same district and plot: refused, whatever it asks.
       expect(await refusalOf(env.activate(a, stale, keeper(1), 'lantern-quay-w0-p0'))).toBe('ticket_not_live')
@@ -298,7 +227,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       let pause = true
       const env = await setup({ onStep: async (step) => { if (step === 'locked' && pause) { reached(); await gate } } })
       const a = await env.open(INSTALLATION_A, ADA)
-      const ta = (await env.enter(a)).ticket
+      const ta = (await env.ticketOf(a))
       const drawn = await env.drawnOf(a)
       const commit = env.activate(a, ta, keeper(1), 'lantern-quay-w0-p0', [], drawn)
       await atLock
@@ -315,7 +244,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const gate2 = new Promise<void>((r) => (resume2 = r))
       const env2 = await setup({ migrated: true, play: env.p, onStep: async (step) => { if (step === 'ticket') { reached2(); await gate2 } } })
       const b = await env2.open(INSTALLATION_B, BEA)
-      const tb = (await env2.enter(b, [keeper(2)])).ticket
+      const tb = (await env2.ticketOf(b, [keeper(2)]))
       const commit2 = env2.activate(b, tb, keeper(2), 'lantern-quay-w0-p1')
       await atTicket
       const cancel = env2.release(b, tb)
@@ -332,9 +261,10 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       let reached!: () => void
       const atTicket = new Promise<void>((r) => (reached = r))
       const gate = new Promise<void>((r) => (resume = r))
-      const env = await setup({ ttlSeconds: 1, onStep: async (step) => { if (step === 'ticket') { reached(); await gate } } })
+      const env = await setup({ onStep: async (step) => { if (step === 'ticket') { reached(); await gate } } })
       const a = await env.open(INSTALLATION_A, ADA)
-      const ta = (await env.enter(a)).ticket
+      const ta = await env.ticketOf(a)
+      await leaveOnly(a.response.world.id, ADA, 1)
       const commit = env.activate(a, ta, keeper(1), 'lantern-quay-w0-p0')
       await atTicket
       await sleep(1_200)
@@ -349,7 +279,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       // The lease is checked (`namedTicket`), the old ticket released, then held at `reassigning` until the lease is over:
       // the database refuses the replacement, which keeps that lease, as already expired.
       let armed = false
-      const env = await setup({ ttlSeconds: 1, onTicketStep: async (step) => { if (step === 'reassigning' && armed) await sleep(1_200) } })
+      const env = await setup({ onTicketStep: async (step) => { if (step === 'reassigning' && armed) await sleep(1_200) } })
       const a = await env.open(INSTALLATION_A, ADA)
       const worldId = a.response.world.id
       const everything = async () => ({
@@ -363,7 +293,8 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       })
 
       // Fallback to rule: refused, typed. The fallback ticket is still active and its slot still held, no rule ticket exists.
-      const ta = (await env.enter(a, [tide(1)])).ticket
+      const ta = await env.ticketOf(a, [tide(1)])
+      await leaveOnly(worldId, ADA, 1)
       const before = await everything()
       armed = true
       expect(await refusalOf(env.assign(a, ta, tide(1), [{ id: 'r1', district: 'dune' }]))).toBe('ticket_expired')
@@ -373,13 +304,14 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
 
       // The slot was never lost: once the lease is expired, the next entrant receives it at its next generation.
       const b = await env.open(INSTALLATION_A, BEA)
-      expect((await env.enter(b, [keeper(2)])).ticket).toMatchObject({ districtKey: 'lantern-quay', ordinal: 0, generation: 2 })
+      expect((await env.ticketOf(b, [keeper(2)]))).toMatchObject({ districtKey: 'lantern-quay', ordinal: 0, generation: 2 })
       expect(await statusOf(ta.id)).toBe('expired')
 
       // Rule back to fallback: refused, typed. The rule ticket is still active and the freed slot still free.
       const c = await env.open(INSTALLATION_A, CY)
-      const tc = (await env.enter(c, [tide(3), keeper(3)])).ticket
+      const tc = (await env.ticketOf(c, [tide(3), keeper(3)]))
       const ruled = (await env.assign(c, tc, tide(3), [{ id: 'r1', district: 'dune' }])).ticket
+      await leaveOnly(worldId, CY, 1)
       const held = await everything()
       expect(held.slots.find((x) => x.ordinal === Number(tc.ordinal))).toMatchObject({ state: 'free' })
       armed = true
@@ -393,7 +325,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
     it('switch against expiry: only that refusal of the database is ticket_expired; any other error inside a switch is not reclassified', async () => {
       const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
-      const ta = (await env.enter(a, [tide(1)])).ticket
+      const ta = (await env.ticketOf(a, [tide(1)]))
       // A different refusal raised where the replacement is inserted (a test-only trigger in this disposable schema).
       await t.db.query("CREATE FUNCTION test_other_refusal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'some other refusal'; END $$")
       await t.db.query("CREATE TRIGGER test_other_refusal BEFORE INSERT ON world_district_tickets FOR EACH ROW WHEN (NEW.kind = 'rule') EXECUTE FUNCTION test_other_refusal()")
@@ -415,7 +347,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup({ onStep: (step) => { if (step === fail) throw new Error(`injected at ${step}`) } })
       const a = await env.open(INSTALLATION_A, ADA)
       const worldId = a.response.world.id
-      const ta = (await env.enter(a)).ticket
+      const ta = (await env.ticketOf(a))
       // Outside its district, on a gated district, on a plot that is not a plot, on another geometry.
       expect(await refusalOf(env.activate(a, ta, keeper(1), 'tidewater-w0-p0'))).toBe('plot_outside_assignment')
       expect(await refusalOf(env.activate(a, ta, keeper(1), 'compass-row-w0-p0'))).toBe('plot_outside_assignment')
@@ -448,7 +380,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
       const worldId = a.response.world.id
-      const ta = (await env.enter(a, [keeper(1), keeper(2)])).ticket
+      const ta = (await env.ticketOf(a, [keeper(1), keeper(2)]))
       const placed = await env.activate(a, ta, keeper(1), 'lantern-quay-w0-p2')
       // The same activation again (a retry, a double click): the same property, nothing consumed.
       const again = await env.activate(a, ta, keeper(1), 'lantern-quay-w0-p2')
@@ -467,7 +399,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
         const env2 = await setup({ db: restarted, migrated: true, play: env.p })
         const a2 = await env2.open(INSTALLATION_A, ADA)
         expect(await env2.tickets.current(await env2.live(a2))).toBeNull()
-        expect((await env2.enter(a2, [keeper(1), keeper(2)])).ticket).toMatchObject({ ordinal: 1, districtKey: 'tidewater' })
+        expect((await env2.ticketOf(a2, [keeper(1), keeper(2)]))).toMatchObject({ ordinal: 1, districtKey: 'tidewater' })
         expect(await verifyCity(restarted)).toMatchObject({ ok: true, worlds: [{ properties: 1, districtTickets: { committed: 1, active: 1 } }] })
       } finally {
         await restarted.end()
@@ -478,7 +410,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const opened = await Promise.all([ADA, BEA, CY, DEE, player(5)].map((who) => env.open(INSTALLATION_A, who)))
       const entered = []
-      for (const [i, o] of opened.entries()) entered.push((await env.enter(o, [keeper(10 + i)])).ticket)
+      for (const [i, o] of opened.entries()) entered.push((await env.ticketOf(o, [keeper(10 + i)])))
       // Ada (ordinal 0) and P5 (ordinal 4) both hold lantern-quay.
       expect([entered[0].districtKey, entered[4].districtKey]).toEqual(['lantern-quay', 'lantern-quay'])
       const results = await Promise.allSettled([env.activate(opened[0], entered[0], keeper(10), 'lantern-quay-w0-p1'), env.activate(opened[4], entered[4], keeper(14), 'lantern-quay-w0-p1')])
@@ -496,9 +428,9 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
     it('10. NFTs of different collections share one rotation', async () => {
       const env = await setup()
       const [a, b, c] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA), await env.open(INSTALLATION_A, CY)]
-      const ta = (await env.enter(a, [keeper(1)])).ticket
-      const tb = (await env.enter(b, [tide(7)])).ticket
-      const tc = (await env.enter(c, [keeper(3), tide(8)])).ticket
+      const ta = (await env.ticketOf(a, [keeper(1)]))
+      const tb = (await env.ticketOf(b, [tide(7)]))
+      const tc = (await env.ticketOf(c, [keeper(3), tide(8)]))
       expect([ta, tb, tc].map((x) => x.districtKey)).toEqual(['lantern-quay', 'tidewater', 'saltmarsh'])
       await env.activate(b, tb, tide(7), 'tidewater-w0-p0')
       await env.activate(c, tc, tide(8), 'saltmarsh-w0-p0')
@@ -511,7 +443,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const rules: DistrictRuleMatch[] = [{ id: 'tide-to-saltmarsh', district: 'saltmarsh' }]
       const [a, b] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA)]
       const worldId = a.response.world.id
-      const fallback = (await env.enter(a, [tide(1), keeper(1)])).ticket
+      const fallback = (await env.ticketOf(a, [tide(1), keeper(1)]))
       expect(fallback.districtKey).toBe('lantern-quay')
       // A fallback ticket cannot place an NFT a rule assigns.
       expect(await refusalOf(env.activate(a, fallback, tide(1), 'lantern-quay-w0-p0', rules))).toBe('district_rule_applies')
@@ -521,7 +453,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       expect(assigned.ticket).toMatchObject({ kind: 'rule', districtKey: 'saltmarsh', ordinal: null, generation: null, asset: 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1', ruleRef: 'tide-to-saltmarsh', expiresAt: fallback.expiresAt })
       expect(await one('SELECT status, end_reason FROM world_district_tickets WHERE id = $1', [fallback.id])).toEqual({ status: 'released', end_reason: 'reassigned' })
       // The freed District 1 slot goes to the next entrant.
-      expect((await env.enter(b, [keeper(2)])).ticket).toMatchObject({ ordinal: 0, generation: 2, districtKey: 'lantern-quay' })
+      expect((await env.ticketOf(b, [keeper(2)]))).toMatchObject({ ordinal: 0, generation: 2, districtKey: 'lantern-quay' })
       // Selecting the same NFT again changes nothing; the rule ticket places only that NFT, only in its district.
       expect((await env.assign(a, assigned.ticket, tide(1), rules)).changed).toBe(false)
       expect(await refusalOf(env.activate(a, assigned.ticket, keeper(1), 'saltmarsh-w0-p0', []))).toBe('ticket_asset_mismatch')
@@ -530,13 +462,13 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       expect(placed.property.districtKey).toBe('saltmarsh')
       expect(await rotation(worldId)).toMatchObject({ high_water: '1', committed_count: '1' })
       // Ada's next NFT on a fallback ticket: committed tickets outnumber rotation ordinals (a rule ticket takes none).
-      const next = (await env.enter(a, [tide(1), keeper(1)])).ticket
+      const next = (await env.ticketOf(a, [tide(1), keeper(1)]))
       expect([next.ordinal, next.generation, next.districtKey]).toEqual([1, 1, 'tidewater'])
       await env.activate(a, next, keeper(1), 'tidewater-w0-p1')
       await env.activate(b, (await env.tickets.current(await env.live(b)))!, keeper(2), 'lantern-quay-w0-p0')
       expect(await rotation(worldId)).toMatchObject({ high_water: '2', committed_count: '3' })
       const c = await env.open(INSTALLATION_A, CY)
-      const tc = (await env.enter(c, [tide(3)])).ticket
+      const tc = (await env.ticketOf(c, [tide(3)]))
       await env.activate(c, (await env.assign(c, tc, tide(3), rules)).ticket, tide(3), 'saltmarsh-w0-p2', rules)
       expect(await rotation(worldId)).toMatchObject({ high_water: '3', committed_count: '4' })
       expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ districtTickets: { committed: 4, highWater: 3, free: 1 } }] })
@@ -545,7 +477,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
     it('rules: switching back to an NFT no rule assigns returns to the rotation; conflicting rules and gated districts are refused, never guessed', async () => {
       const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
-      const t0 = (await env.enter(a, [tide(1), keeper(1)])).ticket
+      const t0 = (await env.ticketOf(a, [tide(1), keeper(1)]))
       const ruled = (await env.assign(a, t0, tide(1), [{ id: 'r1', district: 'dune' }])).ticket
       const back = await env.assign(a, ruled, keeper(1))
       expect(back).toMatchObject({ changed: true, ticket: { kind: 'fallback', ordinal: 0, generation: 2, districtKey: 'lantern-quay', expiresAt: t0.expiresAt } })
@@ -572,7 +504,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const four = rules(64, 64, 64, 64)
       const exact = rules(64, 64, 64, 5)
       const over = rules(64, 64, 64, 6)
-      const t0 = (await env.enter(a, [tide(1)])).ticket
+      const t0 = (await env.ticketOf(a, [tide(1)]))
       const ticketsOf = async () => (await t.db.query('SELECT id, kind, status, rule_ref FROM world_district_tickets WHERE world_id = $1 ORDER BY issued_at, id', [worldId])).rows
       const before = { tickets: await ticketsOf(), slots: await slotsOf(worldId) }
       // Four long ids (259 characters) and one past the limit (201): refused at selection, and nothing changes.
@@ -609,14 +541,14 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const a = await env.open(INSTALLATION_A, ADA)
       const b = await env.open(INSTALLATION_A, BEA)
       const mine = [keeper(1), keeper(2)]
-      const first = (await env.enter(a, mine)).ticket
+      const first = (await env.ticketOf(a, mine))
       await env.activate(a, first, keeper(1), 'lantern-quay-w0-p0')
       await env.enter(b, [keeper(5)])
       // The same session enters again: a new, independently issued ticket (the next slot), not the consumed one.
       const second = await env.enter(a, mine)
       expect(second).toMatchObject({ fresh: true, ticket: { ordinal: 2, districtKey: 'saltmarsh' } })
-      expect(second.ticket.id).not.toBe(first.id)
-      await env.activate(a, second.ticket, keeper(2), 'saltmarsh-w0-p0')
+      expect(second.ticket!.id).not.toBe(first.id)
+      await env.activate(a, second.ticket!, keeper(2), 'saltmarsh-w0-p0')
       // Nothing left to place: no third ticket.
       expect(await refusalOf(env.enter(a, mine))).toBe('not_eligible')
       expect((await t.db.query('SELECT 1 FROM world_properties WHERE activator_discord_user_id = $1', [ADA.discordUserId])).rowCount).toBe(2)
@@ -629,8 +561,8 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const inA = await env.open(INSTALLATION_A, ADA)
       const inB = await env.open(INSTALLATION_B, ADA)
-      const ta = (await env.enter(inA)).ticket
-      const tb = (await env.enter(inB)).ticket
+      const ta = (await env.ticketOf(inA))
+      const tb = (await env.ticketOf(inB))
       expect([ta.ordinal, tb.ordinal, ta.worldId === tb.worldId]).toEqual([0, 0, false])
       // Ada's world-A ticket, presented in world B (and the other way round).
       expect(await refusalOf(env.activate(inB, ta, keeper(1), 'lantern-quay-w0-p0'))).toBe('ticket_not_live')
@@ -654,8 +586,8 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const [a, b] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA)]
       const worldId = a.response.world.id
-      const ta = (await env.enter(a)).ticket
-      const tb = (await env.enter(b, [keeper(2)])).ticket
+      const ta = (await env.ticketOf(a))
+      const tb = (await env.ticketOf(b, [keeper(2)]))
       const oldMap = a.response.world.definition.geometryFingerprint
       // A presentation-only version: same districts, same ground. Tickets stand, the rotation records the new basis.
       env.p.publish(INSTALLATION_A, DOC_RENAMED)
@@ -728,12 +660,20 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
         await env.store.activate(await env.live(a), { asset: keeper(1), plotId: 'saltmarsh-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }, { activeConfig: env.sessions.activeConfig(await env.live(a)) })
         await env.open(INSTALLATION_B, BEA)
         const before = await rows()
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [10], current: 10 })
+        const through10 = await through(10)
+        try {
+          expect(await migrate(t.db, { dir: through10, environment: 'local' })).toEqual({ applied: [10], current: 10 })
+        } finally {
+          await rm(through10, { recursive: true, force: true })
+        }
         expect(await rows()).toEqual(before)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 10 })
+        // And 0011 after it, changing nothing either.
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11], current: 11 })
+        expect(await rows()).toEqual(before)
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 11 })
         expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ properties: 1, districtTickets: null }, { properties: 0, districtTickets: null }] })
         // The world enters the rotation now; its earlier property is not a ticket's, and the next one consumes one.
-        const ta = (await env.enter(a, [keeper(1), keeper(2)])).ticket
+        const ta = (await env.ticketOf(a, [keeper(1), keeper(2)]))
         expect(ta).toMatchObject({ ordinal: 0, districtKey: 'lantern-quay' })
         await env.activate(a, ta, keeper(2), 'lantern-quay-w0-p0')
         expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ properties: 2, districtTickets: { committed: 1 } }, { districtTickets: null }] })
@@ -750,7 +690,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
         expect(await t.tables()).not.toContain('world_district_tickets')
         const left = (await t.db.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND (p.proname LIKE 'world_rotation%' OR p.proname LIKE 'world_district%' OR p.proname LIKE 'world_assignment%')", [t.schema])).rows[0].n
         expect(left).toBe(0)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [10], current: 10 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [10, 11], current: 11 })
         expect(await t.tables()).toEqual(expect.arrayContaining(['world_assignment_rotations', 'world_assignment_slots', 'world_district_tickets']))
       } finally {
         await rm(dir, { recursive: true, force: true })
@@ -770,7 +710,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const a = await env.open(INSTALLATION_A, ADA)
       const worldId = a.response.world.id
-      const ta = (await env.enter(a)).ticket
+      const ta = (await env.ticketOf(a))
       const attempts: [string, unknown[], RegExp][] = [
         ['UPDATE world_district_tickets SET district_key = $2 WHERE id = $1', [ta.id, 'tidewater'], /keeps what it was issued as/],
         ['UPDATE world_district_tickets SET expires_at = expires_at + interval \'10 minutes\' WHERE id = $1', [ta.id], /keeps what it was issued as/],
@@ -801,24 +741,38 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const c2 = await t.db.connect()
       try {
         await c2.query('BEGIN')
-        await c2.query("UPDATE world_district_tickets SET status = 'superseded', end_reason = 'rotation_changed' WHERE id = $1", [ta.id])
+        await c2.query("UPDATE world_district_tickets SET status = 'superseded', end_reason = 'rotation_changed', supersede_cause = 'rotation' WHERE id = $1", [ta.id])
         await c2.query("UPDATE world_assignment_slots SET state = 'free' WHERE world_id = $1", [worldId])
         await expect(c2.query('COMMIT')).rejects.toThrow(/superseded only by its rotation beginning a later epoch/)
       } finally {
         c2.release()
       }
       expect(await statusOf(ta.id)).toBe('active')
-      // A forged issuance: for a session that is not the actor's, and for a revoked session.
-      const fields = `id, world_id, play_environment, play_game_key, play_installation_id, discord_guild_id, actor_discord_user_id, actor_core_user_id, issued_in_play_session, kind, district_key, district_geometry_fingerprint, epoch, ordinal, generation, asset, rule_ref, config_version, config_hash, layout_geometry_fingerprint, status, issued_at, expires_at`
-      await expect(
-        t.db.query(
+      // A forged issuance for a player who is not the session's: outside any claim window, then in a window forged for them.
+      const fields = `id, world_id, play_environment, play_game_key, play_installation_id, discord_guild_id, actor_discord_user_id, actor_core_user_id, issued_in_play_session, kind, district_key, district_geometry_fingerprint, epoch, ordinal, generation, asset, rule_ref, config_version, config_hash, layout_geometry_fingerprint, status, issued_at, expires_at, claim_window`
+      const forge = (client: Pick<pg.Pool, 'query'>, window: string | null) =>
+        client.query(
           `INSERT INTO world_district_tickets (${fields}) SELECT $2, world_id, play_environment, play_game_key, play_installation_id, discord_guild_id, '922222222222222222', 'core-x', issued_in_play_session, 'rule', 'tidewater',
                    (SELECT g.v ->> 'geometryFingerprint' FROM world_config_geometries c, jsonb_array_elements(c.districts) g(v) WHERE c.world_id = t.world_id AND c.version = 1 AND g.v ->> 'key' = 'tidewater'),
-                   epoch, NULL, NULL, 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1', 'forged', config_version, config_hash, layout_geometry_fingerprint, 'active', now(), now() + interval '5 minutes'
+                   epoch, NULL, NULL, 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1', 'forged', config_version, config_hash, layout_geometry_fingerprint, 'active', now(),
+                   (SELECT w.expires_at FROM world_claim_windows w WHERE w.id = $3), $3
               FROM world_district_tickets t WHERE id = $1`,
-          [ta.id, randomUUID()],
-        ),
-      ).rejects.toThrow(/only to the player of a live play session/)
+          [ta.id, randomUUID(), window],
+        )
+      await expect(forge(t.db, null)).rejects.toThrow(/in its holder's open claim window/)
+      const forger = await t.db.connect()
+      try {
+        await forger.query('BEGIN')
+        const w = (await forger.query<{ id: string }>(`INSERT INTO world_claim_windows (id, world_id, actor_discord_user_id, actor_core_user_id, opened_at, expires_at, opened_by) VALUES ($1, $2, '922222222222222222', 'core-x', now(), now(), 'issuance') RETURNING id`, [randomUUID(), worldId])).rows[0]
+        await expect(forge(forger, w.id)).rejects.toThrow(/only to the player of a live play session/)
+      } finally {
+        await forger.query('ROLLBACK')
+        forger.release()
+      }
+      // A window nothing opened with a ticket: refused when its transaction commits.
+      await expect(t.db.query(`INSERT INTO world_claim_windows (id, world_id, actor_discord_user_id, actor_core_user_id, opened_at, expires_at, opened_by) VALUES ($1, $2, '922222222222222222', 'core-x', now(), now(), 'issuance')`, [randomUUID(), worldId])).rejects.toThrow(
+        /opens with the ticket whose issuance opened it/,
+      )
       // A property without a ticket, in a world that assigns districts by tickets.
       await expect(env.store.activate(await env.live(a), { asset: keeper(1), plotId: 'lantern-quay-w0-p0', geometryFingerprint: a.response.world.definition.geometryFingerprint }, { activeConfig: env.sessions.activeConfig(await env.live(a)) })).rejects.toThrow(
         /activated only by consuming a live ticket/,
@@ -831,8 +785,8 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       const env = await setup()
       const [a, b] = [await env.open(INSTALLATION_A, ADA), await env.open(INSTALLATION_A, BEA)]
       const worldId = a.response.world.id
-      const ta = (await env.enter(a)).ticket
-      const tb = (await env.enter(b, [keeper(2)])).ticket
+      const ta = (await env.ticketOf(a))
+      const tb = (await env.ticketOf(b, [keeper(2)]))
       const unguarded = async (table: string, trigger: string, sql: string, params: unknown[]) => {
         await t.db.query(`ALTER TABLE ${table} DISABLE TRIGGER ${trigger}`)
         try {
@@ -869,11 +823,13 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
       ).rejects.toThrow(/only a local database may hold one/)
       // The service: refused by its mode before anything is read, and by the database's stamp in local mode.
       const actor = { id: randomUUID(), scope: { worldId: randomUUID(), environment: 'dev' as const, gameKey: 'rare-city', installationId: INSTALLATION_A, discordGuildId: GUILD_A }, player: ADA, createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000) }
-      expect(await refusalOf(createDistrictTicketStore(t.db, { mode: 'staging', log: silentLogger, ttlSeconds: 60 }).enter(actor, [keeper(1)]))).toBe('mutations_held')
-      expect(await refusalOf(createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: 60 }).enter(actor, [keeper(1)]))).toBe('mutations_held')
-      expect(await refusalOf(createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: 60 }).release(actor, randomUUID()))).toBe('mutations_held')
-      expect(() => createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: 3601 })).toThrow(/1 to 3600/)
-      expect(() => createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: 0 })).toThrow(/1 to 3600/)
+      const { eligibility } = testSource()
+      eligibility.assets = () => [keeper(1)]
+      expect(await refusalOf(createDistrictTicketStore(t.db, { mode: 'staging', log: silentLogger, eligibility }).enter(actor))).toBe('mutations_held')
+      expect(await refusalOf(createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, eligibility }).enter(actor))).toBe('mutations_held')
+      expect(await refusalOf(createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, eligibility }).release(actor, randomUUID()))).toBe('mutations_held')
+      // Only the local fixture is a source: nothing else may stand in for Proofy Core.
+      expect(() => createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, eligibility: { ...eligibility, source: 'proofy-core' as 'local-fixture' } })).toThrow(/only on the local rehearsal fixture/)
       expect((await t.db.query('SELECT 1 FROM world_assignment_rotations')).rowCount).toBe(0)
     })
 

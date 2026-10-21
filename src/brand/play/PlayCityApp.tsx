@@ -52,13 +52,17 @@ type Phase =
   | { kind: 'refused'; code: PlayErrorCode | 'unreadable'; problems: ConfigProblem[] }
   | { kind: 'ready'; source: Source; city: PlayCityResponse; loaded: LoadedBrandCity; rehearsal: RehearsalAsset[] | null; ticket: TicketState }
 
-/** The player's district ticket in a local rehearsal: the one the server holds for them, or none and why. */
+/**
+ * The player's district ticket in a local rehearsal: the one the server holds for them, or none and why. `awaiting`: none
+ * yet because every district is restricted, so the player selects the NFT first.
+ */
 interface TicketState {
   ticket: RehearsalTicket | null
   note: string | null
+  awaiting: boolean
 }
 
-const NO_TICKET: TicketState = { ticket: null, note: null }
+const NO_TICKET: TicketState = { ticket: null, note: null, awaiting: false }
 
 const OPEN_TIMEOUT_MS = 20_000
 
@@ -102,17 +106,18 @@ const REHEARSAL_REFUSALS: Record<RehearsalErrorCode | 'invalid_request', string>
   asset_already_placed: 'That NFT already has a property in this city.',
   unknown_plot: 'That is not a plot of this city.',
   plot_unavailable: 'Someone placed a property on that plot first. The city has been updated: choose another plot.',
-  district_rule_unverified: 'This district has a Proofy rule, and nothing can check it yet, so nothing can be placed here.',
+  district_rule_unverified: 'This NFT belongs in a restricted district, and this local server has no Proofy rule result for you there, so it cannot be placed.',
+  district_rule_unqualified: 'This NFT belongs in a restricted district whose Proofy rule this local server says you do not meet, so it cannot be placed.',
   mutations_held: 'This server does not place properties.',
   sequence_conflict: 'The city changed while your property was being placed, and nothing was written. Try again.',
   not_eligible: 'This local server lists no unplaced test NFT of this city for you, so no district was assigned.',
-  no_default_district: 'Every district of this city has a Proofy rule, which nothing can check yet, so there is no district to assign.',
+  no_default_district: 'Every district of this city is restricted, and no district rule places this NFT in one, so there is no district to assign.',
   ticket_not_live: 'Your district hold has ended (released, or already used for a property). Get your district again to place another.',
   ticket_expired: 'Your district hold expired before your property was placed, so nothing was placed. Get your district again: it may be a different one.',
-  ticket_superseded: 'This city’s districts changed, so your district was assigned again. Choose your plot in your new district.',
+  ticket_superseded: 'This city’s districts or district rules changed, so your district was assigned again or withdrawn. Your claim time is unchanged: get your district again if none is shown.',
   plot_outside_assignment: 'That plot is not in your assigned district. Choose a plot in your district.',
   district_rule_applies: 'A district rule assigns this NFT’s district. Select the NFT again so the server can assign it.',
-  district_rule_ambiguous: 'District rules for this NFT name different districts, and no order between them is approved yet, so it cannot be placed.',
+  district_rule_ambiguous: 'District rules for this NFT name different districts, so it cannot be placed until the city’s administrator fixes them.',
   district_rule_ref_too_long: 'Too many district rules apply to this NFT for its district to be recorded, so it cannot be placed. The rules need fixing first.',
   ticket_asset_mismatch: 'Your district was assigned for another NFT. Select this NFT again so the server can assign its district.',
 }
@@ -173,7 +178,7 @@ function ticketFrom(answer: { response: Response; body: unknown } | null): Ticke
   if (!answer) return { refused: 'The server could not be reached.' }
   if (answer.response.ok) {
     const parsed = parseRehearsalTicketResponse(answer.body)
-    return parsed ? { ticket: parsed.ticket, note: null } : { refused: REFUSALS.unreadable }
+    return parsed ? { ticket: parsed.ticket, note: null, awaiting: parsed.awaiting === 'asset' } : { refused: REFUSALS.unreadable }
   }
   const code = (answer.body as { error?: unknown } | null)?.error
   if (typeof code === 'string' && Object.hasOwn(REHEARSAL_REFUSALS, code)) return { refused: REHEARSAL_REFUSALS[code as RehearsalErrorCode] }
@@ -217,7 +222,7 @@ async function withRehearsal(p: Phase): Promise<Phase> {
   if (!rehearsal || rehearsal.length === 0) return { ...p, rehearsal }
   const answer = p.source === 'launch' ? await post(PLAY_REHEARSAL_ENTRY_ENDPOINT, actorOf(p.city)) : await ask(PLAY_REHEARSAL_TICKET_ENDPOINT)
   const got = ticketFrom(answer)
-  return { ...p, rehearsal, ticket: 'refused' in got ? { ticket: null, note: got.refused } : got }
+  return { ...p, rehearsal, ticket: 'refused' in got ? { ticket: null, note: got.refused, awaiting: false } : got }
 }
 
 /**
@@ -365,7 +370,7 @@ export function PlayCityApp() {
     if ('refused' in got) {
       // Whatever went wrong, show the ticket the server holds now (an expired or replaced one is gone).
       const held = ticketFrom(await ask(PLAY_REHEARSAL_TICKET_ENDPOINT))
-      setPhase((p) => (p.kind === 'ready' && p.city === drawn ? { ...p, ticket: 'refused' in held ? { ticket: null, note: held.refused } : { ticket: held.ticket, note: got.refused } } : p))
+      setPhase((p) => (p.kind === 'ready' && p.city === drawn ? { ...p, ticket: 'refused' in held ? { ticket: null, note: held.refused, awaiting: false } : { ticket: held.ticket, note: got.refused, awaiting: p.ticket.awaiting && !held.ticket } } : p))
       return { ok: false, message: got.refused }
     }
     setPhase((p) => (p.kind === 'ready' && p.city === drawn ? { ...p, ticket: got } : p))
@@ -382,7 +387,8 @@ export function PlayCityApp() {
         rehearsal={phase.rehearsal}
         ticket={ticket}
         onEnter={() => ticketCall(city, PLAY_REHEARSAL_ENTRY_ENDPOINT, {})}
-        onAssign={(asset) => (ticket.ticket ? ticketCall(city, PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT, { ticketId: ticket.ticket.id, asset }) : Promise.resolve({ ok: false, message: REHEARSAL_REFUSALS.ticket_not_live }))}
+        // Without a ticket only in a city whose every district is restricted: the selected NFT's rule decides (the server checks).
+        onAssign={(asset) => (ticket.ticket || ticket.awaiting ? ticketCall(city, PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT, { ticketId: ticket.ticket?.id ?? null, asset }) : Promise.resolve({ ok: false, message: REHEARSAL_REFUSALS.ticket_not_live }))}
         onLeave={() => (ticket.ticket ? ticketCall(city, PLAY_REHEARSAL_RELEASE_ENDPOINT, { ticketId: ticket.ticket.id }) : Promise.resolve({ ok: true, ticket: null }))}
         onPlace={(asset, plotId) => placeProperty(city, ticket.ticket, asset, plotId)}
         onSignOut={signOut}
@@ -497,7 +503,8 @@ function PlayCity({
     return { nfts, placed }
   }, [listed, city, world.state.buildings])
   // A player the rehearsal file lists nothing of this city for sees the city exactly as without a rehearsal.
-  const rehearsal: PlacementRehearsal | null = mine && mine.nfts.length + mine.placed > 0 ? { ...mine, ticket, ticketNote: held.note, enter: onEnter, assign: onAssign, leave: onLeave, activate: onPlace } : null
+  const rehearsal: PlacementRehearsal | null =
+    mine && mine.nfts.length + mine.placed > 0 ? { ...mine, ticket, ticketNote: held.note, awaitingAsset: held.awaiting && !ticket, enter: onEnter, assign: onAssign, leave: onLeave, activate: onPlace } : null
   const stored = (buildingId: string) => {
     const b = (world.state.buildings as Readonly<Record<string, WorldBuildingRecord>>)[buildingId]
     return b
@@ -566,11 +573,13 @@ function PlayCity({
                 ? `This local server lists ${rehearsal.nfts.length + rehearsal.placed} test NFT${rehearsal.nfts.length + rehearsal.placed === 1 ? '' : 's'} for you (${rehearsal.placed} placed). Not verified ownership. `
                 : 'Claims are not open; the simulated viewers only preview district rules.'}
               {rehearsal && (
-                <span className="play-ticket" data-testid="play-ticket" data-state={ticket ? 'held' : 'none'}>
+                <span className="play-ticket" data-testid="play-ticket" data-state={ticket ? 'held' : rehearsal.awaitingAsset ? 'awaiting-asset' : 'none'}>
                   {ticket ? (
                     <>
                       Your district: <AssignedDistrict ticket={ticket} name={sceneDistrict(city.scene, ticket.districtKey).title} />
                     </>
+                  ) : rehearsal.awaitingAsset && rehearsal.nfts.length > 0 ? (
+                    <span data-testid="play-ticket-note">Every district here is restricted: open a district and select your test NFT; the server assigns its district if a rule and your local rule result allow it. </span>
                   ) : rehearsal.nfts.length > 0 ? (
                     <>
                       {held.note ? <span data-testid="play-ticket-note">{held.note} </span> : 'No district assigned. '}

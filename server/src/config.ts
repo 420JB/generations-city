@@ -58,16 +58,14 @@ export interface ServerConfig {
    * It lists TEST NFTs per Discord player: rehearsal data, never verified holdings.
    */
   localRehearsalFile: string | null
-  /**
-   * How long a district ticket's lease lasts in the local rehearsal, in seconds (null without the rehearsal). Set by
-   * LOCAL_DISTRICT_TICKET_TTL_SECONDS (5 to 3600, default 900), only allowed with LOCAL_PROPERTY_REHEARSAL_FILE. Bounded:
-   * the database refuses a lease over an hour. No renewal policy is approved, so a lease is never extended.
-   */
-  localTicketTtlSeconds: number | null
 }
 
-/** The district ticket lease of the local rehearsal when LOCAL_DISTRICT_TICKET_TTL_SECONDS is not set. */
-export const DEFAULT_TICKET_TTL_SECONDS = 900
+/**
+ * The district ticket lease is not configurable (policy D2, locked): exactly 900 seconds, set by the database (0011).
+ * LOCAL_DISTRICT_TICKET_TTL_SECONDS, which earlier builds read, is refused unless it says exactly that, so an old
+ * environment cannot silently believe it chose another lifetime.
+ */
+export const LOCKED_TICKET_LEASE_SECONDS = '900'
 
 export interface PlayConnection {
   /** Base URL of proofy-play-api. */
@@ -311,16 +309,13 @@ function readLocalRehearsal(env: Record<string, string | undefined>, mode: AppMo
   return file
 }
 
-/** The district ticket lease. Only with the local rehearsal: tickets exist nowhere else. */
-function readTicketTtl(env: Record<string, string | undefined>, rehearsal: string | null): number | null {
+/** The retired district ticket lease setting: refused, unless unset or exactly the locked lease. */
+function refuseTicketTtl(env: Record<string, string | undefined>, rehearsal: string | null): void {
   const raw = clean(env.LOCAL_DISTRICT_TICKET_TTL_SECONDS)
-  if (rehearsal === null) {
-    if (raw !== undefined) throw new ConfigError('LOCAL_DISTRICT_TICKET_TTL_SECONDS is only allowed with LOCAL_PROPERTY_REHEARSAL_FILE: district tickets exist only in the local rehearsal.')
-    return null
-  }
-  if (raw === undefined) return DEFAULT_TICKET_TTL_SECONDS
-  if (!/^[1-9][0-9]{0,3}$/.test(raw) || Number(raw) < 5 || Number(raw) > 3600) throw new ConfigError('LOCAL_DISTRICT_TICKET_TTL_SECONDS must be a whole number of seconds from 5 to 3600.')
-  return Number(raw)
+  if (raw === undefined) return
+  if (rehearsal === null) throw new ConfigError('LOCAL_DISTRICT_TICKET_TTL_SECONDS is only allowed with LOCAL_PROPERTY_REHEARSAL_FILE: district tickets exist only in the local rehearsal.')
+  if (raw !== LOCKED_TICKET_LEASE_SECONDS)
+    throw new ConfigError(`District tickets last exactly ${LOCKED_TICKET_LEASE_SECONDS} seconds (locked policy D2); LOCAL_DISTRICT_TICKET_TTL_SECONDS cannot change that. Unset it.`)
 }
 
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
@@ -331,6 +326,7 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
   const play = readPlay(env, mode)
   if (play && !databaseUrl) throw new ConfigError('PLAY_API_URL needs DATABASE_URL: a Play launch opens the installation\'s persistent city.')
   const localRehearsalFile = readLocalRehearsal(env, mode, play)
+  refuseTicketTtl(env, localRehearsalFile)
   return {
     mode,
     port,
@@ -347,6 +343,5 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     activationEnabled: readActivationEnabled(env),
     play,
     localRehearsalFile,
-    localTicketTtlSeconds: readTicketTtl(env, localRehearsalFile),
   }
 }

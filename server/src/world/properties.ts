@@ -14,10 +14,11 @@ import {
   type DistrictRuleMatch,
   type PropertyActivationRefusal,
   type PropertyTransition,
+  type RuleAnswer,
 } from '../engine'
 import type { Logger } from '../log'
 import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play/session'
-import { consumeTicket, DistrictTicketRefusal, lockTicketForCommit, ticketPlacementRefusal, type TicketPlacementRefusal, type TicketRow } from './rotation'
+import { consumeTicket, districtRule, DistrictTicketRefusal, lockTicketForCommit, ticketPlacementRefusal, type TicketEligibility, type TicketPlacementRefusal, type TicketRow } from './rotation'
 import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type ConfirmActive } from './store'
 
 /**
@@ -101,10 +102,19 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type ConfirmA
  * ticket of the rotation's current epoch, issued on the geometry that governs now; the plot must be
  * one the engine offers in the ticket's district; an NFT an explicit rule assigns needs that rule's
  * ticket (`district_rule_applies` for a fallback ticket), and conflicting rules are refused. The
- * ticket is consumed (committed, its slot consumed, counted) after the property is written, in the
- * same transaction, so a refused or failed activation consumes nothing and freezes nothing, and a
- * repeat of a completed activation consumes nothing more. In a world with a rotation the database
- * refuses a property that consumed no ticket.
+ * ticket is consumed (committed, its slot consumed, counted, its holder's claim window closed) after
+ * the property is written, in the same transaction, so a refused or failed activation consumes
+ * nothing and freezes nothing, and a repeat of a completed activation consumes nothing more. In a
+ * world with a rotation the database refuses a property that consumed no ticket.
+ *
+ * RESTRICTED DISTRICTS (policy D1, P1-C2-D2). A plot in a district with a Proofy rule is placed only
+ * with a rule ticket for that district that still stands EXACTLY as issued, judged again here under
+ * the city lock: the NFT's explicit rules (from the caller's trusted source) name that district with
+ * the same rule ids, the configuration names the same Proofy rule for it, and that rule answers
+ * `true` for the activator now, from the same source. A failed, missing, unknown or conflicting
+ * answer refuses (`district_rule_unqualified`, `district_rule_unverified`); a changed rule refuses
+ * the ticket (`ticket_superseded`). Locally the source is the rehearsal fixture: test data, never a
+ * verified Proofy Core answer.
  */
 export type WorldPropertyRefusalCode =
   | PropertyActivationRefusal
@@ -139,6 +149,10 @@ export type WorldPropertyRefusalCode =
   | 'district_rule_ambiguous'
   /** Explicit rules for this NFT agree, but their ids together are longer than a ticket can record. */
   | 'district_rule_ref_too_long'
+  /** The NFT's rules place it in a restricted district whose Proofy rule answered that the activator does not qualify. */
+  | 'district_rule_unqualified'
+  /** The NFT's rules place it in a restricted district, and there is no answer (missing, unknown, conflicting) to its Proofy rule for the activator. */
+  | 'district_rule_unverified'
   /** The rule ticket was issued for another NFT. */
   | 'ticket_asset_mismatch'
 
@@ -208,8 +222,8 @@ export type ActivationStep = 'locked' | 'ticket' | 'confirmed' | 'city' | 'event
 export interface ActivationOptions {
   /**
    * Refuse a plot in a district that has a Proofy rule (`district-rule-unverified`), judged on the configuration that
-   * governs the world under its lock. No contract can tell whether a player meets a rule, so a caller that cannot
-   * verify it must not place anything there.
+   * governs the world under its lock, unless the activation's rule ticket for exactly that district stands, its rule
+   * answered again now (D1). A caller that cannot verify a rule must not place anything there.
    */
   refuseRuleGatedDistricts?: boolean
   /**
@@ -218,10 +232,11 @@ export interface ActivationOptions {
    */
   activeConfig?: ConfirmActive
   /**
-   * The district ticket this activation uses (migration 0010), and the explicit district rules the caller's trusted
-   * source says match the NFT. Required by the local rehearsal; a world with a rotation refuses a property without one.
+   * The district ticket this activation uses (migration 0010), the explicit district rules the caller's trusted source
+   * says match the NFT, and that source's answer to a Proofy rule for a player of a Discord server (asked again here for
+   * a restricted district). Required by the local rehearsal; a world with a rotation refuses a property without one.
    */
-  ticket?: { id: string; matches: readonly DistrictRuleMatch[] }
+  ticket?: { id: string; matches: readonly DistrictRuleMatch[]; ruleAnswer: TicketEligibility['ruleAnswer']; source: TicketEligibility['source'] }
 }
 
 export interface WorldPropertyStore {
@@ -365,11 +380,22 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
           if (!proposed.ok) throw new WorldPropertyRefusal(proposed.reason)
           const t = proposed.transition
           if (held && options.ticket) {
-            const refused: TicketPlacementRefusal | null = ticketPlacementRefusal(held, read, { districtKey: t.plot.districtKey, asset: assetKey(asset), matches: options.ticket.matches })
+            const where = { guildId: actor.scope.discordGuildId, discordUserId: activator.discordUserId }
+            const answer = options.ticket.ruleAnswer
+            const refused: TicketPlacementRefusal | null = ticketPlacementRefusal(held, read, {
+              districtKey: t.plot.districtKey,
+              asset: assetKey(asset),
+              matches: options.ticket.matches,
+              answer: (rule): RuleAnswer => answer(where, rule),
+              source: options.ticket.source,
+            })
             if (refused) throw new WorldPropertyRefusal(refused)
             await onStep?.('ticket')
           }
-          if (options.refuseRuleGatedDistricts && read.config.districts.find((d) => d.key === t.plot.districtKey)?.gate) throw new WorldPropertyRefusal('district-rule-unverified')
+          // A restricted district: only its own standing rule ticket, judged again just above, places anything there.
+          const gate = districtRule(read.config, t.plot.districtKey)
+          const gateAuthorized = gate !== null && held !== null && held.kind === 'rule' && held.district_key === t.plot.districtKey && held.gate_rule_id !== null && Number(held.gate_rule_id) === gate
+          if (options.refuseRuleGatedDistricts && gate !== null && !gateAuthorized) throw new WorldPropertyRefusal('district-rule-unverified')
           // The first property freezes the governing geometry for good: only while Play, asked now, has exactly that version active.
           if (!read.freeze) {
             const active = options.activeConfig ? await options.activeConfig().catch(() => null) : null

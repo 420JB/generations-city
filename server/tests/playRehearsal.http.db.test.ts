@@ -12,12 +12,13 @@ import { PlayApiError } from '../src/play/client'
 import { createPlayLaunchService } from '../src/play/launch'
 import { createPlaySessionService, createPlaySessionStore } from '../src/play/session'
 import { createWorldPropertyStore } from '../src/world/properties'
-import { createLocalPropertyRehearsal, matchingRules, parseRehearsalFile, parseRehearsalGrants, REHEARSAL_FILE_KIND, REHEARSAL_FILE_KIND_V2 } from '../src/world/rehearsal'
+import { createLocalPropertyRehearsal, matchingRules, parseRehearsalFile, parseRehearsalGrants, REHEARSAL_FILE_KIND, REHEARSAL_FILE_KIND_V2, REHEARSAL_FILE_KIND_V3, rehearsalEligibility, ruleAnswerOf } from '../src/world/rehearsal'
 import { createWorldStore } from '../src/world/store'
 import { createDistrictTicketStore, type TicketStep } from '../src/world/tickets'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
 import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
 import { TEST_ORIGIN, testConfig } from './testConfig'
+import { ticketWorld } from './ticketHarness'
 
 const MAX_UINT256 = '115792089237316195423570985008687907853269984665640564039457584007913129639935'
 const KEEPERS = 'eip155:8453/erc721:0x000000000000000000000000000000000000a001'
@@ -68,6 +69,30 @@ const GRANTS_LONG_RULES = {
     ...LONG_RULE_IDS.map((id) => ({ id, collection: { chain: 'eip155:8453', contract: '0x000000000000000000000000000000000000a001' }, traits: { Ledger: 'Long' }, district: 'tidewater' })),
   ],
 }
+const EVE = player(5, 'Eve')
+/**
+ * File version 3: the same, plus Proofy rule results (TEST DATA standing in for Core's access check). Bea and Cy each
+ * hold a Captain too. Ada qualifies for Tidewater's rule 62 in Guild A; Bea does not; Cy has no result; Eve's two results
+ * disagree (ambiguous evidence).
+ */
+const GRANTS_V3 = {
+  ...GRANTS,
+  kind: REHEARSAL_FILE_KIND_V3,
+  players: {
+    ...GRANTS.players,
+    [BEA.discordUserId]: [...GRANTS.players[BEA.discordUserId], { asset: keeper(44), traits: { Role: 'Captain' } }],
+    [CY.discordUserId]: [...GRANTS.players[CY.discordUserId], { asset: keeper(45), traits: { Role: 'Captain' } }],
+    [EVE.discordUserId]: [{ asset: keeper(46), traits: { Role: 'Captain' } }],
+  },
+  ruleResults: [
+    { guild: GUILD_A, discordUserId: ADA.discordUserId, verificationRuleId: 62, qualifies: true },
+    { discordUserId: BEA.discordUserId, verificationRuleId: 62, qualifies: false },
+    { guild: GUILD_A, discordUserId: EVE.discordUserId, verificationRuleId: 62, qualifies: true },
+    { discordUserId: EVE.discordUserId, verificationRuleId: 62, qualifies: false },
+  ],
+}
+/** DOC_A with every district restricted: Lantern Quay by rule 61, Tidewater by 62, Compass Row by 41. */
+const DOC_A_RESTRICTED = { ...DOC_A, districts: DOC_A.districts.map((d) => ({ ...d, proofyRule: d.proofyRule ?? { verificationRuleId: d.key === 'tidewater' ? 62 : 61, label: `${d.name} pass` } })) }
 const ACTIVATIONS = '/v1/play/rehearsal/activations'
 const ASSETS = '/v1/play/rehearsal/assets'
 const TICKET = '/v1/play/rehearsal/ticket'
@@ -84,7 +109,9 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
   const t = useTestSchema()
 
   /** Play with installations A and B, the real launch path, world, session, ticket and property stores, and the HTTP app. */
-  async function boot(options: { mode?: AppMode; rehearsal?: boolean; rateLimits?: boolean; ttlSeconds?: number; fixture?: unknown; onTicketStep?: (step: TicketStep) => void | Promise<void> } = {}) {
+  const { leaveOnly } = ticketWorld(t)
+
+  async function boot(options: { mode?: AppMode; rehearsal?: boolean; rateLimits?: boolean; fixture?: unknown; onTicketStep?: (step: TicketStep) => void | Promise<void> } = {}) {
     await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })
     const p = fakePlay()
     p.install(INSTALLATION_A, GUILD_A)
@@ -94,11 +121,9 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     const worlds = createWorldStore(t.db, { mode: 'local', log: silentLogger })
     const launch = createPlayLaunchService({ play: p.play, environment: 'dev', gameKey: 'rare-city', worlds })
     const sessions = createPlaySessionService({ store: createPlaySessionStore(t.db), worlds, play: p.play, environment: 'dev', gameKey: 'rare-city', log: silentLogger, installationCacheMs: 0 })
-    const tickets = createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, ttlSeconds: options.ttlSeconds ?? 600, onStep: options.onTicketStep })
-    const rehearsal =
-      options.rehearsal === false
-        ? null
-        : createLocalPropertyRehearsal({ mode: 'local', fixture: parseRehearsalFile(options.fixture ?? GRANTS), sessions, store: createWorldPropertyStore(t.db, { mode: 'local', log: silentLogger }), tickets })
+    const fixture = parseRehearsalFile(options.fixture ?? GRANTS)
+    const tickets = createDistrictTicketStore(t.db, { mode: 'local', log: silentLogger, eligibility: rehearsalEligibility(fixture), onStep: options.onTicketStep })
+    const rehearsal = options.rehearsal === false ? null : createLocalPropertyRehearsal({ mode: 'local', fixture, sessions, store: createWorldPropertyStore(t.db, { mode: 'local', log: silentLogger }), tickets })
     const server = createServer(createApp({ config: testConfig({ mode: options.mode ?? 'local', rateLimits: options.rateLimits ?? false }), db: t.db, migrationsDir: MIGRATIONS_DIR, log: silentLogger, playLaunch: launch, playSessions: sessions, rehearsal }))
     servers.push(server)
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -152,7 +177,7 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     const { launchAs, post, enter, current, properties } = await boot()
     const ada = await launchAs(INSTALLATION_A, ADA)
     // Nothing is issued by launching or reading: only by entering.
-    expect(await current(ada)).toEqual({ rehearsal: { kind: 'local-test-assets', verified: false }, ticket: null, fresh: false })
+    expect(await current(ada)).toEqual({ rehearsal: { kind: 'local-test-assets', verified: false }, ticket: null, fresh: false, awaiting: null })
     const entered = await enter(ada)
     expect(entered).toMatchObject({ rehearsal: { kind: 'local-test-assets', verified: false }, fresh: true, ticket: { kind: 'fallback', districtKey: 'lantern-quay', slot: { ordinal: 0, generation: 1, epoch: 1 }, rule: null, configVersion: 1, layoutGeometryFingerprint: ada.geometryFingerprint } })
     // The answer names no session, player or Core id.
@@ -346,18 +371,18 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
   })
 
   it('leaving the claim flow releases the ticket for the next entrant; a released or expired ticket places nothing', async () => {
-    const { launchAs, enter, release, activate, current, properties } = await boot({ ttlSeconds: 1 })
+    const { launchAs, enter, release, activate, current, properties } = await boot()
     const ada = await launchAs(INSTALLATION_A, ADA)
     const bea = await launchAs(INSTALLATION_A, BEA)
     const left = (await enter(ada)).ticket!
     const res = await release(ada)
-    expect([res.status, await res.json()]).toEqual([200, { rehearsal: { kind: 'local-test-assets', verified: false }, ticket: null, fresh: false }])
+    expect([res.status, await res.json()]).toEqual([200, { rehearsal: { kind: 'local-test-assets', verified: false }, ticket: null, fresh: false, awaiting: null }])
     expect(await (await activate(ada, keeper(1), 'lantern-quay-w0-p0')).json()).toEqual({ error: 'ticket_not_live' })
     expect(await (await release(ada)).json()).toEqual({ error: 'ticket_not_live' })
     // Bea takes Ada's released District 1 slot, at its next generation.
     expect((await enter(bea)).ticket).toMatchObject({ districtKey: left.districtKey, slot: { ordinal: 0, generation: 2 } })
-    // Her lease runs out: refused, and the next entry finds the slot free again.
-    await new Promise((r) => setTimeout(r, 1_300))
+    // Her lease runs out (moved on, not waited for: it is 900 seconds): refused, and the next entry finds the slot free again.
+    await leaveOnly(bea.actor.worldId, BEA, -0.3)
     expect(await (await activate(bea, keeper(3), 'lantern-quay-w0-p0')).json()).toEqual({ error: 'ticket_expired' })
     expect((await current(bea)).ticket).toBeNull()
     expect((await enter(ada)).ticket).toMatchObject({ slot: { ordinal: 0, generation: 3 } })
@@ -367,9 +392,10 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
   it('selecting an NFT as the lease runs out answers 409 ticket_expired, not a session error; the ticket and its slot stay as they were', async () => {
     let armed = false
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-    const { launchAs, enter, assign, properties } = await boot({ ttlSeconds: 1, onTicketStep: async (step) => { if (step === 'reassigning' && armed) await sleep(1_200) } })
+    const { launchAs, enter, assign, properties } = await boot({ onTicketStep: async (step) => { if (step === 'reassigning' && armed) await sleep(1_200) } })
     const ada = await launchAs(INSTALLATION_A, ADA)
     const fallback = (await enter(ada)).ticket!
+    await leaveOnly(ada.actor.worldId, ADA, 1)
     const slot = async () => (await t.db.query<{ state: string; generation: number }>('SELECT state, generation FROM world_assignment_slots WHERE world_id = $1 AND ordinal = 0', [ada.actor.worldId])).rows[0]
     armed = true
     // The Captain NFT: a rule assigns Tidewater, and the lease is over before the rule ticket is written.
@@ -541,19 +567,81 @@ describe.skipIf(NO_TEST_DATABASE)('local property rehearsal routes against a dis
     }
     // Nor can one be built or configured outside local mode.
     const store = createWorldPropertyStore(t.db, { mode: 'staging', log: silentLogger })
-    const tickets = createDistrictTicketStore(t.db, { mode: 'staging', log: silentLogger, ttlSeconds: 60 })
+    const tickets = createDistrictTicketStore(t.db, { mode: 'staging', log: silentLogger, eligibility: rehearsalEligibility(new Map()) })
     expect(() => createLocalPropertyRehearsal({ mode: 'staging', fixture: new Map(), sessions: { session: async () => never(), requireActor: async () => never(), activeConfig: () => async () => never() }, store, tickets })).toThrow(/only with APP_MODE=local/)
     const play = { PLAY_API_URL: 'https://play.example', PLAY_SERVICE_CREDENTIAL: `ppk_staging_${'a'.repeat(24)}.${'b'.repeat(64)}`, DATABASE_URL: 'postgres://db/x', PUBLIC_ORIGIN: 'https://rc.example', TRUSTED_PROXY: 'railway' }
     expect(loadConfig({ APP_MODE: 'staging', ...play }).localRehearsalFile).toBeNull()
     expect(() => loadConfig({ APP_MODE: 'staging', ...play, LOCAL_PROPERTY_REHEARSAL_FILE: '/tmp/r.json' })).toThrow(ConfigError)
     expect(() => loadConfig({ APP_MODE: 'staging', ...play, LOCAL_PROPERTY_REHEARSAL_FILE: '/tmp/r.json' })).toThrow(/only allowed when APP_MODE=local, not staging/)
     expect(() => loadConfig({ APP_MODE: 'local', LOCAL_PROPERTY_REHEARSAL_FILE: '/tmp/r.json' })).toThrow(/needs PLAY_API_URL/)
-    // The ticket lease: only with the rehearsal, bounded.
+    // The ticket lease is locked at 900 seconds (D2): no setting creates another lifetime. The old variable is refused
+    // unless it says exactly that, and only with the rehearsal.
     const local = { APP_MODE: 'local', PLAY_API_URL: 'http://127.0.0.1:1', PLAY_SERVICE_CREDENTIAL: `ppk_dev_${'a'.repeat(24)}.${'b'.repeat(64)}`, DATABASE_URL: 'postgres://db/x_test', LOCAL_PROPERTY_REHEARSAL_FILE: '/tmp/r.json' }
-    expect(loadConfig(local).localTicketTtlSeconds).toBe(900)
-    expect(loadConfig({ ...local, LOCAL_DISTRICT_TICKET_TTL_SECONDS: '30' }).localTicketTtlSeconds).toBe(30)
-    for (const bad of ['4', '3601', '1.5', '-10', 'ten']) expect(() => loadConfig({ ...local, LOCAL_DISTRICT_TICKET_TTL_SECONDS: bad })).toThrow(/5 to 3600/)
-    expect(() => loadConfig({ APP_MODE: 'staging', ...play, LOCAL_DISTRICT_TICKET_TTL_SECONDS: '30' })).toThrow(/only allowed with LOCAL_PROPERTY_REHEARSAL_FILE/)
+    expect(loadConfig(local)).not.toHaveProperty('localTicketTtlSeconds')
+    expect(loadConfig({ ...local, LOCAL_DISTRICT_TICKET_TTL_SECONDS: '900' }).localRehearsalFile).toBe('/tmp/r.json')
+    for (const other of ['30', '5', '899', '901', '3600', '0900', '1.5', '-10', 'ten'])
+      expect(() => loadConfig({ ...local, LOCAL_DISTRICT_TICKET_TTL_SECONDS: other }), other).toThrow(/exactly 900 seconds \(locked policy D2\)/)
+    expect(() => loadConfig({ APP_MODE: 'staging', ...play, LOCAL_DISTRICT_TICKET_TTL_SECONDS: '900' })).toThrow(/only allowed with LOCAL_PROPERTY_REHEARSAL_FILE/)
+  })
+
+  it('an all-restricted city over the routes (file v3): a qualified player selects the NFT without a ticket and places it; everyone else is refused, typed', async () => {
+    const { p, launchAs, post, enter, current, activate, city, properties } = await boot({ fixture: GRANTS_V3 })
+    p.publish(INSTALLATION_A, DOC_A_RESTRICTED)
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    // Entry assigns nothing yet: the district depends on the NFT.
+    expect(await enter(ada)).toEqual({ rehearsal: { kind: 'local-test-assets', verified: false }, ticket: null, fresh: false, awaiting: 'asset' })
+    // The selection names no ticket; it never names a district, an answer or a rule (any other key is refused).
+    expect((await post(ASSIGNMENT, ada, { ...ada.actor, ticketId: null, asset: keeper(40), qualifies: true })).status).toBe(400)
+    expect((await post(ASSIGNMENT, ada, { ...ada.actor, ticketId: null, asset: keeper(40), districtKey: 'tidewater' })).status).toBe(400)
+    expect((await post(ASSIGNMENT, ada, { ...ada.actor, ticketId: 'not-a-ticket', asset: keeper(40) })).status).toBe(400)
+    const res = await post(ASSIGNMENT, ada, { ...ada.actor, ticketId: null, asset: keeper(40) })
+    expect(res.status).toBe(200)
+    const assigned = (await res.json()) as RehearsalTicketResponse
+    expect(assigned).toMatchObject({ fresh: true, awaiting: null, ticket: { kind: 'rule', districtKey: 'tidewater', rule: { ref: 'captains-to-tidewater', asset: keeper(40) }, authorization: { verificationRuleId: 62, source: 'local-fixture' }, slot: null } })
+    expect(Date.parse(assigned.ticket!.expiresAt) - Date.parse(assigned.ticket!.issuedAt)).toBe(900_000)
+    ada.ticket = assigned.ticket
+    expect(await current(ada)).toEqual({ ...assigned, fresh: false })
+    const placed = await activate(ada, keeper(40), 'tidewater-w0-p0')
+    expect([placed.status, ((await placed.json()) as RehearsalActivationResponse).consumedTicket]).toEqual([200, assigned.ticket!.id])
+    // Bea's rule answered false; Cy has no answer; Eve's answers disagree: refused at entry and at selection.
+    for (const [who, code] of [[BEA, 'district_rule_unqualified'], [CY, 'district_rule_unverified'], [EVE, 'district_rule_unverified']] as const) {
+      const b = await launchAs(INSTALLATION_A, who)
+      const entered = await post(ENTRY, b, b.actor)
+      expect([entered.status, await entered.json()], who.displayName).toEqual([403, { error: code }])
+      const asset = { [BEA.discordUserId]: keeper(44), [CY.discordUserId]: keeper(45), [EVE.discordUserId]: keeper(46) }[who.discordUserId]
+      const chose = await post(ASSIGNMENT, b, { ...b.actor, ticketId: null, asset })
+      expect([chose.status, await chose.json()], who.displayName).toEqual([403, { error: code }])
+      // They may still view the city.
+      expect((await city(b)).world.id).toBe(ada.actor.worldId)
+    }
+    expect(await properties()).toBe(1)
+    expect(await verifyCity(t.db)).toMatchObject({ ok: true })
+  })
+
+  it('reads Proofy rule results strictly (file v3), and answers only true as qualifying; none or disagreeing answers are unknown', () => {
+    const fixture = parseRehearsalFile(GRANTS_V3)
+    const at = (guildId: string, who: { discordUserId: string }, rule: number) => ruleAnswerOf(fixture, { guildId, discordUserId: who.discordUserId }, rule)
+    expect([at(GUILD_A, ADA, 62), at(GUILD_B, ADA, 62), at(GUILD_A, ADA, 61)]).toEqual([true, null, null])
+    expect([at(GUILD_A, BEA, 62), at(GUILD_B, BEA, 62)]).toEqual([false, false])
+    // Eve: true in Guild A and false everywhere disagree there (unknown); elsewhere only the false one applies.
+    expect([at(GUILD_A, EVE, 62), at(GUILD_B, EVE, 62)]).toEqual([null, false])
+    expect(rehearsalEligibility(fixture)).toMatchObject({ source: 'local-fixture' })
+    const result = (r: Record<string, unknown>) => ({ ...GRANTS, kind: REHEARSAL_FILE_KIND_V3, ruleResults: [r] })
+    const bad = [
+      { ...GRANTS, ruleResults: [] },
+      { ...GRANTS, kind: REHEARSAL_FILE_KIND_V3 },
+      result({ discordUserId: ADA.discordUserId, verificationRuleId: 62 }),
+      result({ discordUserId: ADA.discordUserId, verificationRuleId: 62, qualifies: 'yes' }),
+      result({ discordUserId: ADA.discordUserId, verificationRuleId: 0, qualifies: true }),
+      result({ discordUserId: ADA.discordUserId, verificationRuleId: 1.5, qualifies: true }),
+      result({ discordUserId: 'ada', verificationRuleId: 62, qualifies: true }),
+      result({ guild: 'guild-a', discordUserId: ADA.discordUserId, verificationRuleId: 62, qualifies: true }),
+      result({ discordUserId: ADA.discordUserId, verificationRuleId: 62, qualifies: true, district: 'tidewater' }),
+      { ...GRANTS, kind: REHEARSAL_FILE_KIND_V3, ruleResults: [{ discordUserId: ADA.discordUserId, verificationRuleId: 62, qualifies: true }, { discordUserId: ADA.discordUserId, verificationRuleId: 62, qualifies: false }] },
+    ]
+    for (const raw of bad) expect(() => parseRehearsalFile(raw), JSON.stringify(raw).slice(-160)).toThrow()
+    // v1 and v2 carry none.
+    expect(parseRehearsalFile(GRANTS).results).toEqual([])
   })
 
   it('reads its file strictly, either version', () => {

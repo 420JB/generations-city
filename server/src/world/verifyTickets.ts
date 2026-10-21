@@ -20,6 +20,18 @@ import { defaultRotationDistricts, judgeWorldConfig, rotationDistrict } from '..
  *             its district and geometry, at the sequence it records, activated by its holder (and, for a
  *             rule ticket, its NFT); no property consumed two tickets;
  *   coverage  every property activated since the world's rotation began consumed a ticket.
+ *
+ * And, once migration 0011 is applied (policies D1, D2, D4):
+ *   windows   at most one open claim window per player per world; one opened by an issuance lasts
+ *             exactly 900 seconds and opened with a ticket issued at that instant; every ticket in a
+ *             window is its holder's and ends exactly when it ends; every ticket issued since 0011 is
+ *             in one; an active ticket's window is open; a lapsed window closed only after it ran out;
+ *             an activated one by a property one of its tickets became, and a committed ticket's
+ *             window is closed by its property;
+ *   rules     a fallback ticket names an unrestricted district of its configuration; a rule ticket
+ *             records exactly the Proofy rule its configuration names for its district, a restricted
+ *             district's authorization only from 'local-fixture'; a ticket superseded since 0011 says
+ *             why, and a rule change superseded only rule tickets of the epoch that governs.
  */
 export interface TicketVerifyReport {
   epoch: number
@@ -29,6 +41,9 @@ export interface TicketVerifyReport {
   /** Active tickets whose lease has run out, waiting for the next ticket transaction to expire them. */
   lapsed: number
   free: number
+  /** Open claim windows (0011), and those of them that ran out, waiting for the next ticket transaction to close them. */
+  windows: number
+  lapsedWindows: number
 }
 
 type AddViolation = (rule: string, detail: string) => void
@@ -72,6 +87,31 @@ interface TicketRow {
   lapsed: boolean
   property_id: string | null
   committed_sequence: string | null
+  claim_window: string | null
+  gate_rule_id: string | null
+  authorization_source: string | null
+  supersede_cause: string | null
+  /** The Proofy rule the ticket's configuration names for its district (0011's world_config_district_rule). */
+  district_rule: string | null
+  /** Issued since migration 0011 was applied: it must be in a claim window. */
+  since_0011: boolean
+}
+
+interface WindowRow {
+  id: string
+  world_id: string
+  actor_discord_user_id: string
+  actor_core_user_id: string
+  opened_by: string
+  close_reason: string | null
+  property_id: string | null
+  open: boolean
+  ran_out: boolean
+  exact: boolean
+  closed_after_expiry: boolean | null
+  opened_by_ticket: boolean
+  /** Tickets in the window whose holder or end is not the window's. */
+  strays: number
 }
 
 interface PropertyRow {
@@ -91,6 +131,11 @@ export async function hasTicketTables(client: PoolClient): Promise<boolean> {
   return (await client.query<{ present: boolean }>(`SELECT to_regclass('world_district_tickets') IS NOT NULL AS present`)).rows[0].present
 }
 
+/** True when this database has claim windows and the ticket policy columns (migration 0011). */
+async function hasTicketPolicy(client: PoolClient): Promise<boolean> {
+  return (await client.query<{ present: boolean }>(`SELECT to_regclass('world_claim_windows') IS NOT NULL AS present`)).rows[0].present
+}
+
 export async function verifyDistrictTickets(client: PoolClient, add: AddViolation): Promise<Map<string, TicketVerifyReport>> {
   const reports = new Map<string, TicketVerifyReport>()
   if (!(await hasTicketTables(client))) return reports
@@ -98,13 +143,34 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
     await client.query<RotationRow>('SELECT world_id, epoch, epoch_start_ordinal, high_water, committed_count, basis_config_version, basis_config_hash, layout_geometry_fingerprint, districts, created_at FROM world_assignment_rotations ORDER BY world_id')
   ).rows
   const slots = (await client.query<SlotRow>('SELECT world_id, ordinal, epoch, district_key, generation, state FROM world_assignment_slots ORDER BY world_id, ordinal')).rows
+  const policy = await hasTicketPolicy(client)
   const tickets = (
     await client.query<TicketRow>(
-      `SELECT id, world_id, actor_discord_user_id, actor_core_user_id, kind, district_key, district_geometry_fingerprint, layout_geometry_fingerprint, epoch, ordinal, generation, asset, status,
-              (expires_at <= clock_timestamp()) AS lapsed, property_id, committed_sequence
-         FROM world_district_tickets ORDER BY world_id, issued_at, id`,
+      policy
+        ? `SELECT id, world_id, actor_discord_user_id, actor_core_user_id, kind, district_key, district_geometry_fingerprint, layout_geometry_fingerprint, epoch, ordinal, generation, asset, status,
+                  (expires_at <= clock_timestamp()) AS lapsed, property_id, committed_sequence, claim_window, gate_rule_id, authorization_source, supersede_cause,
+                  world_config_district_rule(world_id, config_version, district_key) AS district_rule,
+                  issued_at >= (SELECT m.applied_at FROM schema_migrations m WHERE m.version = 11) AS since_0011
+             FROM world_district_tickets ORDER BY world_id, issued_at, id`
+        : `SELECT id, world_id, actor_discord_user_id, actor_core_user_id, kind, district_key, district_geometry_fingerprint, layout_geometry_fingerprint, epoch, ordinal, generation, asset, status,
+                  (expires_at <= clock_timestamp()) AS lapsed, property_id, committed_sequence, NULL AS claim_window, NULL AS gate_rule_id, NULL AS authorization_source, NULL AS supersede_cause,
+                  NULL AS district_rule, false AS since_0011
+             FROM world_district_tickets ORDER BY world_id, issued_at, id`,
     )
   ).rows
+  const windows = policy
+    ? (
+        await client.query<WindowRow>(
+          `SELECT w.id, w.world_id, w.actor_discord_user_id, w.actor_core_user_id, w.opened_by, w.close_reason, w.property_id,
+                  (w.closed_at IS NULL) AS open, (w.expires_at <= clock_timestamp()) AS ran_out, (w.expires_at - w.opened_at = interval '900 seconds') AS exact,
+                  (CASE WHEN w.closed_at IS NULL THEN NULL ELSE w.closed_at >= w.expires_at END) AS closed_after_expiry,
+                  EXISTS (SELECT 1 FROM world_district_tickets t WHERE t.claim_window = w.id AND t.issued_at = w.opened_at) AS opened_by_ticket,
+                  (SELECT count(*)::int FROM world_district_tickets t WHERE t.claim_window = w.id
+                      AND (t.world_id <> w.world_id OR t.actor_discord_user_id <> w.actor_discord_user_id OR t.actor_core_user_id <> w.actor_core_user_id OR t.expires_at <> w.expires_at)) AS strays
+             FROM world_claim_windows w ORDER BY w.world_id, w.opened_at, w.id`,
+        )
+      ).rows
+    : []
   const properties = (
     await client.query<PropertyRow>(
       `SELECT id, world_id, district_key, district_geometry_fingerprint, activated_sequence, activator_core_user_id, activator_discord_user_id,
@@ -128,6 +194,8 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
       active: mineTickets.filter((t) => t.status === 'active').length,
       lapsed: mineTickets.filter((t) => t.status === 'active' && t.lapsed).length,
       free: mineSlots.filter((s) => s.state === 'free').length,
+      windows: windows.filter((w) => w.world_id === r.world_id && w.open).length,
+      lapsedWindows: windows.filter((w) => w.world_id === r.world_id && w.open && w.ran_out).length,
     }
     reports.set(r.world_id, report)
 
@@ -180,9 +248,46 @@ export async function verifyDistrictTickets(client: PoolClient, add: AddViolatio
     const consumed = committed.map((t) => t.property_id)
     if (new Set(consumed).size !== consumed.length) add('tickets', `${label} has a property that consumed two tickets`)
 
+    if (policy) verifyTicketPolicy(r, mineTickets, windows.filter((w) => w.world_id === r.world_id), properties, add)
+
     // Coverage: since the rotation began, every property consumed a ticket.
     for (const p of properties.filter((x) => x.world_id === r.world_id && x.activated_at >= r.created_at))
       if (!committed.some((t) => t.property_id === p.id)) add('tickets', `world ${r.world_id} property ${p.id} was activated after its rotation began without consuming a ticket`)
   }
   return reports
+}
+
+/** The claim windows and rule provenance of one world (0011). */
+function verifyTicketPolicy(r: RotationRow, mine: readonly TicketRow[], windows: readonly WindowRow[], properties: readonly PropertyRow[], add: AddViolation): void {
+  const label = `world ${r.world_id}'s claim windows`
+  const open = windows.filter((w) => w.open).map((w) => w.actor_discord_user_id)
+  if (new Set(open).size !== open.length) add('windows', `${label}: a player holds two open claim windows`)
+  for (const w of windows) {
+    const wLabel = `world ${r.world_id} claim window ${w.id}`
+    if (w.strays > 0) add('windows', `${wLabel} holds ${w.strays} ticket(s) of another holder, or ending at another time`)
+    if (w.opened_by === 'issuance' && !w.exact) add('windows', `${wLabel} does not last exactly 900 seconds`)
+    if (w.opened_by === 'issuance' && !w.opened_by_ticket) add('windows', `${wLabel} did not open with a ticket issued at that instant`)
+    if (w.opened_by !== 'issuance' && w.opened_by !== 'migration-0011') add('windows', `${wLabel} was opened by ${w.opened_by}`)
+    if (w.close_reason === 'lapsed' && w.closed_after_expiry !== true) add('windows', `${wLabel} lapsed before it ran out`)
+    if (w.close_reason === 'activated') {
+      const p = properties.find((x) => x.id === w.property_id)
+      const by = mine.find((t) => t.status === 'committed' && t.property_id === w.property_id && t.actor_discord_user_id === w.actor_discord_user_id && (t.claim_window === w.id || t.claim_window === null))
+      if (!p || !by) add('windows', `${wLabel} was closed by an activation, but not by a property one of its tickets became`)
+    }
+    if (w.close_reason !== null && w.close_reason !== 'lapsed' && w.close_reason !== 'activated') add('windows', `${wLabel} closed ${w.close_reason}`)
+  }
+  for (const t of mine) {
+    const tLabel = `world ${r.world_id} ticket ${t.id}`
+    const window = windows.find((w) => w.id === t.claim_window)
+    if (t.since_0011 && !t.claim_window) add('windows', `${tLabel} was issued after migration 0011 outside a claim window`)
+    if (t.claim_window && !window) add('windows', `${tLabel} names claim window ${t.claim_window}, which is not of its world`)
+    if (t.status === 'active' && window && !window.open) add('windows', `${tLabel} is active in a closed claim window`)
+    if (t.status === 'committed' && window && !(window.close_reason === 'activated' && window.property_id === t.property_id)) add('windows', `${tLabel} is committed, but its claim window was not closed by its property`)
+    if (t.kind === 'fallback' && t.district_rule !== null) add('rules', `${tLabel} is a fallback ticket on a restricted district`)
+    if (t.kind === 'rule' && t.since_0011 && t.gate_rule_id !== t.district_rule) add('rules', `${tLabel} records Proofy rule ${t.gate_rule_id ?? 'none'}; its configuration names ${t.district_rule ?? 'none'} for its district`)
+    if (t.authorization_source !== null && t.authorization_source !== 'local-fixture') add('rules', `${tLabel} is authorized by ${t.authorization_source}, not local test data`)
+    if (t.status === 'superseded' && t.since_0011 && t.supersede_cause !== 'rotation' && t.supersede_cause !== 'rules') add('rules', `${tLabel} was superseded without saying why`)
+    if (t.supersede_cause === 'rules' && (t.kind !== 'rule' || t.epoch !== r.epoch)) add('rules', `${tLabel} was superseded by a rule change, but is not a rule ticket of the epoch that governs`)
+    if (t.supersede_cause === 'rotation' && t.epoch >= r.epoch) add('rules', `${tLabel} was superseded by a rotation change, but its rotation is still in its epoch`)
+  }
 }

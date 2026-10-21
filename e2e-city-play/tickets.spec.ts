@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 import { BRAND_A } from './brands'
 import { install, launch, launchHref, publish, snowflake } from './play'
-import { CAPTAIN, nft, REHEARSAL_ADA, REHEARSAL_BEA, REHEARSAL_CY, REHEARSAL_DEE } from './rehearsal'
+import { CAPTAIN, nft, REHEARSAL_ADA, REHEARSAL_BEA, REHEARSAL_CY, REHEARSAL_DEE, REHEARSAL_EVE, RESTRICTED_RULES } from './rehearsal'
 
 /**
  * DISTRICT TICKETS (P1-C2-D1), end to end against a REAL local Proofy Play, through the LOCAL
@@ -46,6 +46,11 @@ const ticketOf = async (page: Page) => {
   const badge = page.getByTestId('play-ticket').getByTestId('assigned-district')
   return { district: await badge.getAttribute('data-district'), ordinal: await badge.getAttribute('data-ordinal'), generation: await badge.getAttribute('data-generation'), kind: await badge.getAttribute('data-kind'), id: await badge.getAttribute('data-ticket') }
 }
+/** The instant the ticket's claim window ends, as the page shows it. */
+const endOf = (page: Page) => page.getByTestId('play-ticket').getByTestId('assigned-district').locator('time').getAttribute('datetime')
+
+/** BRAND_A with every district restricted, each by its own Proofy rule (policy D1). */
+const ALL_RESTRICTED = { ...BRAND_A, districts: BRAND_A.districts.map((d) => ({ ...d, proofyRule: { verificationRuleId: RESTRICTED_RULES[d.key as keyof typeof RESTRICTED_RULES], label: `${d.name} pass` } })) }
 
 /** Open the plot choice in the player's assigned district, select an NFT, and wait for the server's answer for it. */
 async function openWith(page: Page, asset: string) {
@@ -172,5 +177,74 @@ test('selecting an NFT an explicit rule assigns moves the claim to the rule\'s d
   await expect(city).toHaveAttribute('data-buildings', '2')
   await expect(city).toHaveAttribute('data-original-activations', '2')
   await page.screenshot({ path: `${SHOTS}/tickets-7-second-nft.png` })
+  await context.close()
+})
+
+test('an all-restricted city: the qualified player selects the NFT first and places it in its restricted district; an unqualified player views but cannot claim', async ({ browser }) => {
+  const a = await installed(ALL_RESTRICTED)
+  const contexts = await Promise.all([0, 1].map(() => browser.newContext()))
+  const [ada, eve] = await Promise.all(contexts.map((c) => c.newPage()))
+  const city = await arrive(ada, launchHref(await launch(a.guild, 'rare-city', 'Ada', REHEARSAL_ADA)))
+  // No district at entry: it depends on the NFT. Nothing is held meanwhile.
+  await expect(ada.getByTestId('play-ticket')).toHaveAttribute('data-state', 'awaiting-asset')
+  await expect(ada.getByTestId('play-ticket')).toContainText('Every district here is restricted')
+  await expect(city).toHaveAttribute('data-ticket', '')
+  await ada.screenshot({ path: `${SHOTS}/tickets-8-all-restricted-awaiting.png` })
+  // From any district: select the NFT. The server assigns its rule's restricted district, and the placement goes there.
+  await ada.getByTestId('nav-overview').click()
+  await still(ada)
+  await ada.getByTestId('district-label-lantern-quay').click()
+  await expect(ada.getByTestId('choose-plot')).toHaveText('Select your test NFT · local rehearsal')
+  await ada.getByTestId('choose-plot').click()
+  await expect(ada.getByTestId('rehearsal-panel')).toBeVisible()
+  await ada.locator(`[data-asset="${CAPTAIN}"]`).check()
+  await expect(ada.getByTestId('rehearsal-panel')).toHaveAttribute('data-assigned', 'yes')
+  await expect(ada.getByTestId('placement-layer')).toHaveAttribute('data-district', 'tidewater')
+  expect(await ticketOf(ada)).toMatchObject({ district: 'tidewater', kind: 'rule', ordinal: '' })
+  await expect(ada.getByTestId('play-ticket').getByTestId('assigned-district')).toHaveAttribute('data-restricted', String(RESTRICTED_RULES.tidewater))
+  await expect(ada.getByTestId('rehearsal-district')).toContainText(`Proofy rule ${RESTRICTED_RULES.tidewater} answered yes in this server's local test file (not verified by Proofy)`)
+  const end = Date.parse((await endOf(ada))!)
+  expect(end - Date.now()).toBeGreaterThan(890_000)
+  expect(end - Date.now()).toBeLessThanOrEqual(900_000)
+  await ada.screenshot({ path: `${SHOTS}/tickets-9-all-restricted-rule-ticket.png` })
+  await placeOn(ada, 'tidewater')
+  await expect(city).toHaveAttribute('data-buildings', '1')
+  await ada.screenshot({ path: `${SHOTS}/tickets-10-all-restricted-placed.png` })
+
+  // Eve's Proofy rule answered no: the city is hers to view, and the page says why nothing can be claimed.
+  const eveCity = await arrive(eve, launchHref(await launch(a.guild, 'rare-city', 'Eve', REHEARSAL_EVE)))
+  await expect(eveCity).toHaveAttribute('data-buildings', '1')
+  await expect(eve.getByTestId('play-ticket')).toHaveAttribute('data-state', 'none')
+  await expect(eve.getByTestId('play-ticket-note')).toContainText('restricted district whose Proofy rule this local server says you do not meet')
+  await expect(eveCity).toHaveAttribute('data-ticket', '')
+  await eve.screenshot({ path: `${SHOTS}/tickets-11-all-restricted-unqualified.png` })
+  await Promise.all(contexts.map((c) => c.close()))
+})
+
+test('the claim window is never extended: a reload, an NFT switch, and leaving and entering again all keep the same end', async ({ browser }) => {
+  const a = await installed(BRAND_A)
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  const city = await arrive(page, launchHref(await launch(a.guild, 'rare-city', 'Ada', REHEARSAL_ADA)))
+  const first = await ticketOf(page)
+  const end = await endOf(page)
+  expect(Date.parse(end!) - Date.now()).toBeGreaterThan(890_000)
+  // A reload: the same ticket, the same end.
+  await page.reload()
+  await expect(city).toHaveAttribute('data-source', 'session')
+  expect([await ticketOf(page), await endOf(page)]).toEqual([first, end])
+  // Switching to the Captain (a rule ticket): another district, the same end.
+  await openWith(page, CAPTAIN)
+  expect(await ticketOf(page)).toMatchObject({ district: 'tidewater', kind: 'rule' })
+  expect(await endOf(page)).toBe(end)
+  // Leaving, then asking again: a new ticket, the same end.
+  await page.getByTestId('rehearsal-leave').click()
+  await expect(page.getByTestId('play-ticket')).toHaveAttribute('data-state', 'none')
+  await page.getByTestId('play-ticket-enter').click()
+  await expect(page.getByTestId('play-ticket')).toHaveAttribute('data-state', 'held')
+  const again = await ticketOf(page)
+  expect(again.id).not.toBe(first.id)
+  expect(await endOf(page)).toBe(end)
+  await page.screenshot({ path: `${SHOTS}/tickets-12-same-window.png` })
   await context.close()
 })

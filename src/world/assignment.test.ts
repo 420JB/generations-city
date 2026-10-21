@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultRotationDistricts, MAX_RULE_REF_LENGTH, resolveDistrictRules, rotationDistrict } from './assignment'
+import { defaultRotationDistricts, DISTRICT_TICKET_LEASE_SECONDS, districtAuthorization, MAX_RULE_REF_LENGTH, resolveDistrictRules, rotationDistrict } from './assignment'
 
 const gate = { verificationRuleId: 41, label: 'Captains' }
 
@@ -53,5 +53,23 @@ describe('explicit district rules', () => {
     expect(resolveDistrictRules([...rules(64, 64, 64, 5), { id: 'a'.repeat(64), district: 'tidewater' }, { id: 'e'.repeat(64), district: 'orchard' }], city)).toEqual(exact)
     // Conflicting districts are still ambiguous, however long the ids.
     expect(resolveDistrictRules([...rules(64, 64, 64, 64), { id: 'e'.repeat(64), district: 'saltmarsh' }], city)).toEqual({ kind: 'ambiguous', districts: ['saltmarsh', 'tidewater'] })
+  })
+})
+
+describe('restricted districts (D1) and the lease (D2)', () => {
+  it('authorizes a restricted district only on a positive answer; unknown, missing and negative answers refuse', () => {
+    expect(districtAuthorization(null, undefined)).toEqual({ kind: 'open' })
+    expect(districtAuthorization(undefined, false)).toEqual({ kind: 'open' })
+    expect(districtAuthorization(gate, true)).toEqual({ kind: 'qualified', verificationRuleId: 41 })
+    expect(districtAuthorization(gate, false)).toEqual({ kind: 'unqualified', verificationRuleId: 41 })
+    for (const answer of [null, undefined]) expect(districtAuthorization(gate, answer)).toEqual({ kind: 'unverified', verificationRuleId: 41 })
+  })
+
+  it('a city whose every district is restricted has no default rotation', () => {
+    expect(defaultRotationDistricts([{ key: 'a', gate }, { key: 'b', gate: { verificationRuleId: 7 } }])).toEqual([])
+  })
+
+  it('locks the claim window at exactly fifteen minutes', () => {
+    expect(DISTRICT_TICKET_LEASE_SECONDS).toBe(900)
   })
 })

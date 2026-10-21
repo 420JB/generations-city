@@ -111,7 +111,8 @@ export function BrandCityPreview({
   const rehearsing = rehearsal && member?.kind === 'player' ? rehearsal : null
   /** In a rehearsal, the district the server assigned the player (their ticket): the only one they place in, while they hold it. */
   const assigned = rehearsing?.ticket?.districtKey ?? null
-  const placingAt = placing && rehearsing ? (assigned ? { ...placing, districtId: assigned, selected: placing.districtId === assigned ? placing.selected : null } : null) : placing
+  // Without a ticket only in a city whose every district is restricted: the player selects the NFT first, wherever they are.
+  const placingAt = placing && rehearsing ? (assigned ? { ...placing, districtId: assigned, selected: placing.districtId === assigned ? placing.selected : null } : rehearsing.awaitingAsset ? placing : null) : placing
   const placingNow = placingAt && (placingAt.geometry === geometry || city.world.districts.some((d) => d.key === placingAt.districtId)) ? placingAt : null
   const placingIn = placingNow?.districtId ?? null
   const candidates = useMemo(() => (placingIn ? candidatesIn(city, placingIn) : []), [city, placingIn])
@@ -145,9 +146,9 @@ export function BrandCityPreview({
   /** Re-checked at every action, not only by the buttons' state (the server will check again for real). */
   const allowedIn = (districtId: string) => mayAct(previewClaimAccess(config.districts.find((x) => x.key === districtId)?.gate ?? null, member))
 
-  /** Open the plot choice in a district and frame its free plots. */
+  /** Open the plot choice in a district and frame its free plots. In a rehearsal the server's ticket decides, not the preview's viewers. */
   const placeAt = (districtId: string) => {
-    if (!scene.districts.some((x) => x.id === districtId) || !allowedIn(districtId)) return
+    if (!scene.districts.some((x) => x.id === districtId) || (!rehearsing && !allowedIn(districtId))) return
     const d = sceneDistrict(scene, districtId)
     const offered = candidatesIn(city, districtId)
     setPlacing({ districtId, selected: null, geometry })
@@ -157,7 +158,7 @@ export function BrandCityPreview({
 
   /** A rehearsal places only in the assigned district, whichever district the player was looking at. */
   const startPlacement = (requested: string) => {
-    const districtId = rehearsing ? assigned : requested
+    const districtId = rehearsing ? (assigned ?? (rehearsing.awaitingAsset ? requested : null)) : requested
     if (districtId) placeAt(districtId)
   }
 
@@ -209,6 +210,7 @@ export function BrandCityPreview({
         member={member}
         rehearsal={!!rehearsing}
         assigned={rehearsing ? assigned : undefined}
+        selectAsset={!!rehearsing && !assigned && rehearsing.awaitingAsset && rehearsing.nfts.length > 0}
         onEnter={
           rehearsing && !assigned && rehearsing.nfts.length > 0
             ? () =>

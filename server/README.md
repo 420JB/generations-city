@@ -60,11 +60,11 @@ server/
     verify-cli.ts      `npm run city:verify`
     world/store.ts     persistent brand cities: founding, configuration versions, adoption, loading
     world/properties.ts  LOCAL ONLY: authoritative world property activation (migration 0007); only the local rehearsal uses it
-    world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010)
+    world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs and district rules from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
-    world/verifyTickets.ts  the district ticket half of `city:verify` (0010)
+    world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011)
     world/ids.ts       UUIDv7 world ids
     db/pool.ts         pg pool
     db/transaction.ts  one transaction on one pooled connection, and when that connection may be reused
@@ -1243,7 +1243,9 @@ configuration and is not affected by anything here.
   rotation, an adoption that does not move the rotation in the same transaction, and a property
   that consumes no ticket, are refused at commit, so an older build's launch or rehearsal
   activation in such a world fails rather than leaving tickets on a configuration that no
-  longer governs.
+  longer governs. And `0011`: every ticket issued after it must be in its holder's claim window
+  (fixed at 900 seconds by the database), so an older build's ticket issuance fails rather than
+  issuing a ticket with another lease or outside a window.
 
 ## Tests
 

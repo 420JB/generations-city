@@ -102,6 +102,7 @@ export function DistrictPanel({
   member,
   rehearsal = false,
   assigned,
+  selectAsset = false,
   onEnter,
   onDistrict,
   onWarp,
@@ -115,6 +116,8 @@ export function DistrictPanel({
   rehearsal?: boolean
   /** In a rehearsal: the district the server assigned the player (their ticket), or null while they hold none. */
   assigned?: string | null
+  /** In a rehearsal without a ticket, every district restricted: the player selects their NFT first (`onChoosePlot`). */
+  selectAsset?: boolean
   /** In a rehearsal without a ticket: enter the claim flow (the server assigns a district). Absent: nothing to claim. */
   onEnter?: () => void
   onDistrict: (id: string) => void
@@ -130,7 +133,7 @@ export function DistrictPanel({
   const held = scene.monuments.filter((m) => state.monuments[m.id].holder === districtId)
   // In a rehearsal the player never chooses a district: the button leads to the one the server assigned them.
   const mine = rehearsal && assigned ? sceneDistrict(scene, assigned) : null
-  const allowed = rehearsal ? (assigned ? true : !!onEnter) : mayAct(access)
+  const allowed = rehearsal ? (assigned || selectAsset ? true : !!onEnter) : mayAct(access)
   const action = !rehearsal
     ? allowed
       ? 'Choose a plot · preview'
@@ -141,7 +144,9 @@ export function DistrictPanel({
       ? mine.id === districtId
         ? 'Choose your plot · local rehearsal'
         : `Go to your district: ${mine.title}`
-      : onEnter
+      : selectAsset
+        ? 'Select your test NFT · local rehearsal'
+        : onEnter
         ? 'Get your district · local rehearsal'
         : 'No test NFT to place'
   return (
@@ -181,7 +186,7 @@ export function DistrictPanel({
         </div>
         <AccessNote access={access} district={d} />
         <RuleRequirement access={access} />
-        <button type="button" className="btn primary" onClick={rehearsal && !assigned ? onEnter : onChoosePlot} disabled={!allowed} data-testid="choose-plot" data-assigned={rehearsal ? (assigned ?? '') : undefined}>
+        <button type="button" className="btn primary" onClick={rehearsal && !assigned && !selectAsset ? onEnter : onChoosePlot} disabled={!allowed} data-testid="choose-plot" data-assigned={rehearsal ? (assigned ?? '') : undefined}>
           {action}
         </button>
         <p className="muted small">

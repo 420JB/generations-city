@@ -34,6 +34,8 @@ export interface AssignedTicket {
   kind: 'fallback' | 'rule'
   slot: { ordinal: number; generation: number; epoch: number } | null
   rule: { ref: string; asset: string } | null
+  /** A restricted district: its Proofy rule, and that the positive answer was local test data (never verified). */
+  authorization: { verificationRuleId: number; source: 'local-fixture' } | null
   expiresAt: string
 }
 
@@ -48,6 +50,11 @@ export interface PlacementRehearsal {
   ticket: AssignedTicket | null
   /** Why the player holds no ticket, when the server said. */
   ticketNote: string | null
+  /**
+   * No ticket, because every district of this city is restricted: the district depends on the NFT, so the player selects
+   * one first (`assign` without a ticket) and the server assigns its district if a rule and their rule result allow it.
+   */
+  awaitingAsset: boolean
   /** Enter the claim flow: the server assigns a district (or returns the one held). */
   enter(): Promise<TicketResult>
   /** The NFT the player selected: an explicit rule for it may assign another district. */
@@ -60,7 +67,9 @@ export interface PlacementRehearsal {
 
 /** How the server assigned a ticket's district, in words. */
 function assignmentBasis(ticket: AssignedTicket): string {
-  return ticket.kind === 'rule' ? `explicit district rule ${ticket.rule?.ref ?? ''} for this NFT` : `the city's rotation, slot ${(ticket.slot?.ordinal ?? 0) + 1}`
+  if (ticket.kind !== 'rule') return `the city's rotation, slot ${(ticket.slot?.ordinal ?? 0) + 1}`
+  const restricted = ticket.authorization ? `, in a restricted district: Proofy rule ${ticket.authorization.verificationRuleId} answered yes in this server's local test file (not verified by Proofy)` : ''
+  return `explicit district rule ${ticket.rule?.ref ?? ''} for this NFT${restricted}`
 }
 
 /** The ticket's district as the page shows it everywhere: what the server assigned, on what basis, until when. */
@@ -75,9 +84,10 @@ export function AssignedDistrict({ ticket, name }: { ticket: AssignedTicket; nam
       data-ordinal={ticket.slot?.ordinal ?? ''}
       data-generation={ticket.slot?.generation ?? ''}
       data-rule={ticket.rule?.ref ?? ''}
+      data-restricted={ticket.authorization ? String(ticket.authorization.verificationRuleId) : ''}
       title={`Assigned by the server from ${assignmentBasis(ticket)}. Held until ${new Date(ticket.expiresAt).toLocaleTimeString()}.`}
     >
-      <b>{name}</b> · {ticket.kind === 'rule' ? 'by rule' : `slot ${(ticket.slot?.ordinal ?? 0) + 1}`} · until{' '}
+      <b>{name}</b> · {ticket.kind === 'rule' ? (ticket.authorization ? 'restricted, by rule' : 'by rule') : `slot ${(ticket.slot?.ordinal ?? 0) + 1}`} · until{' '}
       <time dateTime={ticket.expiresAt}>{new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
     </span>
   )
@@ -225,8 +235,14 @@ export function RehearsalPlotPanel({
       <div className="rehearsal-step">
         <h3>2 · District</h3>
         <p className="small" data-testid="rehearsal-district" data-district={d.id} data-kind={ticket?.kind ?? ''} data-ordinal={ticket?.slot?.ordinal ?? ''}>
-          <b>{d.title}</b>, assigned to you by the server{ticket ? ` (${assignmentBasis(ticket)})` : ''}. You do not choose your district; you choose the exact plot in it. Held for you until{' '}
-          {ticket ? new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}; nothing is permanent until you activate.
+          {ticket || !rehearsal.awaitingAsset ? (
+            <>
+              <b>{d.title}</b>, assigned to you by the server{ticket ? ` (${assignmentBasis(ticket)})` : ''}. You do not choose your district; you choose the exact plot in it. Held for you until{' '}
+              {ticket ? new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'} (fifteen minutes from when it was first assigned, never extended); nothing is permanent until you activate.
+            </>
+          ) : (
+            <>Every district of this city is restricted. Select your test NFT: the server assigns its district if a district rule names one for it and that district&rsquo;s Proofy rule result allows you. You do not choose your district.</>
+          )}
         </p>
         <p className="muted small">Local rehearsal: which NFTs you may place, and any district rule for them, come from a local test file on this server, not from Proofy.</p>
       </div>

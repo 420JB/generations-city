@@ -1,20 +1,48 @@
 /**
- * DEFAULT DISTRICT ASSIGNMENT, the pure rules (owner-locked, MCD 46A/46B). The persistence and
- * concurrency (tickets, slots, gap reuse, expiry) are the server's (`server/src/world/tickets.ts`,
- * migration 0010); this module only says what a rotation is and how a district is chosen.
+ * DEFAULT DISTRICT ASSIGNMENT, the pure rules (owner-locked, MCD 46A/46B; policies D1 to D4 locked
+ * 2026-10-21). The persistence and concurrency (tickets, slots, gap reuse, claim windows, expiry) are
+ * the server's (`server/src/world/tickets.ts`, migrations 0010 and 0011); this module only says what
+ * a rotation is, how a district is chosen, and what may authorize a restricted one.
  *
  *   - One rotation per world, shared by every collection of the city. A player does not choose
  *     their default district: entering the city assigns the district of the next slot.
- *   - The rotation's districts are the city's districts in configuration order, leaving out every
- *     district with a Proofy rule. ENGINEERING CHOICE, NOT AN OWNER LOCK (MCD 46A leaves the exact
- *     default topology and order open): a rule-gated district admits only players its rule admits,
- *     and nothing can check a rule yet, so it cannot be anyone's default.
+ *   - D1 (locked): the rotation's districts are the city's UNRESTRICTED districts (no Proofy rule) in
+ *     configuration order. A RESTRICTED district (one with a Proofy rule) is never a default: it is
+ *     reached only by an explicit collection/trait rule for the NFT AND a positive answer to the
+ *     district's own Proofy rule for the player (`districtAuthorization`). A city whose every district
+ *     is restricted has an empty rotation, and is playable only that way.
  *   - Ordinal n of an epoch names districts[(n - epoch start) mod length]: districts 1, 2, 3, ... and
  *     round again. A released slot is reused by the next entrant, lowest ordinal first.
- *   - An explicit collection/trait rule that matches an NFT overrides the default for that NFT. The
- *     precedence of overlapping explicit rules is NOT APPROVED (MCD 46A): when the rules that apply
- *     name different districts the result is `ambiguous`, and the NFT is refused, never guessed.
+ *   - An explicit collection/trait rule that matches an NFT overrides the default for that NFT.
+ *     D3 (locked): when the rules that apply name different districts the result is `ambiguous` and
+ *     the NFT is refused until the configuration is fixed: no priority by rule order, id or type.
+ *     Rules that name the same district agree.
+ *   - D2 (locked): a claim window, and every ticket in it, lasts exactly `DISTRICT_TICKET_LEASE_SECONDS`.
  */
+
+/** D2 (locked): how long a claim window lasts from its first ticket's issuance, exactly. Never extended or renewed. */
+export const DISTRICT_TICKET_LEASE_SECONDS = 900
+
+/** A Proofy rule's answer for one player: Core's `qualifies` (`true`, `false`, or `null`: unknown, stale, unsupported, conflicting). */
+export type RuleAnswer = true | false | null
+
+export type DistrictAuthorization =
+  /** The district has no Proofy rule: every otherwise eligible player may be assigned it. */
+  | { kind: 'open' }
+  /** The district's rule answered `true` for the player. */
+  | { kind: 'qualified'; verificationRuleId: number }
+  /** The district's rule answered `false`: refused. */
+  | { kind: 'unqualified'; verificationRuleId: number }
+  /** No answer, an unknown one, or conflicting ones: refused, never guessed. */
+  | { kind: 'unverified'; verificationRuleId: number }
+
+/** Whether a player may be assigned a district, from its Proofy rule (if any) and that rule's answer for them. Only `true` qualifies. */
+export function districtAuthorization(gate: { verificationRuleId: number } | null | undefined, answer: RuleAnswer | undefined): DistrictAuthorization {
+  if (gate === null || gate === undefined) return { kind: 'open' }
+  if (answer === true) return { kind: 'qualified', verificationRuleId: gate.verificationRuleId }
+  if (answer === false) return { kind: 'unqualified', verificationRuleId: gate.verificationRuleId }
+  return { kind: 'unverified', verificationRuleId: gate.verificationRuleId }
+}
 
 /** A district as a configuration states it, as far as assignment needs: its key, and whether a Proofy rule gates it. */
 export interface AssignableDistrict {
@@ -22,7 +50,7 @@ export interface AssignableDistrict {
   gate: unknown
 }
 
-/** The rotation's district order: every district without a Proofy rule, in configuration order. */
+/** The rotation's district order (D1): every UNRESTRICTED district (no Proofy rule), in configuration order. */
 export function defaultRotationDistricts(districts: readonly AssignableDistrict[]): string[] {
   return districts.filter((d) => d.gate === null || d.gate === undefined).map((d) => d.key)
 }

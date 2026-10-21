@@ -41,16 +41,23 @@ describe('local rehearsal answers, as the page reads them', () => {
 
 describe('district tickets, as the page reads them', () => {
   const HASH = 'a'.repeat(64)
-  const FALLBACK = { id: '019a0b1c-2d3e-7f40-8a5b-6c7d8e9f0a1b', kind: 'fallback', districtKey: 'lantern-quay', slot: { ordinal: 4, generation: 2, epoch: 1 }, rule: null, configVersion: 3, layoutGeometryFingerprint: HASH, issuedAt: '2026-10-20T10:00:00.000Z', expiresAt: '2026-10-20T10:15:00.000Z' }
+  const FALLBACK = { id: '019a0b1c-2d3e-7f40-8a5b-6c7d8e9f0a1b', kind: 'fallback', districtKey: 'lantern-quay', slot: { ordinal: 4, generation: 2, epoch: 1 }, rule: null, authorization: null, configVersion: 3, layoutGeometryFingerprint: HASH, issuedAt: '2026-10-20T10:00:00.000Z', expiresAt: '2026-10-20T10:15:00.000Z' }
   const RULE = { ...FALLBACK, kind: 'rule', districtKey: 'tidewater', slot: null, rule: { ref: 'captains-to-tidewater', asset: ASSET } }
+  const RESTRICTED = { ...RULE, authorization: { verificationRuleId: 62, source: 'local-fixture' } }
 
-  it('reads a fallback ticket, a rule ticket and no ticket, each marked as rehearsal data', () => {
-    for (const ticket of [FALLBACK, RULE, null]) {
-      const body = { rehearsal: MARK, ticket, fresh: true }
+  it('reads a fallback ticket, a rule ticket, a restricted district\'s rule ticket and no ticket, each marked as rehearsal data', () => {
+    for (const ticket of [FALLBACK, RULE, RESTRICTED, null]) {
+      const body = { rehearsal: MARK, ticket, fresh: true, awaiting: null }
       expect(parseRehearsalTicketResponse(body)).toEqual(body)
     }
     // Extra fields (a session, a player) are never carried through.
-    expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: { ...FALLBACK, actor: 'x', sessionRef: 'y' }, fresh: false })).toEqual({ rehearsal: MARK, ticket: FALLBACK, fresh: false })
+    expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: { ...FALLBACK, actor: 'x', sessionRef: 'y' }, fresh: false, awaiting: null })).toEqual({ rehearsal: MARK, ticket: FALLBACK, fresh: false, awaiting: null })
+  })
+
+  it('reads "select your NFT first" (every district restricted) only without a ticket', () => {
+    expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: null, fresh: false, awaiting: 'asset' })).toEqual({ rehearsal: MARK, ticket: null, fresh: false, awaiting: 'asset' })
+    for (const awaiting of [undefined, 'district', true]) expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: null, fresh: false, awaiting }), String(awaiting)).toBeNull()
+    expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: RULE, fresh: false, awaiting: 'asset' })).toBeNull()
   })
 
   it('refuses a ticket that is not exactly one kind, or not rehearsal data', () => {
@@ -69,9 +76,14 @@ describe('district tickets, as the page reads them', () => {
       { ...FALLBACK, configVersion: 0 },
       { ...FALLBACK, layoutGeometryFingerprint: HASH.toUpperCase() },
       { ...FALLBACK, expiresAt: 'soon' },
+      // A restricted district's authorization: only on a rule ticket, only local test data, never claimed as verified.
+      { ...FALLBACK, authorization: RESTRICTED.authorization },
+      { ...RESTRICTED, authorization: { verificationRuleId: 62, source: 'proofy-core' } },
+      { ...RESTRICTED, authorization: { verificationRuleId: 0, source: 'local-fixture' } },
+      { ...RULE, authorization: undefined },
     ]
-    for (const ticket of bad) expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket, fresh: false }), JSON.stringify(ticket)).toBeNull()
-    expect(parseRehearsalTicketResponse({ rehearsal: { kind: 'local-test-assets', verified: true }, ticket: FALLBACK, fresh: false })).toBeNull()
-    expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: FALLBACK })).toBeNull()
+    for (const ticket of bad) expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket, fresh: false, awaiting: null }), JSON.stringify(ticket)).toBeNull()
+    expect(parseRehearsalTicketResponse({ rehearsal: { kind: 'local-test-assets', verified: true }, ticket: FALLBACK, fresh: false, awaiting: null })).toBeNull()
+    expect(parseRehearsalTicketResponse({ rehearsal: MARK, ticket: FALLBACK, awaiting: null })).toBeNull()
   })
 })

@@ -44,11 +44,11 @@ describe('the district a rehearsal player is assigned, as the page says it', () 
   if (!loaded.ok) throw new Error('sample city does not load')
   const city = loaded.city
   const player = { id: 'play-player', kind: 'player' as const, label: 'Ada', answers: {} }
-  const panel = (districtId: string, props: { rehearsal?: boolean; assigned?: string | null; onEnter?: () => void }) =>
+  const panel = (districtId: string, props: { rehearsal?: boolean; assigned?: string | null; selectAsset?: boolean; onEnter?: () => void }) =>
     renderToStaticMarkup(
       createElement(CitySceneContext.Provider, { value: city.scene }, createElement(DistrictPanel, { city, districtId, member: player, onDistrict: () => {}, onWarp: () => {}, onChoosePlot: () => {}, onClose: () => {}, ...props })),
     )
-  const ticket: AssignedTicket = { id: '019a0b1c-2d3e-7f40-8a5b-6c7d8e9f0a1b', districtKey: 'tidewater', kind: 'fallback', slot: { ordinal: 1, generation: 2, epoch: 1 }, rule: null, expiresAt: '2026-10-20T10:15:00.000Z' }
+  const ticket: AssignedTicket = { id: '019a0b1c-2d3e-7f40-8a5b-6c7d8e9f0a1b', districtKey: 'tidewater', kind: 'fallback', slot: { ordinal: 1, generation: 2, epoch: 1 }, rule: null, authorization: null, expiresAt: '2026-10-20T10:15:00.000Z' }
 
   it('offers no district choice in a rehearsal: only the assigned district, or a way to be assigned one', () => {
     expect(panel('tidewater', { rehearsal: true, assigned: 'tidewater' })).toContain('Choose your plot · local rehearsal')
@@ -57,6 +57,14 @@ describe('the district a rehearsal player is assigned, as the page says it', () 
     expect(panel('lantern-quay', { rehearsal: true, assigned: null, onEnter: () => {} })).toContain('Get your district · local rehearsal')
     expect(panel('lantern-quay', { rehearsal: true, assigned: null })).toMatch(/disabled=""[^>]*data-testid="choose-plot"[^>]*>No test NFT to place/)
     for (const html of [panel('tidewater', { rehearsal: true, assigned: 'tidewater' }), panel('saltmarsh', { rehearsal: true, assigned: 'tidewater' })]) expect(html).not.toMatch(/Choose a plot · local rehearsal|chosen by you/)
+  })
+
+  it('in a city whose every district is restricted, offers selecting the NFT first, from any district, and still no district choice', () => {
+    for (const d of ['lantern-quay', 'compass-row']) {
+      const html = panel(d, { rehearsal: true, assigned: null, selectAsset: true, onEnter: () => {} })
+      expect(html).toContain('Select your test NFT · local rehearsal')
+      expect(html).not.toMatch(/disabled=""[^>]*data-testid="choose-plot"/)
+    }
   })
 
   it('leaves the preview page as it was: a simulated viewer still previews any district', () => {
@@ -76,5 +84,13 @@ describe('the district a rehearsal player is assigned, as the page says it', () 
     expect(rule).toContain('data-kind="rule"')
     expect(rule).toContain('· by rule ·')
     expect(rule).toContain('explicit district rule captains-to-tidewater for this NFT')
+    expect(rule).toContain('data-restricted=""')
+    // A restricted district: said as such, with its rule, and that the yes was local test data, not Proofy.
+    const restricted = renderToStaticMarkup(
+      createElement(AssignedDistrict, { ticket: { ...ticket, kind: 'rule', slot: null, rule: { ref: 'captains-to-tidewater', asset: 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1' }, authorization: { verificationRuleId: 62, source: 'local-fixture' } }, name: 'Tidewater District' }),
+    )
+    expect(restricted).toContain('data-restricted="62"')
+    expect(restricted).toContain('· restricted, by rule ·')
+    expect(restricted).toContain('Proofy rule 62 answered yes in this server&#x27;s local test file (not verified by Proofy)')
   })
 })
