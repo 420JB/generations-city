@@ -148,7 +148,7 @@ authorization.** The whole player flow, on the standard city page: a launched pl
 district by the server on entry (a district ticket, below), picks one of their TEST NFTs and a
 highlighted plot in that district, reviews what is permanent, and activates a Tier 0 property; the
 page reads the city again, warps to it and shows the stored record. `serve.ts` starts the server this
-way, and `rehearsal.spec.ts`, `tickets.spec.ts`, `world-policy.spec.ts` and `claim-experience.spec.ts` drive it.
+way, and `rehearsal.spec.ts`, `tickets.spec.ts`, `world-policy.spec.ts`, `claim-experience.spec.ts` and `property-home.spec.ts` drive it.
 
 - It exists only with `APP_MODE=local` AND `LOCAL_PROPERTY_REHEARSAL_FILE` (a JSON file
   `{ "kind": "rare-city/local-property-rehearsal-v1", "players": { "<discord user id>": ["<CAIP-19
@@ -187,6 +187,17 @@ way, and `rehearsal.spec.ts`, `tickets.spec.ts`, `world-policy.spec.ts` and `cla
   L1 is still the owner's to decide. `claim-experience.spec.ts` drives it; where it needs time to pass
   it moves the claim window in the disposable database (`claimWindow.ts`, the server tests' replica-role
   technique), so CITY_PLAY_DATABASE_URL's role must be allowed to set `session_replication_role`.
+- **The player's property home (P1-C2-E2), presentation only.** MY PROPERTIES in the HUD lists the
+  properties the session's player FOUNDED in this city: `viewer.originalActivations` (the server's
+  permanent activator record, matched on the session's Proofy identity, scoped to this world) applied
+  to the stored `world.state`. No new route, migration or write: nothing the page sends selects whose
+  list it is. Each property shows its NFT, district, exact Ward/Plot, founding order and city
+  sequence, and WARP opens its panel and flies the camera there. A stored property's panel keeps
+  "Founded by" (you / recorded privately / not recorded) apart from "Current holder: Not verified"
+  (who holds an NFT now is not known to Rare City), counts the properties of its district and city
+  from the stored state, lists its nearest neighbours with WARP, and says construction is coming later
+  in place of the preview build (no progress bar, build, spend or unlock). `property-home.spec.ts`
+  drives it.
 
 Lifting the hold anywhere but local is a new migration replacing `world_properties_guard`, after
 F5, F7, F3, a fresh Core NFT/role/verification eligibility contract and a separate non-owner database

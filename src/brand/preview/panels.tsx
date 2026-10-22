@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { MAX_TIER } from '../../config/economy'
 import { isFoundingWard, wardName } from '../../game/allocation'
 import { heightMeters, tierFor, tierProgress, totalBuilt } from '../../game/economy'
@@ -9,6 +9,7 @@ import { nftAsset } from '../../world/asset'
 import { worldProperty } from '../../world/property'
 import { mayAct, previewClaimAccess, type ClaimAccess, type PreviewMember } from '../core/eligibility'
 import { districtPlots, type LoadedBrandCity } from '../load'
+import { ConstructionNote } from './home'
 import type { Placement } from './PreviewApp'
 import { StoredPropertyCard, type StoredProperty } from './rehearsal'
 
@@ -266,16 +267,25 @@ export function BuildingPreviewPanel({
   buildingId,
   member,
   stored = null,
+  context = null,
   onDistrict,
+  onBack,
   onClose,
   onBuild,
 }: {
   city: LoadedBrandCity
   buildingId: string
   member: PreviewMember | null
-  /** The building's record as the city stores it (a persistent city): shown as it is, in place of a sample owner. */
+  /**
+   * The building's record as the city stores it (a persistent city): shown as it is, in place of a sample owner, with
+   * its founder kept apart from whoever holds the NFT now (not known here), and no preview build.
+   */
   stored?: StoredProperty | null
+  /** For a stored property: the city and district around it. */
+  context?: ReactNode
   onDistrict: (id: string) => void
+  /** Back to where the panel was opened from (the player's properties). */
+  onBack?: () => void
   onClose: () => void
   onBuild: () => void
 }) {
@@ -304,14 +314,25 @@ export function BuildingPreviewPanel({
           </>
         }
         title={scene.buildingLabel(b)}
+        onBack={onBack}
         onClose={onClose}
       />
       <div className="owner-row">
         {stored ? (
-          <div>
-            <div className="muted small">Owner</div>
-            <div className="strong">Not recorded</div>
-          </div>
+          <>
+            <div>
+              <div className="muted small">Founded by</div>
+              <div className="strong" data-testid="property-founder" data-activator={stored.activator}>
+                {stored.activator === 'viewer' ? 'You' : stored.activator === 'other' ? 'Recorded privately' : 'Not recorded'}
+              </div>
+            </div>
+            <div className="grow">
+              <div className="muted small">Current holder</div>
+              <div className="strong" data-testid="property-holder" title="Who holds the NFT now is not checked by this page.">
+                Not verified
+              </div>
+            </div>
+          </>
         ) : (
           <>
             <Avatar user={owner} size={30} />
@@ -330,13 +351,16 @@ export function BuildingPreviewPanel({
         {d.title} · {wardName(b.ward)}
         {isFoundingWard(b.ward) && <span className="founding-tag"> Founding Ward</span>} · Plot {b.plot + 1} · <code>{`${b.districtId}-w${b.ward}-p${b.plot}`}</code>
       </div>
-      <div className="tier-progress">
-        <div className="row-between small">
-          <span>{tier >= MAX_TIER ? 'Max tier' : `Progress to Tier ${tier + 1}`}</span>
-          <span>{heightMeters(total)} m</span>
+      {/* A stored property records no progress: no bar promises one. */}
+      {!stored && (
+        <div className="tier-progress">
+          <div className="row-between small">
+            <span>{tier >= MAX_TIER ? 'Max tier' : `Progress to Tier ${tier + 1}`}</span>
+            <span>{heightMeters(total)} m</span>
+          </div>
+          <ProgressBar value={tierProgress(total)} color={d.color} label="Progress to next tier" />
         </div>
-        <ProgressBar value={tierProgress(total)} color={d.color} label="Progress to next tier" />
-      </div>
+      )}
       <dl className="stat-grid">
         <div>
           <dt>Collection</dt>
@@ -358,18 +382,23 @@ export function BuildingPreviewPanel({
         </div>
       </dl>
       {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
-      <div className={`fund-box access-box ${access.kind}`} data-testid="build-access" data-access={access.kind}>
-        <div className="row-between">
-          <h3>Build here</h3>
-          <SimTag>PREVIEW</SimTag>
+      {stored && context}
+      {stored ? (
+        <ConstructionNote tier={tier} />
+      ) : (
+        <div className={`fund-box access-box ${access.kind}`} data-testid="build-access" data-access={access.kind}>
+          <div className="row-between">
+            <h3>Build here</h3>
+            <SimTag>PREVIEW</SimTag>
+          </div>
+          <AccessNote access={access} district={d} />
+          <RuleRequirement access={access} />
+          <button type="button" className="btn primary" onClick={onBuild} disabled={!allowed} data-testid="build-action">
+            Build · preview only
+          </button>
+          <p className="muted small">Building will spend the shared Proofy community points. That economy is not connected: nothing is spent and no balance exists here.</p>
         </div>
-        <AccessNote access={access} district={d} />
-        <RuleRequirement access={access} />
-        <button type="button" className="btn primary" onClick={onBuild} disabled={!allowed} data-testid="build-action">
-          Build · preview only
-        </button>
-        <p className="muted small">Building will spend the shared Proofy community points. That economy is not connected: nothing is spent and no balance exists here.</p>
-      </div>
+      )}
     </section>
   )
 }

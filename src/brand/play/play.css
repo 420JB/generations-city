@@ -329,3 +329,69 @@
 .play-bar.claiming .rehearsal-flag {
   display: none;
 }
+
+/* ---------- The player's property home (P1-C2-E2) ---------- */
+.home-nav .home-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-num);
+  font-size: 11px;
+}
+.my-properties:focus {
+  outline: none;
+}
+.home-lede {
+  margin: 0 0 12px;
+}
+.home-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.home-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--dc) 40%, transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--dc) 14%, transparent), rgba(255, 255, 255, 0.02));
+}
+.home-item .district-crest {
+  flex: none;
+}
+.home-item-name {
+  overflow-wrap: anywhere;
+}
+.home-item code {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.home-claim {
+  width: 100%;
+  margin: 2px 0 12px;
+}
+.property-context .home-sub {
+  margin: 12px 0 4px;
+}
+.home-districts {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.home-districts .link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+}
+.construction-note p {
+  margin: 8px 0 0;
+}

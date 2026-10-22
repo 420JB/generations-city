@@ -6,6 +6,8 @@ import { loadPersistedBrandCity, type LoadedBrandCity } from '../load'
 import { BrandCityPreview } from '../preview/PreviewApp'
 import { problemKind, serverClockOffset, type ClaimProblem } from '../preview/claim'
 import type { CityControls } from '../preview/PreviewApp'
+import type { PropertyHome } from '../preview/home'
+import { foundedProperties, foundingOrder } from '../preview/properties'
 import { AssignedDistrict, ClaimAnnouncer, ClaimCountdown, RehearsalFlag, type AssignedTicket, type PlacementRehearsal, type RehearsalNft, type RehearsalResult, type TicketResult } from '../preview/rehearsal'
 import { wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
@@ -629,6 +631,9 @@ function PlayCity({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rehearsing])
 
+  // The player's properties: the stored city's, by the server's record of who founded them (this session's player only).
+  const home = useMemo<PropertyHome>(() => ({ founded: foundedProperties(world.state, viewer.originalActivations), unrecorded: viewer.unrecordedActivations.length }), [world.state, viewer])
+  const order = useMemo(() => foundingOrder(world.state), [world.state])
   const stored = (buildingId: string) => {
     const b = (world.state.buildings as Readonly<Record<string, WorldBuildingRecord>>)[buildingId]
     return b
@@ -641,6 +646,7 @@ function PlayCity({
           plot: b.plot,
           sequence: b.sequence,
           activator: viewer.originalActivations.includes(b.propertyId) ? ('viewer' as const) : viewer.unrecordedActivations.includes(b.propertyId) ? ('unrecorded' as const) : ('other' as const),
+          order: order.get(b.propertyId),
         }
       : null
   }
@@ -672,6 +678,7 @@ function PlayCity({
       data-geometry-fingerprint={world.definition.geometryFingerprint}
       data-geometry-frozen={String(geometry.frozen)}
       data-original-activations={viewer.originalActivations.length}
+      data-founded={home.founded.length}
       data-buildings={buildings}
       data-candidates={world.districts.reduce((n, d) => n + d.candidates.plotIds.length, 0)}
       data-player={player.discordUserId}
@@ -687,6 +694,7 @@ function PlayCity({
         members={members}
         stored={stored}
         rehearsal={rehearsal}
+        home={home}
         bar={(controls) => (
           <div className={`preview-bar play-bar${controls.claiming ? ' claiming' : ''}`} role="region" aria-label="Proofy Play installation" data-testid="preview-bar">
             <span className="preview-flag play-flag">PROOFY PLAY · {play.environment.toUpperCase()}</span>
@@ -817,13 +825,13 @@ function ClaimCard({ city, rehearsal, claimed, controls }: { city: LoadedBrandCi
   )
 }
 
-/** The property the player just activated: permanent, theirs as original activator, one tap away. */
+/** The property the player just activated: permanent, founded by them (not a claim on who holds the NFT later), one tap away. */
 function Claimed({ city, claimed, controls }: { city: LoadedBrandCity; claimed: ClaimedProperty; controls: CityControls }) {
   const d = sceneDistrict(city.scene, claimed.districtKey)
   return (
     <span className="claim-card-row claim-done" data-testid="play-claimed" data-building={claimed.buildingId} data-plot-id={claimed.plotId}>
       <span className="grow">
-        <b>✓ {claimed.fresh ? 'Property activated' : 'Already your property'}:</b> {collectionName(city, claimed.collection)} #{parseAssetKey(claimed.asset)?.tokenId} · {d.title} · {wardName(claimed.ward)} · Plot {claimed.plot + 1}. Permanent in{' '}
+        <b>✓ {claimed.fresh ? 'Property activated' : 'Already founded by you'}:</b> {collectionName(city, claimed.collection)} #{parseAssetKey(claimed.asset)?.tokenId} · {d.title} · {wardName(claimed.ward)} · Plot {claimed.plot + 1}. Permanent in{' '}
         {city.config.cityName}.
       </span>
       <button type="button" className="chip" data-testid="play-claimed-view" onClick={() => controls.viewProperty(claimed.buildingId)}>

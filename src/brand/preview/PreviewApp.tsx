@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { heightMeters, totalBuilt } from '../../game/economy'
 import { CityView } from '../../ui/city/CityView'
 import { plotWorldIn } from '../../ui/city/districtGeometry'
@@ -8,10 +8,12 @@ import { mayAct, previewClaimAccess, type PreviewMember } from '../core/eligibil
 import { districtPlots, loadBrandCity, type LoadedBrandCity } from '../load'
 import type { SampleBrand } from '../samples'
 import type { WorldPoint } from '../../game/world'
+import { MyPropertiesPanel, PropertyContextCard, type HomeClaim, type PropertyHome } from './home'
 import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
+import { propertyContext } from './properties'
 import { RehearsalPlotPanel, type PlacementRehearsal, type StoredProperty } from './rehearsal'
 
-type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string } | null
+type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string } | { kind: 'properties' } | null
 
 /** A plot the engine offers, as the renderer's placement layer takes it. */
 export type PreviewCandidate = ScenePlotCandidate & { plotId: string }
@@ -95,6 +97,10 @@ const candidatesIn = (city: LoadedBrandCity, districtId: string): PreviewCandida
  * and closes when the ticket ends. The city it is given may change (the page reads it again after a
  * placement): plot candidates always follow the city on the page, and a selected plot that is no
  * longer free is dropped.
+ *
+ * The Play page also passes `home`: the properties the signed-in player founded here, as the server's
+ * permanent record says. The HUD then offers MY PROPERTIES, each a tap from its panel and the camera, and a
+ * stored property's panel says what surrounds it in the stored city.
  */
 export function BrandCityPreview({
   city,
@@ -102,6 +108,7 @@ export function BrandCityPreview({
   bar,
   stored,
   rehearsal,
+  home,
 }: {
   city: LoadedBrandCity
   members: readonly (PreviewMember | null)[]
@@ -109,6 +116,7 @@ export function BrandCityPreview({
   bar: ReactNode | ((controls: CityControls) => ReactNode)
   stored?: (buildingId: string) => StoredProperty | null
   rehearsal?: PlacementRehearsal | null
+  home?: PropertyHome | null
 }) {
   const { scene, state, config } = city
   const [memberIndex, setMemberIndex] = useState(1)
@@ -163,6 +171,19 @@ export function BrandCityPreview({
     setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
   }, [])
 
+  const openHome = useCallback(() => {
+    setPlacing(null)
+    setPanel({ kind: 'properties' })
+  }, [])
+  /** The player's properties, by building id. */
+  const founded = useMemo(() => new Set(home?.founded.map((p) => p.buildingId)), [home])
+  // A panel opened from the player's properties takes the keyboard with it (the list it was opened from is gone).
+  const drawerRef = useRef<HTMLElement>(null)
+  const [drawerFocus, setDrawerFocus] = useState(0)
+  useEffect(() => {
+    if (drawerFocus) drawerRef.current?.focus({ preventScroll: true })
+  }, [drawerFocus])
+
   /** Re-checked at every action, not only by the buttons' state (the server will check again for real). */
   const allowedIn = (districtId: string) => mayAct(previewClaimAccess(config.districts.find((x) => x.key === districtId)?.gate ?? null, member))
 
@@ -196,6 +217,28 @@ export function BrandCityPreview({
     viewProperty: (buildingId) => state.buildings[buildingId] && warp(buildingId),
   }
 
+  /** From the player's properties: continue the claim they hold, or start one (the server assigns the district). */
+  const homeClaim: HomeClaim | null =
+    !home || !rehearsal || playerIndex < 0
+      ? null
+      : rehearsal.ticket
+        ? { label: 'Continue claim', run: controls.continueClaim }
+        : rehearsal.awaitingAsset && rehearsal.nfts.length > 0
+          ? { label: 'Select your test NFT', run: controls.continueClaim }
+          : rehearsal.nfts.length > 0 && rehearsal.ticketNote?.kind !== 'refused' && rehearsal.ticketNote?.kind !== 'config'
+            ? {
+                label: home.founded.length > 0 ? 'Claim another NFT' : 'Claim an NFT',
+                run: () =>
+                  void rehearsal.enter().then((r) => {
+                    if (!r.ok) say(r.message)
+                    else if (r.ticket) {
+                      setMemberIndex(playerIndex)
+                      placeAt(r.ticket.districtKey, true)
+                    }
+                  }),
+              }
+            : null
+
   const capital = state.capital.holder ? sceneDistrict(scene, state.capital.holder) : null
   const crown = state.crown.holder ? state.buildings[state.crown.holder] : null
   const drawer =
@@ -222,7 +265,7 @@ export function BrandCityPreview({
         onActivated={(result, nft) => {
           setPlacing(null)
           warp(result.buildingId)
-          say(`${result.fresh ? 'Property activated' : 'Already your property'}: ${nft.collectionName} #${nft.tokenId} · city sequence ${result.sequence}. Local rehearsal, test NFT.`)
+          say(`${result.fresh ? 'Property activated' : 'Already founded by you'}: ${nft.collectionName} #${nft.tokenId} · city sequence ${result.sequence}. Local rehearsal, test NFT.`)
         }}
       />
     ) : placement !== null ? (
@@ -259,6 +302,17 @@ export function BrandCityPreview({
         onChoosePlot={() => startPlacement(panel.id)}
         onClose={() => setPanel(null)}
       />
+    ) : panel?.kind === 'properties' && home ? (
+      <MyPropertiesPanel
+        city={city}
+        home={home}
+        claim={homeClaim}
+        onView={(buildingId) => {
+          warp(buildingId)
+          setDrawerFocus((n) => n + 1)
+        }}
+        onClose={() => setPanel(null)}
+      />
     ) : panel?.kind === 'building' && state.buildings[panel.id] ? (
       <BuildingPreviewPanel
         key={panel.id}
@@ -266,7 +320,9 @@ export function BrandCityPreview({
         buildingId={panel.id}
         member={member}
         stored={stored?.(panel.id) ?? null}
+        context={home && <HomeContext city={city} buildingId={panel.id} onWarp={warp} onDistrict={openDistrict} />}
         onDistrict={openDistrict}
+        onBack={founded.has(panel.id) ? openHome : undefined}
         onClose={() => setPanel(null)}
         onBuild={() => allowedIn(state.buildings[panel.id].districtId) && say('Preview only: nothing was built or spent. Building will use the shared Proofy community points, which are not connected yet.')}
       />
@@ -352,6 +408,23 @@ export function BrandCityPreview({
             </div>
           </label>
           <nav className="hud-nav" aria-label="City panels">
+            {home && (
+              <button
+                type="button"
+                className={`nav-btn home-nav${panel?.kind === 'properties' ? ' on' : ''}`}
+                onClick={openHome}
+                data-testid="nav-properties"
+                data-count={home.founded.length}
+                aria-pressed={panel?.kind === 'properties'}
+                aria-label={`My properties: ${home.founded.length} founded`}
+              >
+                <span aria-hidden="true">◆</span>
+                <span className="nav-label">My properties</span>
+                <span className="home-count" aria-hidden="true">
+                  {home.founded.length}
+                </span>
+              </button>
+            )}
             <button type="button" className={`nav-btn board-nav${panel?.kind === 'district' ? ' on' : ''}`} onClick={() => openDistrict(panel?.kind === 'district' ? panel.id : scene.districts[0].id)} data-testid="nav-districts" aria-pressed={panel?.kind === 'district'}>
               <span aria-hidden="true">▦</span>
               <span className="nav-label">Districts</span>
@@ -367,7 +440,7 @@ export function BrandCityPreview({
       {typeof bar === 'function' ? bar(controls) : bar}
 
       {drawer && (
-        <aside className="drawer" data-testid="drawer">
+        <aside className="drawer" data-testid="drawer" ref={drawerRef} tabIndex={-1}>
           {drawer}
         </aside>
       )}
@@ -379,6 +452,12 @@ export function BrandCityPreview({
       )}
     </div>
   )
+}
+
+/** The city around a stored property, read once per panel from the city on the page. */
+function HomeContext({ city, buildingId, onWarp, onDistrict }: { city: LoadedBrandCity; buildingId: string; onWarp: (id: string) => void; onDistrict: (id: string) => void }) {
+  const context = useMemo(() => propertyContext(city, buildingId), [city, buildingId])
+  return context && <PropertyContextCard city={city} context={context} onWarp={onWarp} onDistrict={onDistrict} />
 }
 
 const NO_FX = {}

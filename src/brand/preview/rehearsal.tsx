@@ -3,6 +3,7 @@ import { isFoundingWard, wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader, SceneDistrictChip } from '../../ui/common'
 import type { LoadedBrandCity } from '../load'
+import { ordinal } from './properties'
 import { CLAIM_WINDOW_MS, claimCountdown, claimStep, NEXT_ACTION, PROBLEM_TITLES, RULE_REFUSALS, spokenCountdown, type ClaimProblem, type ClaimStep, type Countdown } from './claim'
 import type { Placement } from './PreviewApp'
 
@@ -225,6 +226,8 @@ export interface StoredProperty {
    * else (never named), or never recorded (placed before activators were kept, so unknown to everyone).
    */
   activator: 'viewer' | 'other' | 'unrecorded'
+  /** Its place in the city's founding order (1 for the first), when the page knows it. */
+  order?: number
 }
 
 /** Says, wherever rehearsal data shows, what it is not. */
@@ -521,9 +524,14 @@ export function StoredPropertyCard({ stored, cityName }: { stored: StoredPropert
   return (
     <div className="fund-box stored-property" data-testid="stored-property" data-property-id={stored.propertyId} data-asset={stored.asset} data-sequence={stored.sequence} data-plot-id={`${stored.districtKey}-w${stored.ward}-p${stored.plot}`}>
       <div className="row-between">
-        <h3>Stored property</h3>
+        <h3>Founding record</h3>
         <span className="muted small">city sequence {stored.sequence}</span>
       </div>
+      {stored.order !== undefined && (
+        <p className="small" data-testid="stored-property-order" data-order={stored.order}>
+          The {ordinal(stored.order)} property founded in {cityName}.
+        </p>
+      )}
       <dl className="stat-grid">
         <div>
           <dt>Property id</dt>
@@ -542,7 +550,7 @@ export function StoredPropertyCard({ stored, cityName }: { stored: StoredPropert
       <p className="small" data-testid="stored-property-activator" data-activator={stored.activator} data-activated-by-viewer={String(stored.activator === 'viewer')}>
         {stored.activator === 'viewer' ? (
           <>
-            <b>Originally activated by you.</b> This record is permanent and stays yours whoever holds the NFT later.
+            <b>Originally activated by you.</b> Your founding credit is permanent. The property and its history stay with the NFT, and founding it does not prove who holds the NFT now.
           </>
         ) : stored.activator === 'other' ? (
           'Its original activator is recorded permanently and privately.'
