@@ -148,7 +148,7 @@ authorization.** The whole player flow, on the standard city page: a launched pl
 district by the server on entry (a district ticket, below), picks one of their TEST NFTs and a
 highlighted plot in that district, reviews what is permanent, and activates a Tier 0 property; the
 page reads the city again, warps to it and shows the stored record. `serve.ts` starts the server this
-way, and `rehearsal.spec.ts`, `tickets.spec.ts` and `world-policy.spec.ts` drive it.
+way, and `rehearsal.spec.ts`, `tickets.spec.ts`, `world-policy.spec.ts` and `claim-experience.spec.ts` drive it.
 
 - It exists only with `APP_MODE=local` AND `LOCAL_PROPERTY_REHEARSAL_FILE` (a JSON file
   `{ "kind": "rare-city/local-property-rehearsal-v1", "players": { "<discord user id>": ["<CAIP-19
@@ -175,6 +175,18 @@ way, and `rehearsal.spec.ts`, `tickets.spec.ts` and `world-policy.spec.ts` drive
   P1-C2-B2B is gone.
 - The owner's locked world policies apply to it (next section): the first property freezes the
   district geometry, and every property records its original activator.
+- **The player's claim (P1-C2-E1), presentation only.** A claim card in the bar names the assigned
+  district (its color, and whether the rotation or a district rule assigned it), counts down the claim
+  window and says the next step; the plot panel shows the same countdown, four steps (test NFT,
+  district, plot, activate) and each refusal under what it asks of the player (try again, a fresh
+  claim, not allowed, the city's administrator, another plot). The countdown's only authority is the
+  ticket's `expiresAt`, the end of the database's 900-second claim window: the page starts, stores and
+  extends nothing (a reload, another tab, an NFT switch or leaving and entering again read the same
+  end), corrects only its own clock from the server's `Date` header, stops offering activation at zero
+  and asks the server (`GET …/ticket`) whether the claim ended. No route, ticket rule or policy changed;
+  L1 is still the owner's to decide. `claim-experience.spec.ts` drives it; where it needs time to pass
+  it moves the claim window in the disposable database (`claimWindow.ts`, the server tests' replica-role
+  technique), so CITY_PLAY_DATABASE_URL's role must be allowed to set `session_replication_role`.
 
 Lifting the hold anywhere but local is a new migration replacing `world_properties_guard`, after
 F5, F7, F3, a fresh Core NFT/role/verification eligibility contract and a separate non-owner database

@@ -23,11 +23,17 @@ const SHOTS = resolve(import.meta.dirname, '../test-artifacts/city-play-evidence
 mkdirSync(SHOTS, { recursive: true })
 
 const databaseUrl = process.env.CITY_PLAY_DATABASE_URL ?? ''
-const db = new pg.Pool({ connectionString: databaseUrl, max: 2 })
+// Under fullyParallel a worker may run this file's tests in separate groups, each with its own beforeAll and afterAll:
+// one pool per group, never one ended pool shared by the next group.
+let db: pg.Pool
+let store: ReturnType<typeof createWorldPropertyStore>
+test.beforeAll(() => {
+  db = new pg.Pool({ connectionString: databaseUrl, max: 2 })
+  store = createWorldPropertyStore(db, { mode: 'local', log: silentLogger })
+})
 test.afterAll(async () => {
   await db.end()
 })
-const store = createWorldPropertyStore(db, { mode: 'local', log: silentLogger })
 
 async function installed(config: unknown) {
   const guild = snowflake()

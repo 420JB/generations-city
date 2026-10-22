@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { isFoundingWard, wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader, SceneDistrictChip } from '../../ui/common'
 import type { LoadedBrandCity } from '../load'
+import { CLAIM_WINDOW_MS, claimCountdown, claimStep, NEXT_ACTION, PROBLEM_TITLES, RULE_REFUSALS, spokenCountdown, type ClaimProblem, type ClaimStep, type Countdown } from './claim'
 import type { Placement } from './PreviewApp'
 
 /**
@@ -24,7 +25,7 @@ export interface RehearsalNft {
   tokenId: string
 }
 
-export type RehearsalResult = { ok: true; buildingId: string; fresh: boolean; sequence: number } | { ok: false; message: string }
+export type RehearsalResult = { ok: true; buildingId: string; fresh: boolean; sequence: number } | ({ ok: false } & ClaimProblem)
 
 /** The district ticket the server issued the player, as the page shows it. */
 export interface AssignedTicket {
@@ -39,7 +40,7 @@ export interface AssignedTicket {
   expiresAt: string
 }
 
-export type TicketResult = { ok: true; ticket: AssignedTicket | null } | { ok: false; message: string }
+export type TicketResult = { ok: true; ticket: AssignedTicket | null } | ({ ok: false } & ClaimProblem)
 
 export interface PlacementRehearsal {
   /** This city's unplaced test NFTs for the player. */
@@ -48,8 +49,10 @@ export interface PlacementRehearsal {
   placed: number
   /** The district the server assigned the player now, or null: none held (enter to be assigned one). */
   ticket: AssignedTicket | null
-  /** Why the player holds no ticket, when the server said. */
-  ticketNote: string | null
+  /** Why the player holds no ticket (or why the last ticket call was refused), when the server said. */
+  ticketNote: ClaimProblem | null
+  /** The server's clock minus this browser's, from the answer that carried the ticket: corrects the countdown only. */
+  clockOffset: number
   /**
    * No ticket, because every district of this city is restricted: the district depends on the NFT, so the player selects
    * one first (`assign` without a ticket) and the server assigns its district if a rule and their rule result allow it.
@@ -73,7 +76,7 @@ function assignmentBasis(ticket: AssignedTicket): string {
 }
 
 /** The ticket's district as the page shows it everywhere: what the server assigned, on what basis, until when. */
-export function AssignedDistrict({ ticket, name }: { ticket: AssignedTicket; name: string }) {
+export function AssignedDistrict({ ticket, name, color }: { ticket: AssignedTicket; name: string; color?: string }) {
   return (
     <span
       className="assigned-district"
@@ -87,9 +90,124 @@ export function AssignedDistrict({ ticket, name }: { ticket: AssignedTicket; nam
       data-restricted={ticket.authorization ? String(ticket.authorization.verificationRuleId) : ''}
       title={`Assigned by the server from ${assignmentBasis(ticket)}. Held until ${new Date(ticket.expiresAt).toLocaleTimeString()}.`}
     >
+      {color && <i className="assigned-swatch" style={{ ['--dc' as string]: color }} aria-hidden="true" />}
       <b>{name}</b> · {ticket.kind === 'rule' ? (ticket.authorization ? 'restricted, by rule' : 'by rule') : `slot ${(ticket.slot?.ordinal ?? 0) + 1}`} · until{' '}
       <time dateTime={ticket.expiresAt}>{new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
     </span>
+  )
+}
+
+/**
+ * The claim window's time left, redrawn exactly when the shown second changes, from the ticket's `expiresAt` (the
+ * server's) and the server's clock offset only. Nothing is stored and nothing is asked of the server here: mounting it
+ * again (a reload, a reopened panel, another tab) reads the same instant. It stops at zero and on unmount, and catches
+ * up at once when a hidden tab is shown again (browsers slow the timers of hidden tabs).
+ */
+function useCountdown(expiresAt: string | null, clockOffset: number): Countdown | null {
+  const [now, setNow] = useState(() => Date.now())
+  const countdown = expiresAt ? claimCountdown(expiresAt, now + clockOffset) : null
+  const wait = countdown?.nextTickMs ?? null
+  useEffect(() => {
+    if (wait === null) return
+    const timer = setTimeout(() => setNow(Date.now()), wait + 5)
+    return () => clearTimeout(timer)
+  }, [wait, now])
+  useEffect(() => {
+    const wake = () => document.visibilityState === 'visible' && setNow(Date.now())
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
+    return () => {
+      document.removeEventListener('visibilitychange', wake)
+      window.removeEventListener('focus', wake)
+    }
+  }, [])
+  return countdown
+}
+
+/** MM:SS left in the claim window, with a ring for the share of the fifteen minutes left. Read as a timer, never announced. */
+export function ClaimCountdown({ expiresAt, clockOffset }: { expiresAt: string; clockOffset: number }) {
+  const c = useCountdown(expiresAt, clockOffset)
+  if (!c) return null
+  const share = Math.max(0, Math.min(1, (c.seconds * 1000) / CLAIM_WINDOW_MS))
+  return (
+    <span
+      className={`claim-countdown ${c.state}`}
+      data-testid="claim-countdown"
+      data-state={c.state}
+      data-seconds={c.seconds}
+      data-expires-at={expiresAt}
+      role="timer"
+      aria-label={c.state === 'ended' ? 'Claim time is up' : `Claim time left: ${spokenCountdown(c.seconds)}`}
+      title="Time left in your claim window. It started with your first district and is never extended."
+    >
+      <svg className="claim-ring" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+        <circle cx="10" cy="10" r="8" pathLength={100} />
+        <circle cx="10" cy="10" r="8" pathLength={100} strokeDasharray={`${share * 100} 100`} transform="rotate(-90 10 10)" />
+      </svg>
+      <span className="claim-countdown-time" aria-hidden="true">
+        {c.label}
+      </span>
+      <span className="claim-countdown-unit" aria-hidden="true">
+        {c.state === 'ended' ? 'time up' : 'left'}
+      </span>
+    </span>
+  )
+}
+
+/** Says once, politely, when a claim is nearly over and when it is over. The visible countdowns are never announced. */
+export function ClaimAnnouncer({ expiresAt, clockOffset }: { expiresAt: string | null; clockOffset: number }) {
+  const c = useCountdown(expiresAt, clockOffset)
+  const text = c?.state === 'ending' ? 'Under two minutes left in your claim window.' : c?.state === 'ended' ? 'Your claim time is up. Nothing was placed.' : ''
+  return (
+    <p className="sr-only" role="status" aria-live="polite" data-testid="claim-announcer">
+      {text}
+    </p>
+  )
+}
+
+/** A refusal, under the heading of what it asks of the player. `testId` is the message's own, unchanged. */
+function ProblemLine({ problem, testId, children }: { problem: ClaimProblem; testId: string; children?: ReactNode }) {
+  // A long panel may be scrolled anywhere: a new refusal is brought into view where it is.
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    box.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [problem])
+  return (
+    <div ref={box} className={`claim-problem ${problem.kind}`} role="alert" data-testid={`${testId}-box`} data-kind={problem.kind} data-code={problem.code ?? ''}>
+      <b className="claim-problem-title">{PROBLEM_TITLES[problem.kind]}</b>
+      <p className="access-line restricted" data-testid={testId}>
+        {problem.message}
+      </p>
+      {children}
+    </div>
+  )
+}
+
+const STEPS: { key: string; label: string; at: ClaimStep[] }[] = [
+  { key: 'nft', label: 'Test NFT', at: ['nft'] },
+  { key: 'district', label: 'District', at: ['district'] },
+  { key: 'plot', label: 'Plot', at: ['plot'] },
+  { key: 'confirm', label: 'Activate', at: ['review', 'activating'] },
+]
+
+/** Where the player is in the claim, as four steps. */
+function ClaimSteps({ step }: { step: ClaimStep }) {
+  const current = STEPS.findIndex((s) => s.at.includes(step))
+  return (
+    <ol className="claim-steps" aria-label="Claim progress" data-testid="claim-steps" data-step={step}>
+      {STEPS.map((s, i) => {
+        const state = step === 'ended' ? 'todo' : i < current ? 'done' : i === current ? 'current' : 'todo'
+        return (
+          <li key={s.key} className={`claim-step ${state}`} data-step={s.key} data-state={state} aria-current={state === 'current' ? 'step' : undefined}>
+            <span className="claim-step-n" aria-hidden="true">
+              {state === 'done' ? '✓' : i + 1}
+            </span>
+            {s.label}
+            {state === 'done' && <span className="sr-only"> (done)</span>}
+          </li>
+        )
+      })}
+    </ol>
   )
 }
 
@@ -122,7 +240,8 @@ type Stage = 'choose' | 'review' | 'activating'
 
 /**
  * Choose a test NFT (the server may assign its district by rule) and a highlighted plot in the district the server
- * assigned, review what is permanent, then ask the server. The player never chooses the district.
+ * assigned, review what is permanent, then ask the server. The player never chooses the district. The countdown is the
+ * server's claim window; at zero nothing more can be confirmed here, and the server is asked whether it has ended.
  */
 export function RehearsalPlotPanel({
   city,
@@ -146,39 +265,66 @@ export function RehearsalPlotPanel({
   const d = sceneDistrict(city.scene, placement.districtId)
   const [asset, setAsset] = useState<string | null>(rehearsal.nfts.length === 1 ? rehearsal.nfts[0].asset : null)
   const [stage, setStage] = useState<Stage>('choose')
-  const [error, setError] = useState<string | null>(null)
-  /** The NFT the server has answered for (its district is the ticket's). Another NFT is being asked about until it matches. */
-  const [assignedFor, setAssignedFor] = useState<string | null>(null)
+  const [problem, setProblem] = useState<ClaimProblem | null>(null)
+  /** A plot an activation was refused for (taken first, or no longer offered): named, and never replaced by another. */
+  const [lostPlot, setLostPlot] = useState<{ plotId: string; ward: number; plot: number } | null>(null)
+  /**
+   * What the server answered for an NFT, under which ticket. The selected NFT is asked about again under any other
+   * ticket (the server reissued or replaced it), so a placement is never confirmed on a ticket that was not checked for it.
+   */
+  const [answered, setAnswered] = useState<{ asset: string; ticketId: string | null; ok: boolean } | null>(null)
+  const asking = useRef(false)
   const nft = rehearsal.nfts.find((n) => n.asset === asset) ?? null
   const sel = placement.selected
   const newWard = placement.candidates[0]?.newWard ?? false
   const ticket = rehearsal.ticket
+  const ticketId = ticket?.id ?? null
+  const countdown = useCountdown(ticket?.expiresAt ?? null, rehearsal.clockOffset)
+  const ended = countdown?.state === 'ended'
+  const current = !!asset && answered?.asset === asset && answered.ticketId === ticketId
+  const checking = !!asset && !current
 
-  // The server decides the selected NFT's district (an explicit rule may assign one) before any plot is chosen.
+  // The server decides the selected NFT's district (an explicit rule may assign one) before any plot is chosen: asked
+  // when the player selects an NFT, and again only when the ticket held changes under it. One question at a time.
   useEffect(() => {
-    if (!asset) return
-    let live = true
+    if (!asset || current || asking.current) return
+    asking.current = true
+    const askedUnder = ticketId
     void rehearsal.assign(asset).then((result) => {
-      if (!live) return
-      if (!result.ok) return setError(result.message)
-      setAssignedFor(asset)
+      asking.current = false
+      if (!result.ok) {
+        setAnswered({ asset, ticketId: askedUnder, ok: false })
+        return setProblem(result)
+      }
+      setAnswered({ asset, ticketId: result.ticket?.id ?? null, ok: true })
       onAssigned(result.ticket)
     })
-    return () => {
-      live = false
-    }
-    // Asked again only when the player selects another NFT.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asset])
+  }, [asset, ticketId, current])
+
+  const assigned = current && !!answered?.ok && !!ticket && ticket.districtKey === placement.districtId
+  const ready = !!nft && assigned && !ended
+  const confirming = stage === 'activating' || (stage === 'review' && ready && !!sel)
+  const step = claimStep({
+    district: ticket ? 'held' : rehearsal.awaitingAsset ? 'awaiting-asset' : 'none',
+    nft: !nft ? 'none' : checking ? 'checking' : answered?.ok ? 'assigned' : 'refused',
+    plotSelected: !!sel,
+    stage: confirming ? stage : 'choose',
+    ended,
+  })
 
   async function activate() {
-    if (!nft || !sel) return
+    if (!nft || !sel || !ready) return
     setStage('activating')
-    setError(null)
+    setProblem(null)
+    setLostPlot(null)
     const result = await rehearsal.activate(nft.asset, sel.plotId)
     if (result.ok) return onActivated(result, nft)
-    setError(result.message)
-    setStage('choose')
+    setProblem(result)
+    // The plot is not silently swapped for another: it is named, and the player chooses again.
+    if (result.kind === 'plot') setLostPlot({ plotId: sel.plotId, ward: sel.ward, plot: sel.plot })
+    // A temporary failure keeps the same confirmation to try again (the same ticket, NFT and plot: never a second property).
+    setStage(result.kind === 'retry' ? 'review' : 'choose')
   }
 
   const [leaving, setLeaving] = useState(false)
@@ -187,15 +333,28 @@ export function RehearsalPlotPanel({
     const result = await rehearsal.leave()
     setLeaving(false)
     if (result.ok) return onLeave()
-    setError(result.message)
+    setProblem(result)
   }
 
-  const ready = !!nft && assignedFor === nft.asset && !!ticket && ticket.districtKey === placement.districtId
+  /** A restricted district's rule result keeps this NFT out, while the district held (the rotation's) stays for others. */
+  const refusedNow = current && answered?.ok === false
+  const keptOut = refusedNow && !!problem && problem.code !== null && RULE_REFUSALS.has(problem.code) && ticket?.kind === 'fallback'
+  const others = rehearsal.nfts.length > 1
 
   return (
-    <section className="panel plot-panel rehearsal-panel" aria-label="Place a property" data-testid="rehearsal-panel" data-stage={stage} data-assigned={ready ? 'yes' : 'no'}>
+    <section className="panel plot-panel rehearsal-panel" aria-label="Place a property" data-testid="rehearsal-panel" data-stage={stage} data-assigned={ready ? 'yes' : 'no'} data-step={step}>
       <PanelHeader kicker={<SceneDistrictChip district={d} small />} title="Place a property" onClose={onCancel} onBack={onCancel} />
       <RehearsalFlag />
+
+      <div className="claim-status" data-testid="claim-status">
+        <ClaimSteps step={step} />
+        <div className="claim-next">
+          {ticket && <ClaimCountdown expiresAt={ticket.expiresAt} clockOffset={rehearsal.clockOffset} />}
+          <span className="small" data-testid="claim-next" role="status">
+            {ended ? 'Your claim time is up. Checking with the server…' : NEXT_ACTION[step]}
+          </span>
+        </div>
+      </div>
 
       <div className="rehearsal-step">
         <h3>1 · Test NFT</h3>
@@ -213,9 +372,10 @@ export function RehearsalPlotPanel({
                     name="rehearsal-nft"
                     value={n.asset}
                     checked={n.asset === asset}
-                    disabled={stage !== 'choose'}
+                    disabled={stage !== 'choose' || checking}
                     onChange={() => {
-                      setError(null)
+                      setProblem(null)
+                      setLostPlot(null)
                       setAsset(n.asset)
                     }}
                     data-testid="rehearsal-nft"
@@ -234,16 +394,32 @@ export function RehearsalPlotPanel({
 
       <div className="rehearsal-step">
         <h3>2 · District</h3>
-        <p className="small" data-testid="rehearsal-district" data-district={d.id} data-kind={ticket?.kind ?? ''} data-ordinal={ticket?.slot?.ordinal ?? ''}>
+        <p className="small" data-testid="rehearsal-district" data-district={d.id} data-kind={ticket?.kind ?? ''} data-ordinal={ticket?.slot?.ordinal ?? ''} data-checking={String(checking)}>
           {ticket || !rehearsal.awaitingAsset ? (
             <>
-              <b>{d.title}</b>, assigned to you by the server{ticket ? ` (${assignmentBasis(ticket)})` : ''}. You do not choose your district; you choose the exact plot in it. Held for you until{' '}
-              {ticket ? new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'} (fifteen minutes from when it was first assigned, never extended); nothing is permanent until you activate.
+              <b>{d.title}</b>, assigned to you by the server{ticket ? ` (${assignmentBasis(ticket)})` : ''}. You do not choose your district; you choose the exact plot in it.
             </>
           ) : (
             <>Every district of this city is restricted. Select your test NFT: the server assigns its district if a district rule names one for it and that district&rsquo;s Proofy rule result allows you. You do not choose your district.</>
           )}
         </p>
+        {ticket && (
+          <p className="claim-basis small" data-testid="claim-basis" data-kind={ticket.kind} data-restricted={String(!!ticket.authorization)}>
+            <span className={`claim-tag ${ticket.kind}`}>{ticket.kind === 'rule' ? 'DISTRICT RULE' : 'DEFAULT ASSIGNMENT'}</span>
+            {ticket.authorization && <span className="claim-tag restricted">RESTRICTED · LOCAL TEST RESULT</span>}
+            {ticket.kind === 'rule' ? (ticket.authorization ? ' Placed here by a district rule for this NFT; your local test rule result admits you. Not verified by Proofy.' : ' Placed here by a district rule for this NFT.') : ' The next district in the city’s rotation.'}
+          </p>
+        )}
+        {checking && (
+          <p className="small muted" data-testid="rehearsal-checking" role="status">
+            Checking this NFT&rsquo;s district with the server…
+          </p>
+        )}
+        {ticket && (
+          <p className="muted small" data-testid="claim-hold">
+            Your district is held for you until <time dateTime={ticket.expiresAt}>{new Date(ticket.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>, fifteen minutes from your first district, never extended. No plot is held: until you activate, another player may take any free plot.
+          </p>
+        )}
         <p className="muted small">Local rehearsal: which NFTs you may place, and any district rule for them, come from a local test file on this server, not from Proofy.</p>
       </div>
 
@@ -267,15 +443,30 @@ export function RehearsalPlotPanel({
             No plot selected yet.
           </p>
         )}
+        {lostPlot && !sel && (
+          <p className="small muted" data-testid="rehearsal-lost-plot" data-plot-id={lostPlot.plotId}>
+            Your plot, {wardName(lostPlot.ward)} · Plot {lostPlot.plot + 1} (<code>{lostPlot.plotId}</code>), is no longer free. No other plot was chosen for you.
+          </p>
+        )}
       </div>
 
-      {error && (
-        <p className="access-line restricted" role="alert" data-testid="rehearsal-error">
-          {error}
-        </p>
+      {problem && (
+        <ProblemLine problem={problem} testId="rehearsal-error">
+          {keptOut && (
+            <p className="small" data-testid="rehearsal-kept-out">
+              Your district, <b>{d.title}</b>, is still held for you, but it cannot take this NFT.{' '}
+              {others ? 'Select another test NFT, or leave to release the district.' : 'You have no other test NFT for it: leave to release the district.'}
+            </p>
+          )}
+          {problem.kind === 'retry' && stage === 'choose' && refusedNow && (
+            <button type="button" className="chip" data-testid="rehearsal-retry" onClick={() => setAnswered(null)}>
+              Try again
+            </button>
+          )}
+        </ProblemLine>
       )}
 
-      {stage === 'choose' ? (
+      {!confirming ? (
         <>
           <button type="button" className="btn primary" disabled={!ready || !sel} onClick={() => setStage('review')} data-testid="rehearsal-review">
             Review placement
@@ -295,9 +486,23 @@ export function RehearsalPlotPanel({
               </b>{' '}
               becomes a Tier 0 property on <code>{sel.plotId}</code> in {d.title} ({wardName(sel.ward)}, plot {sel.plot + 1}). It can never be moved, replaced or removed, and this NFT can never be placed again in this city.
             </p>
-            <p className="small muted">The server checks everything again: your session, the NFT, the plot and the district. This is a local rehearsal with a test NFT, not a verified claim.</p>
+            <dl className="stat-grid claim-summary" data-testid="claim-summary">
+              <div>
+                <dt>District</dt>
+                <dd>
+                  <SceneDistrictChip district={d} small />
+                </dd>
+              </div>
+              <div>
+                <dt>Plot</dt>
+                <dd>
+                  {wardName(sel.ward)} · Plot {sel.plot + 1}
+                </dd>
+              </div>
+            </dl>
+            <p className="small muted">You are recorded as its original activator, for good. The server checks everything again: your session, the NFT, the plot and the district. This is a local rehearsal with a test NFT, not a verified claim.</p>
             <div className="play-choices">
-              <button type="button" className="btn primary" disabled={stage === 'activating'} onClick={() => void activate()} data-testid="rehearsal-activate">
+              <button type="button" className="btn primary" disabled={stage === 'activating' || !ready} onClick={() => void activate()} data-testid="rehearsal-activate">
                 {stage === 'activating' ? 'Activating…' : 'Activate Tier 0 property'}
               </button>
               <button type="button" className="chip" disabled={stage === 'activating'} onClick={() => setStage('choose')} data-testid="rehearsal-back">

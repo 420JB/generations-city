@@ -5,7 +5,9 @@ import { CitySceneContext } from '../../ui/city/scene'
 import { loadBrandCity } from '../load'
 import { HARBORLIGHT } from '../samples'
 import { DistrictPanel } from './panels'
-import { AssignedDistrict, StoredPropertyCard, type AssignedTicket, type StoredProperty } from './rehearsal'
+import { districtPlots } from '../load'
+import type { Placement } from './PreviewApp'
+import { AssignedDistrict, ClaimCountdown, RehearsalPlotPanel, StoredPropertyCard, type AssignedTicket, type PlacementRehearsal, type StoredProperty } from './rehearsal'
 
 const stored = (activator: StoredProperty['activator']): StoredProperty => ({
   propertyId: '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1c',
@@ -92,5 +94,91 @@ describe('the district a rehearsal player is assigned, as the page says it', () 
     expect(restricted).toContain('data-restricted="62"')
     expect(restricted).toContain('· restricted, by rule ·')
     expect(restricted).toContain('Proofy rule 62 answered yes in this server&#x27;s local test file (not verified by Proofy)')
+  })
+})
+
+describe('the player\'s claim, as the panel and the countdown say it (P1-C2-E1)', () => {
+  const loaded = loadBrandCity(HARBORLIGHT.config, HARBORLIGHT.city)
+  if (!loaded.ok) throw new Error('sample city does not load')
+  const city = loaded.city
+  const district = city.config.districts[0].key
+  const soon = (ms: number) => new Date(Date.now() + ms).toISOString()
+  const fallback = (expiresAt: string): AssignedTicket => ({ id: '019a0b1c-2d3e-7f40-8a5b-6c7d8e9f0a1b', districtKey: district, kind: 'fallback', slot: { ordinal: 0, generation: 1, epoch: 1 }, rule: null, authorization: null, expiresAt })
+  const restricted = (expiresAt: string): AssignedTicket => ({ ...fallback(expiresAt), kind: 'rule', slot: null, rule: { ref: 'captains', asset: 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1' }, authorization: { verificationRuleId: 62, source: 'local-fixture' } })
+  const nfts = [
+    { asset: 'eip155:1/erc721:0x000000000000000000000000000000000000a002/1', collectionName: 'Harbor Keepers', tokenId: '1' },
+    { asset: 'eip155:1/erc721:0x000000000000000000000000000000000000a002/2', collectionName: 'Harbor Keepers', tokenId: '2' },
+  ]
+  const never = () => new Promise<never>(() => {})
+  const rehearsal = (over: Partial<PlacementRehearsal>): PlacementRehearsal => ({ nfts, placed: 0, ticket: null, ticketNote: null, clockOffset: 0, awaitingAsset: false, enter: never, assign: never, leave: never, activate: never, ...over })
+  const placement: Placement = { districtId: district, candidates: districtPlots(city, district).map((c) => ({ districtId: c.districtKey, ward: c.ward, plot: c.plot, newWard: c.newWard, plotId: c.plotId })), selected: null }
+  const render = (r: PlacementRehearsal) =>
+    renderToStaticMarkup(createElement(CitySceneContext.Provider, { value: city.scene }, createElement(RehearsalPlotPanel, { city, placement, rehearsal: r, onCancel: () => {}, onAssigned: () => {}, onLeave: () => {}, onActivated: () => {} })))
+
+  it('counts down from the ticket\'s end, as a timer a screen reader can read', () => {
+    const end = soon(600_000)
+    const html = renderToStaticMarkup(createElement(ClaimCountdown, { expiresAt: end, clockOffset: 0 }))
+    expect(html).toContain('role="timer"')
+    expect(html).toContain(`data-expires-at="${end}"`)
+    expect(html).toMatch(/aria-label="Claim time left: (10 minutes|9 minutes 59 seconds)"/)
+    expect(html).toMatch(/>(10:00|09:59)</)
+    expect(html).toContain('data-state="open"')
+  })
+
+  it('reads the server\'s clock: a browser ten minutes fast still shows the time the server gives', () => {
+    // The ticket ends in 15 minutes by the server; this browser's clock is 10 minutes ahead of it (offset -600 s).
+    const html = renderToStaticMarkup(createElement(ClaimCountdown, { expiresAt: soon(900_000 - 600_000), clockOffset: -600_000 }))
+    expect(html).toMatch(/>(15:00|14:59)</)
+  })
+
+  it('says nearly over, and over', () => {
+    expect(renderToStaticMarkup(createElement(ClaimCountdown, { expiresAt: soon(90_000), clockOffset: 0 }))).toContain('data-state="ending"')
+    const over = renderToStaticMarkup(createElement(ClaimCountdown, { expiresAt: soon(-1_000), clockOffset: 0 }))
+    expect(over).toContain('data-state="ended"')
+    expect(over).toContain('aria-label="Claim time is up"')
+    expect(over).toContain('>00:00<')
+  })
+
+  it('a default assignment: names the district and its basis, shows the claim time, and holds no plot', () => {
+    const html = render(rehearsal({ ticket: fallback(soon(840_000)) }))
+    expect(html).toContain('data-testid="claim-countdown"')
+    expect(html).toContain('DEFAULT ASSIGNMENT')
+    expect(html).toContain("the city&#x27;s rotation, slot 1")
+    expect(html).toContain('No plot is held: until you activate, another player may take any free plot.')
+    expect(html).toContain('data-step="nft"')
+    expect(html).toContain('Select the test NFT you want to place.')
+    // No confirmation before an NFT, its district and a plot are all valid.
+    expect(html).not.toContain('data-testid="rehearsal-confirm"')
+    expect(html).toMatch(/disabled=""[^>]*data-testid="rehearsal-review"/)
+  })
+
+  it('a restricted district reached by rule: says so, and that the yes was local test data, never verified', () => {
+    const html = render(rehearsal({ ticket: restricted(soon(840_000)) }))
+    expect(html).toContain('DISTRICT RULE')
+    expect(html).toContain('RESTRICTED · LOCAL TEST RESULT')
+    expect(html).toContain('Not verified by Proofy')
+    expect(html.replace(/not verified/gi, '')).not.toMatch(/verified/i)
+  })
+
+  it('a city whose every district is restricted: asks for the NFT first, and no claim time runs', () => {
+    const html = render(rehearsal({ awaitingAsset: true }))
+    expect(html).toContain('Every district of this city is restricted.')
+    expect(html).not.toContain('data-testid="claim-countdown"')
+    expect(html).toContain('data-step="nft"')
+  })
+
+  it('a claim whose time ran out offers nothing to confirm while the server is asked', () => {
+    const html = render(rehearsal({ ticket: fallback(soon(-2_000)), nfts: [nfts[0]] }))
+    expect(html).toContain('data-step="ended"')
+    expect(html).toContain('Your claim time is up. Checking with the server…')
+    expect(html).toContain('data-assigned="no"')
+    expect(html).toMatch(/disabled=""[^>]*data-testid="rehearsal-review"/)
+  })
+
+  it('shows the district\'s own color next to its name', () => {
+    const html = renderToStaticMarkup(createElement(AssignedDistrict, { ticket: fallback(soon(60_000)), name: 'Lantern Quay District', color: '#ff9f43' }))
+    expect(html).toContain('class="assigned-swatch"')
+    expect(html).toContain('--dc:#ff9f43')
+    expect(html).toContain('Lantern Quay District</b> · slot 1 · until')
   })
 })

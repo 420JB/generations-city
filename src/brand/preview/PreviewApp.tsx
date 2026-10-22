@@ -16,6 +16,16 @@ type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string }
 /** A plot the engine offers, as the renderer's placement layer takes it. */
 export type PreviewCandidate = ScenePlotCandidate & { plotId: string }
 
+/** What the bar above a city may ask of it (the Proofy Play page's claim card). */
+export interface CityControls {
+  /** The rehearsal's plot choice is open: the player is claiming, not browsing. */
+  claiming: boolean
+  /** Open the plot choice in the player's assigned district (in a city whose every district is restricted, to select the NFT first), as the player themselves. */
+  continueClaim: () => void
+  /** Warp to a building and open its panel. */
+  viewProperty: (buildingId: string) => void
+}
+
 export interface Placement {
   districtId: string
   candidates: PreviewCandidate[]
@@ -95,7 +105,8 @@ export function BrandCityPreview({
 }: {
   city: LoadedBrandCity
   members: readonly (PreviewMember | null)[]
-  bar: ReactNode
+  /** Above the city: where its data came from. A function is given the city's controls. */
+  bar: ReactNode | ((controls: CityControls) => ReactNode)
   stored?: (buildingId: string) => StoredProperty | null
   rehearsal?: PlacementRehearsal | null
 }) {
@@ -106,13 +117,22 @@ export function BrandCityPreview({
   // A plot is chosen on one geometry. A plot id names other ground on another, so a city redrawn on other districts
   // keeps no selected plot (and no placement at all in a district that is gone): the player chooses again.
   const geometry = city.world.layout.geometryFingerprint
-  const [placing, setPlacing] = useState<{ districtId: string; selected: PreviewCandidate | null; geometry: string } | null>(null)
+  // In a rehearsal a plot is also chosen under one district ticket: a ticket the server reissued or replaced keeps none.
+  const [placing, setPlacing] = useState<{ districtId: string; selected: PreviewCandidate | null; geometry: string; ticket: string | null } | null>(null)
   /** The player places for real (on the local server) only as themselves, never as a simulated viewer. */
   const rehearsing = rehearsal && member?.kind === 'player' ? rehearsal : null
   /** In a rehearsal, the district the server assigned the player (their ticket): the only one they place in, while they hold it. */
   const assigned = rehearsing?.ticket?.districtKey ?? null
   // Without a ticket only in a city whose every district is restricted: the player selects the NFT first, wherever they are.
-  const placingAt = placing && rehearsing ? (assigned ? { ...placing, districtId: assigned, selected: placing.districtId === assigned ? placing.selected : null } : rehearsing.awaitingAsset ? placing : null) : placing
+  const ticketId = rehearsing?.ticket?.id ?? null
+  const placingAt =
+    placing && rehearsing
+      ? assigned
+        ? { ...placing, districtId: assigned, selected: placing.districtId === assigned && placing.ticket === ticketId ? placing.selected : null }
+        : rehearsing.awaitingAsset
+          ? placing
+          : null
+      : placing
   const placingNow = placingAt && (placingAt.geometry === geometry || city.world.districts.some((d) => d.key === placingAt.districtId)) ? placingAt : null
   const placingIn = placingNow?.districtId ?? null
   const candidates = useMemo(() => (placingIn ? candidatesIn(city, placingIn) : []), [city, placingIn])
@@ -147,11 +167,11 @@ export function BrandCityPreview({
   const allowedIn = (districtId: string) => mayAct(previewClaimAccess(config.districts.find((x) => x.key === districtId)?.gate ?? null, member))
 
   /** Open the plot choice in a district and frame its free plots. In a rehearsal the server's ticket decides, not the preview's viewers. */
-  const placeAt = (districtId: string) => {
-    if (!scene.districts.some((x) => x.id === districtId) || (!rehearsing && !allowedIn(districtId))) return
+  const placeAt = (districtId: string, rehearsed = !!rehearsing) => {
+    if (!scene.districts.some((x) => x.id === districtId) || (!rehearsed && !allowedIn(districtId))) return
     const d = sceneDistrict(scene, districtId)
     const offered = candidatesIn(city, districtId)
-    setPlacing({ districtId, selected: null, geometry })
+    setPlacing({ districtId, selected: null, geometry, ticket: ticketId })
     setPanel(null)
     setFrame((f) => ({ seq: (f?.seq ?? 0) + 1, points: offered.map((c) => plotWorldIn(d, c.ward, c.plot)) }))
   }
@@ -160,6 +180,20 @@ export function BrandCityPreview({
   const startPlacement = (requested: string) => {
     const districtId = rehearsing ? (assigned ?? (rehearsing.awaitingAsset ? requested : null)) : requested
     if (districtId) placeAt(districtId)
+  }
+
+  const playerIndex = members.findIndex((m) => m?.kind === 'player')
+  const controls: CityControls = {
+    claiming: placement !== null && !!rehearsing,
+    continueClaim: () => {
+      if (!rehearsal || playerIndex < 0) return
+      const districtId = rehearsal.ticket?.districtKey ?? (rehearsal.awaitingAsset ? (panel?.kind === 'district' ? panel.id : scene.districts[0].id) : null)
+      if (!districtId) return
+      // Claims are made as the player themselves, never as a simulated viewer.
+      setMemberIndex(playerIndex)
+      placeAt(districtId, true)
+    },
+    viewProperty: (buildingId) => state.buildings[buildingId] && warp(buildingId),
   }
 
   const capital = state.capital.holder ? sceneDistrict(scene, state.capital.holder) : null
@@ -253,7 +287,7 @@ export function BrandCityPreview({
         onSelect={select}
         onSelectDistrict={openDistrict}
         placement={placement ? { candidates: placement.candidates, selected: placement.selected } : null}
-        onPickPlot={(c) => setPlacing((p) => (p ? { ...p, selected: c, geometry } : p))}
+        onPickPlot={(c) => setPlacing((p) => (p ? { ...p, selected: c, geometry, ticket: ticketId } : p))}
         frame={frame}
         focus={focus}
         fx={NO_FX}
@@ -330,7 +364,7 @@ export function BrandCityPreview({
         </div>
       </header>
 
-      {bar}
+      {typeof bar === 'function' ? bar(controls) : bar}
 
       {drawer && (
         <aside className="drawer" data-testid="drawer">
