@@ -19,6 +19,12 @@ import type { ConstructionOutcome } from './construction'
  * one is what is sent. It is kept in this browser's storage, so a reload or a relaunch (a new session of the same player)
  * still asks about it before anything new is spent. What is kept is only which request to repeat: never a balance, a tier
  * or a result, which only the server's answer gives.
+ *
+ * `intent` (P1-C2-E3B) is what the page showed when the press was made: the recipe it was made under and the tier the
+ * property stood at. It is never sent and never believed, and it never decides whether a press is kept (independent audit
+ * L1): a kept intent that does not read (missing, from an earlier or later build, malformed) is read as null, and the press
+ * is resent with its own id all the same. The server answers a repeated press with its own stored record, whatever recipe
+ * is current by then.
  */
 export interface ConstructionPress {
   actionId: string
@@ -26,6 +32,13 @@ export interface ConstructionPress {
   discordUserId: string
   propertyId: string
   role: ConstructionRole
+  intent?: PressIntent | null
+}
+
+/** What a press was made for, as the page showed it then. Display only. */
+export interface PressIntent {
+  recipe: string
+  tier: number
 }
 
 /** The player and world a page acts for: a press is never sent for another. */
@@ -49,8 +62,11 @@ export function settlementOf(outcome: ConstructionOutcome): PressSettlement {
 export interface PressBook {
   /** The press of this player in this world whose answer is not known, if any. */
   unresolved(): ConstructionPress | null
-  /** The press to send for a build of `propertyId` as `role`: the unresolved one if there is one, exactly as first sent, else a new one, kept before it is sent. */
-  next(propertyId: string, role: ConstructionRole): ConstructionPress
+  /**
+   * The press to send for a build of `propertyId` as `role`: the unresolved one if there is one, exactly as first sent
+   * (its own intent too), else a new one with `intent`, kept before it is sent.
+   */
+  next(propertyId: string, role: ConstructionRole, intent?: PressIntent | null): ConstructionPress
   /** The server's answer to `press` is known: forget it. */
   settle(press: ConstructionPress): void
 }
@@ -59,6 +75,13 @@ type PressStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 const KEY = 'rare-city-construction-presses'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** A kept intent as the page reads it, or null when it does not read. Display only: it never decides whether a press is kept. */
+const intentOf = (v: unknown): PressIntent | null => {
+  if (typeof v !== 'object' || v === null) return null
+  const i = v as Record<string, unknown>
+  return typeof i.recipe === 'string' && i.recipe.length <= 64 && Number.isSafeInteger(i.tier) && (i.tier as number) >= 0 && (i.tier as number) <= 64 ? { recipe: i.recipe, tier: i.tier as number } : null
+}
+/** Whether a kept entry is a press: its id, world, player, property and role, strictly. Its intent is not part of the test. */
 const isPress = (v: unknown): v is ConstructionPress => {
   const p = v as Record<string, unknown> | null
   return (
@@ -72,6 +95,8 @@ const isPress = (v: unknown): v is ConstructionPress => {
     (p.role === 'owner' || p.role === 'patron')
   )
 }
+/** A kept press exactly as it is resent: its identity unchanged, its intent read or null, and no other field kept. */
+const pressOf = (p: ConstructionPress): ConstructionPress => ({ actionId: p.actionId, worldId: p.worldId, discordUserId: p.discordUserId, propertyId: p.propertyId, role: p.role, intent: intentOf(p.intent) })
 const owns = (who: PressOwner) => (p: ConstructionPress) => p.worldId === who.worldId && p.discordUserId === who.discordUserId
 
 /** This page's presses, if storage cannot keep them (a private window, blocked site data): they last as long as the page. */
@@ -82,7 +107,7 @@ export function pressBook(who: PressOwner, storage: PressStorage | null = defaul
   const read = (): ConstructionPress[] => {
     try {
       const kept: unknown = JSON.parse(storage?.getItem(KEY) ?? '[]')
-      if (Array.isArray(kept)) return [...kept.filter(isPress), ...memory.filter((m) => !kept.some((k) => isPress(k) && k.actionId === m.actionId))]
+      if (Array.isArray(kept)) return [...kept.filter(isPress).map(pressOf), ...memory.filter((m) => !kept.some((k) => isPress(k) && k.actionId === m.actionId))]
     } catch {
       // Unreadable or unavailable: this page's own presses still count.
     }
@@ -99,10 +124,10 @@ export function pressBook(who: PressOwner, storage: PressStorage | null = defaul
   const unresolved = () => read().find(owns(who)) ?? null
   return {
     unresolved,
-    next(propertyId, role) {
+    next(propertyId, role, intent = null) {
       const held = unresolved()
       if (held) return held
-      const press: ConstructionPress = { actionId: newId(), worldId: who.worldId, discordUserId: who.discordUserId, propertyId, role }
+      const press: ConstructionPress = { actionId: newId(), worldId: who.worldId, discordUserId: who.discordUserId, propertyId, role, intent: intentOf(intent) }
       write([...read(), press])
       return press
     },

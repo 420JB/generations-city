@@ -36,6 +36,7 @@ export function MyPropertiesPanel({
   city,
   home,
   claim,
+  onArchitect,
   onView,
   onClose,
 }: {
@@ -43,6 +44,8 @@ export function MyPropertiesPanel({
   home: PropertyHome
   /** Absent when there is nothing the player can claim from here. */
   claim: HomeClaim | null
+  /** Opens the player's own LOCAL TEST construction record, where the server runs it (P1-C2-E3B). */
+  onArchitect?: () => void
   onView: (buildingId: string) => void
   onClose: () => void
 }) {
@@ -93,6 +96,11 @@ export function MyPropertiesPanel({
       {claim && (
         <button type="button" className="btn primary home-claim" onClick={claim.run} data-testid="my-properties-claim">
           {claim.label}
+        </button>
+      )}
+      {onArchitect && (
+        <button type="button" className="btn home-claim" onClick={onArchitect} data-testid="my-properties-architect">
+          Architect activity · your construction record
         </button>
       )}
       <p className="muted small" data-testid="my-properties-basis">

@@ -30,6 +30,7 @@ import {
   PLAY_CITY_ENDPOINT,
   PLAY_LOGOUT_ENDPOINT,
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
   PLAY_REHEARSAL_ENTRY_ENDPOINT,
@@ -413,6 +414,20 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /** LOCAL REHEARSAL: the session's player's own LOCAL TEST construction record in its city (Architect activity). Read only. */
+  async function serveRehearsalArchitect(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_ARCHITECT_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
+    const presented = playCookie.read(req)
+    try {
+      return send(res, 200, await service.architect(presented), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+      log.error('rehearsal architect read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
   /**
    * A LOCAL REHEARSAL change (local mode with the rehearsal file only, `world/rehearsal.ts`). Past the common boundary
    * (same origin, JSON only, size) it also needs an Origin header naming this service, then the per-session limit, keyed
@@ -608,6 +623,9 @@ export function createApp(deps: AppDeps): RequestListener {
         break
       case PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT:
         if (rehearsal) return serveRehearsalConstruction(req, res, client, rehearsal)
+        break
+      case PLAY_REHEARSAL_ARCHITECT_ENDPOINT:
+        if (rehearsal) return serveRehearsalArchitect(req, res, client, rehearsal)
         break
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.

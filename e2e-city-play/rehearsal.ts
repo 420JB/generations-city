@@ -49,7 +49,7 @@ export const FAY_TWIN = asset(BRAND_A, 'harbor-keepers', '9006')
 /** Where `serve.ts` writes this run's construction Discord servers. */
 export const CONSTRUCTION_GUILDS_FILE = resolve(import.meta.dirname, '../test-artifacts/city-play-construction-guilds.json')
 /** How many construction servers a run has: each construction test (and each repetition of it) founds its own city. */
-export const CONSTRUCTION_GUILD_COUNT = 70
+export const CONSTRUCTION_GUILD_COUNT = 100
 /** This run's construction Discord servers, as `serve.ts` wrote them before any test ran. */
 export const constructionGuilds = (): string[] => (JSON.parse(readFileSync(CONSTRUCTION_GUILDS_FILE, 'utf8')) as { guilds: string[] }).guilds
 

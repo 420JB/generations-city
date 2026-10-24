@@ -72,6 +72,7 @@ export {
 // The local property rehearsal: its routes and answers (local deployments only, see server/src/world/rehearsal.ts).
 export {
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
@@ -81,6 +82,7 @@ export {
   PLAY_REHEARSAL_TICKET_ENDPOINT,
   REHEARSAL_MARK,
   type RehearsalActivationResponse,
+  type RehearsalArchitectView,
   type RehearsalAssetsResponse,
   type RehearsalConstructionResponse,
   type RehearsalConstructionView,

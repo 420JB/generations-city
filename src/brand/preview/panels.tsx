@@ -270,6 +270,7 @@ export function BuildingPreviewPanel({
   stored = null,
   context = null,
   construction = null,
+  onArchitect,
   onDistrict,
   onBack,
   onClose,
@@ -287,6 +288,8 @@ export function BuildingPreviewPanel({
   context?: ReactNode
   /** For a stored property, when the server runs the local rehearsal: its LOCAL TEST construction. */
   construction?: ConstructionAccess | null
+  /** Opens the player's own construction record (with `construction` only). */
+  onArchitect?: () => void
   onDistrict: (id: string) => void
   /** Back to where the panel was opened from (the player's properties). */
   onBack?: () => void
@@ -388,7 +391,7 @@ export function BuildingPreviewPanel({
       {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
       {stored && context}
       {stored && construction ? (
-        <ConstructionCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} access={construction} color={d.color} />
+        <ConstructionCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} access={construction} color={d.color} onArchitect={onArchitect} />
       ) : stored ? (
         <ConstructionNote tier={tier} />
       ) : (

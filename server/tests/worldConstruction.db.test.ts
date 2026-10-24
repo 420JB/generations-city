@@ -125,7 +125,7 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
 
     // 1. Tier 0, as founded: version 2, nothing built, no records.
     const before = await w.overview(a, p.id)
-    expect(before.property).toMatchObject({ tier: 0, built: 0, nextTierAt: 100, maxTier: 1 })
+    expect(before.property).toMatchObject({ tier: 0, built: 0, nextTierAt: 100, maxTier: 2 })
     expect(before.control).toBe('viewer')
     expect(before.standing).toEqual({ kind: 'ready', role: 'owner', units: 50 })
     expect(before.credits).toEqual({ available: 120, recorded: 0, pending: 120 })
@@ -136,7 +136,7 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
     // 2-3. One step: the city advances once; 50 units built; the grant recorded once and 50 debited.
     const first = await w.build(a, p.id, 'owner')
     expect(first.fresh).toBe(true)
-    expect(first.construction).toMatchObject({ role: 'owner', era: 1, units: 50, builtBefore: 0, builtAfter: 50, tierBefore: 0, tierAfter: 0, recipe: 'local-test-tier1-v1', contributor: { discordUserId: ADA.discordUserId, coreUserId: ADA.coreUserId } })
+    expect(first.construction).toMatchObject({ role: 'owner', era: 1, units: 50, builtBefore: 0, builtAfter: 50, tierBefore: 0, tierAfter: 0, recipe: 'local-test-tier2-v1', contributor: { discordUserId: ADA.discordUserId, coreUserId: ADA.coreUserId } })
     expect(first.sequence).toBe(sequence + 1)
     expect(first.balance).toBe(70)
     expect(await sequenceOf(worldId)).toBe(sequence + 1)
@@ -149,17 +149,17 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
     const event = await one<{ type: string; payload: Record<string, unknown> }>('SELECT type, payload FROM city_events e JOIN worlds w ON w.city_id = e.city_id WHERE w.id = $1 AND e.sequence = $2', [worldId, sequence + 1])
     expect(event).toEqual({
       type: 'world.property.constructed',
-      payload: { propertyId: p.id, buildingId: p.buildingId, recipe: 'local-test-tier1-v1', units: 50, builtBefore: 0, builtAfter: 50, tierBefore: 0, tierAfter: 0, action: first.construction.actionId, role: 'owner' },
+      payload: { propertyId: p.id, buildingId: p.buildingId, recipe: 'local-test-tier2-v1', units: 50, builtBefore: 0, builtAfter: 50, tierBefore: 0, tierAfter: 0, action: first.construction.actionId, role: 'owner' },
     })
 
-    // 4. The second step reaches Tier 1; nothing more can be built by this recipe.
+    // 4. The second step reaches Tier 1. The next goal is Tier 2 (C2-E3B), which 20 credits do not pay a step toward.
     const second = await w.build(a, p.id, 'owner')
     expect(second.construction).toMatchObject({ builtBefore: 50, builtAfter: 100, tierBefore: 0, tierAfter: 1 })
     expect(second.balance).toBe(20)
-    expect(await refusalOf(w.build(a, p.id, 'owner'))).toBe('construction_complete')
+    expect(await refusalOf(w.build(a, p.id, 'owner'))).toBe('insufficient_test_credits')
     const after = await w.overview(a, p.id)
-    expect(after.property).toMatchObject({ tier: 1, built: 100, nextTierAt: null })
-    expect(after.standing).toEqual({ kind: 'complete' })
+    expect(after.property).toMatchObject({ tier: 1, built: 100, nextTierAt: 250 })
+    expect(after.standing).toEqual({ kind: 'insufficient', role: 'owner', units: 50 })
     expect(after.investment).toEqual({ currentOwner: 100, previousOwners: 0, community: 0, total: 100 })
     expect(after.viewer).toEqual({ ownerUnits: 100, patronUnits: 0 })
     expect(after.history.map((h) => [h.role, h.units, h.tierAfter, h.by, h.era])).toEqual([
@@ -567,7 +567,7 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
           cityId,
           next,
           'world.property.constructed',
-          JSON.stringify({ propertyId: p.id, buildingId: p.buildingId, recipe: 'local-test-tier1-v1', units: 50, builtBefore: 50, builtAfter: 100, tierBefore: 0, tierAfter: 1, action, role, ...o.event }),
+          JSON.stringify({ propertyId: p.id, buildingId: p.buildingId, recipe: 'local-test-tier2-v1', units: 50, builtBefore: 50, builtAfter: 100, tierBefore: 0, tierAfter: 1, action, role, ...o.event }),
         ])
         const row = {
           world_id: worldId,
@@ -576,7 +576,7 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
           sequence: next,
           property_id: p.id,
           action_id: action,
-          recipe: 'local-test-tier1-v1',
+          recipe: 'local-test-tier2-v1',
           role,
           contributor_core_user_id: who.coreUserId,
           contributor_discord_user_id: who.discordUserId,
@@ -615,6 +615,8 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
     await expect(forge({ row: { tier_after: 0 } })).rejects.toThrow("a construction builds exactly its recipe's next step")
     await expect(forge({ row: { built_before: 0, built_after: 50, tier_after: 0 } })).rejects.toThrow("a construction builds exactly its recipe's next step")
     await expect(forge({ row: { recipe: 'free-tier-v9' } })).rejects.toThrow("a construction builds exactly its recipe's next step")
+    // (0014) The retired E3A recipe builds nothing more, even its own honest step (identical to the current one's here).
+    await expect(forge({ row: { recipe: 'local-test-tier1-v1' }, event: { recipe: 'local-test-tier1-v1' } })).rejects.toThrow('a new construction is built by the current recipe, local-test-tier2-v1')
     await expect(forge({ state: { ...city.state, development: { [p.buildingId]: { tier: 0, built: 50, sequence: Number(city.sequence) + 1 } } } })).rejects.toThrow('a construction must be the development its city has just recorded')
     await expect(forge({ event: { role: 'patron' } })).rejects.toThrow('a construction must be recorded by a world.property.constructed event')
     await expect(forge({ debit: null })).rejects.toThrow("a construction is paid for by its contributor's test credits")
@@ -732,7 +734,7 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
     const before = await dump()
     await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })
     expect(await dump()).toEqual(before)
-    expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(13)
+    expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(14)
     await verifyCity(t.db).then((r) => expect(r.violations).toEqual([]))
 
     // Build on the migrated property, then read everything again through a brand new pool.

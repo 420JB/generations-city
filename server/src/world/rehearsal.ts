@@ -9,6 +9,7 @@ import {
   type RehearsalActivationResponse,
   type RehearsalConstructionResponse,
   type RehearsalConstructionView,
+  type RehearsalArchitectView,
   type RehearsalAssetsResponse,
   type RehearsalErrorCode,
   type RehearsalTicket,
@@ -16,7 +17,15 @@ import {
   type RuleAnswer,
 } from '../engine'
 import { PlaySessionError, type ExpectedActor, type LivePlaySession, type PlaySessionService } from '../play/session'
-import { createConstructionService, WorldConstructionRefusal, type ConstructionAuthority, type ConstructionOverview, type WorldConstructionRefusalCode, type WorldConstructionStore } from './construction'
+import {
+  createConstructionService,
+  WorldConstructionRefusal,
+  type ArchitectOverview,
+  type ConstructionAuthority,
+  type ConstructionOverview,
+  type WorldConstructionRefusalCode,
+  type WorldConstructionStore,
+} from './construction'
 import { createPropertyActivationService, WorldPropertyRefusal, type WorldPropertyRefusalCode, type WorldPropertyStore } from './properties'
 import type { TicketEligibility } from './rotation'
 import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalCode, type DistrictTicketStore } from './tickets'
@@ -395,6 +404,8 @@ export interface LocalPropertyRehearsal {
   construction(presented: string | null, propertyId: string | null): Promise<RehearsalConstructionView>
   /** Build one step of the local test recipe, for exactly the actor the page names, in the role it names. */
   construct(presented: string | null, body: Record<string, unknown>): Promise<RehearsalConstructionResponse>
+  /** The cookie's player's own construction record in its city (Architect activity). Read only. */
+  architect(presented: string | null): Promise<RehearsalArchitectView>
 }
 
 export interface LocalPropertyRehearsalOptions {
@@ -569,10 +580,29 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
         fresh: done.fresh,
         sequence: done.sequence,
         balance: done.balance,
-        construction: { sequence: c.sequence, propertyId: c.propertyId, actionId: c.actionId, role: c.role, era: c.era, units: c.units, builtBefore: c.builtBefore, builtAfter: c.builtAfter, tierBefore: c.tierBefore, tierAfter: c.tierAfter, constructedAt: c.constructedAt },
+        construction: { sequence: c.sequence, propertyId: c.propertyId, actionId: c.actionId, recipe: c.recipe, role: c.role, era: c.era, units: c.units, builtBefore: c.builtBefore, builtAfter: c.builtAfter, tierBefore: c.tierBefore, tierAfter: c.tierAfter, constructedAt: c.constructedAt },
         view,
       }
     },
+
+    async architect(presented) {
+      // The player is the cookie's session's, as Proofy Play redeemed it: the request names nobody.
+      const session = await sessions.session(presented)
+      return architectView(await constructionCall((c) => c.architect(session, authority)))
+    },
+  }
+}
+
+/** A player's own construction record as they are told it: only their own records, every amount marked as local test units. */
+export function architectView(o: ArchitectOverview): RehearsalArchitectView {
+  return {
+    rehearsal: REHEARSAL_MARK,
+    resource: 'local-test-credit',
+    recipe: { key: o.recipe.key, unitsPerAction: o.recipe.unitsPerAction, tierThresholds: [...o.recipe.tierThresholds], provisional: true },
+    credits: { ...o.credits },
+    totals: { ...o.totals },
+    properties: o.properties.map((a) => ({ ...a, standing: a.standing.kind === 'complete' ? { kind: 'complete' } : { ...a.standing }, yours: { ...a.yours } })),
+    propertyCount: o.propertyCount,
   }
 }
 
@@ -588,6 +618,7 @@ export function constructionView(o: ConstructionOverview): RehearsalConstruction
     credits: { ...o.credits },
     investment: { ...o.investment },
     viewer: { ...o.viewer },
+    contributors: { ...o.contributors },
     history: o.history.map((h) => ({ ...h })),
     historyCount: o.historyCount,
   }

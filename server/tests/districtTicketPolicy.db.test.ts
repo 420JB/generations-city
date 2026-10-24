@@ -572,7 +572,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket policies D1 to D4 (migration 
         const COLUMNS = 'id, status, issued_at, expires_at, ended_at, end_reason, ordinal, generation, district_key, epoch'
         const before = (await t.db.query(`SELECT ${COLUMNS} FROM world_district_tickets ORDER BY id`)).rows
         const slots = await slotsOf(worldId)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13], current: 13 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13, 14], current: 14 })
         expect((await t.db.query(`SELECT ${COLUMNS} FROM world_district_tickets ORDER BY id`)).rows).toEqual(before)
         expect(await slotsOf(worldId)).toEqual(slots)
         expect(await one('SELECT claim_window, gate_rule_id, authorization_source, supersede_cause FROM world_district_tickets WHERE id = $1', [legacy.id])).toEqual({ claim_window: null, gate_rule_id: null, authorization_source: null, supersede_cause: null })
@@ -599,7 +599,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket policies D1 to D4 (migration 
         expect(await t.tables()).not.toContain('world_claim_windows')
         expect((await t.db.query("SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'world_district_tickets' AND column_name = 'claim_window'", [t.schema])).rowCount).toBe(0)
         expect((await one<{ src: string }>("SELECT p.prosrc AS src FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'world_district_tickets_guard'", [t.schema])).src).not.toMatch(/claim window/)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13], current: 13 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13, 14], current: 14 })
         const pinned = (await t.db.query<{ proname: string; proconfig: string[] | null }>(
           "SELECT p.proname, p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname IN ('world_config_district_rule', 'world_claim_windows_guard', 'world_claim_window_opened_by_ticket', 'world_district_tickets_guard', 'world_district_ticket_ended_whole') ORDER BY p.proname", [t.schema])).rows
         expect(pinned.map((p) => p.proname)).toEqual(['world_claim_window_opened_by_ticket', 'world_claim_windows_guard', 'world_config_district_rule', 'world_district_ticket_ended_whole', 'world_district_tickets_guard'])

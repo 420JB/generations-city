@@ -62,7 +62,7 @@ server/
     world/properties.ts  LOCAL ONLY: authoritative world property activation (migration 0007); only the local rehearsal uses it
     world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011; held by the database too, 0012)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
-    world/construction.ts  LOCAL ONLY: test construction of a property (migration 0013), paid in valueless test credits; only the local rehearsal uses it
+    world/construction.ts  LOCAL ONLY: test construction of a property (migrations 0013, 0014: Tier 2) and each player's Architect activity, paid in valueless test credits; only the local rehearsal uses it
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011, leases and governing configuration 0012)
@@ -1258,6 +1258,11 @@ configuration and is not affected by anything here.
   holds state version 3 once it has one. An older build reads such a city as one it cannot read
   (`world_unavailable`, nothing drawn), and its activation in such a city is refused (it would write
   state version 2); a city with no construction is unchanged for it. 0013 changes no row.
+  And `0014` (Tier 2 local test construction): every new construction must be built by the current
+  recipe (`local-test-tier2-v1`), so an older build's construction (`local-test-tier1-v1`) is refused
+  and writes nothing; the older recipe's records stay valid. An older build also reads a city with
+  more than 100 units built into any property as impossible (`world_unavailable`, nothing drawn).
+  0014 changes no row.
 
 ## Tests
 

@@ -22,11 +22,13 @@ import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play
 import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldScope } from './store'
 
 /**
- * PROPERTY CONSTRUCTION, AUTHORITATIVE PERSISTENCE (P1-C2-E3A). LOCAL ONLY, TEST CREDITS ONLY.
+ * PROPERTY CONSTRUCTION, AUTHORITATIVE PERSISTENCE (P1-C2-E3A, Tier 2 in P1-C2-E3B). LOCAL ONLY, TEST CREDITS ONLY.
  *
- * The first thing a player can BUILD into a property: one fixed step of the one recipe the engine has
- * (`LOCAL_TEST_CONSTRUCTION_RECIPE`, provisional local tuning: Tier 0 to Tier 1), paid for with valueless
- * LOCAL TEST credits. The one caller outside tests is the local rehearsal (`rehearsal.ts`), whose routes exist
+ * What a player can BUILD into a property: one fixed step of the engine's current recipe
+ * (`LOCAL_TEST_CONSTRUCTION_RECIPE`, provisional local tuning: Tier 0 to Tier 2), paid for with valueless
+ * LOCAL TEST credits. A construction an earlier recipe made (`local-test-tier1-v1`) keeps that recipe's record, and
+ * is answered exactly as recorded when its press is repeated; the property continues under the current recipe, which
+ * extends the earlier one. The one caller outside tests is the local rehearsal (`rehearsal.ts`), whose routes exist
  * only in a local deployment started with an explicit rehearsal file. Like property activation it refuses any
  * mode or database but a local one, and so does the database (migration 0013). Nothing here touches RF, Proofy
  * Points, a token, a wallet or any economy provider, and nothing grants credits on request.
@@ -64,9 +66,16 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldSco
  * left. The play session is locked FOR SHARE right after, and must be live.
  *
  * IDEMPOTENCY. The page names each press with a fresh UUID (`actionId`), unique per world. The same player
- * repeating it, for the same property and role, gets the construction it made back (`fresh: false`), and pays
- * nothing more; any other use of that id is refused (`action_conflict`). Two identical requests at once queue on
- * the city lock: one builds, the other is answered with what it built.
+ * repeating it, for the same property and role, gets the construction it made back (`fresh: false`), its stored
+ * record whatever recipe is current now, and pays nothing more; any other use of that id is refused
+ * (`action_conflict`). Two identical requests at once queue on the city lock: one builds, the other is answered with
+ * what it built.
+ *
+ * ARCHITECT ACTIVITY (`architect`, P1-C2-E3B). A player's own construction record in one world, read from the
+ * construction records only: what they built as the NFT's controller (owner units: their own Architect progression),
+ * split into the control eras that are still theirs now and earlier ones, and what they built as a patron (which
+ * develops others' properties and is never counted as their own progression). Descriptive statistics only: no rank,
+ * level, XP, badge or reward exists, and none is implied.
  */
 export type ConstructionRole = 'owner' | 'patron'
 
@@ -180,12 +189,66 @@ export interface ConstructionOverview {
   investment: { currentOwner: number; previousOwners: number; community: number; total: number }
   /** What the viewer has built in this world: as an owner (their own, Architect progression) and as a patron of others. */
   viewer: { ownerUnits: number; patronUnits: number }
-  /** The property's constructions, newest first (at most HISTORY_LIMIT), and how many it has in all. */
-  history: { sequence: number; role: ConstructionRole; units: number; tierAfter: number; by: 'viewer' | 'other'; era: number | null; at: string }[]
+  /** How many different players have built here, as an owner and as a patron (one player may be both). Nobody is named. */
+  contributors: { owners: number; patrons: number }
+  /** The property's constructions, newest first (at most HISTORY_LIMIT), and how many it has in all. Each names the recipe that computed it. */
+  history: { sequence: number; recipe: string; role: ConstructionRole; units: number; tierAfter: number; by: 'viewer' | 'other'; era: number | null; at: string }[]
   historyCount: number
 }
 
 export const HISTORY_LIMIT = 20
+
+/** One property in a player's Architect activity: why it is listed, where it stands, and what the player built in it. */
+export interface ArchitectProperty {
+  propertyId: string
+  buildingId: string
+  /** CAIP-19 key of its NFT. */
+  asset: string
+  collection: string
+  districtKey: string
+  plotId: string
+  ward: number
+  plot: number
+  /** The player is its original activator (0008). Founding is a permanent record, never ownership. */
+  founded: boolean
+  /** Whom the trusted source names as its NFT's current controller, as the player may know it. Never verified. */
+  control: 'viewer' | 'other' | 'unknown'
+  tier: number
+  built: number
+  nextTierAt: number | null
+  /** What the player could do there now (the server judges it again when they do). */
+  standing: ConstructionStanding
+  /** What the player built there, by role, and which of their owner units are in the control era that is theirs now. */
+  yours: { ownerUnits: number; currentEraOwnerUnits: number; earlierEraOwnerUnits: number; patronUnits: number; actions: number; tiersCompleted: number; lastSequence: number | null }
+}
+
+/** A player's own LOCAL TEST construction record in one world, from its construction records. Descriptive only. */
+export interface ArchitectOverview {
+  recipe: ConstructionRecipe
+  credits: { available: number; recorded: number; pending: number }
+  totals: {
+    /** Units built as the NFT's named controller: the player's own Architect progression, every era. */
+    ownerUnits: number
+    /** Of those, units in control eras the player still holds now. */
+    currentEraOwnerUnits: number
+    /** Of those, units in earlier eras: still theirs, but of a control that has since ended (or not been seen again). */
+    earlierEraOwnerUnits: number
+    /** Units built as a patron: develops others' properties, never the player's own progression. */
+    patronUnits: number
+    ownerActions: number
+    patronActions: number
+    /** Tier changes the player's own actions completed, either role. */
+    tiersCompleted: number
+    /** Properties the player has built into, and those they built into as an owner. */
+    propertiesDeveloped: number
+    propertiesDevelopedAsOwner: number
+  }
+  /** Properties the player founded, controls now (per the source) or built into: most recent activity first, at most ARCHITECT_PROPERTY_LIMIT. */
+  properties: ArchitectProperty[]
+  propertyCount: number
+}
+
+export const ARCHITECT_PROPERTY_LIMIT = 50
 
 /** Points inside the write at which a test may make it fail, or act, to prove nothing is left half-written. */
 export type ConstructionStep = 'locked' | 'credited' | 'city' | 'event' | 'era' | 'construction' | 'debited'
@@ -195,12 +258,20 @@ export interface WorldConstructionStore {
   construct(actor: LivePlaySession, input: ConstructionInput, authority: ConstructionAuthority): Promise<ConstructionResult>
   /** A property's construction as `viewer` may see it. Read only: one snapshot, no lock, nothing written. */
   overview(viewer: LivePlaySession, propertyId: unknown, authority: ConstructionAuthority): Promise<ConstructionOverview>
+  /** `viewer`'s own construction record in their session's world. Read only: one snapshot, no lock, nothing written. */
+  architect(viewer: LivePlaySession, authority: ConstructionAuthority): Promise<ArchitectOverview>
 }
 
 export interface WorldConstructionStoreOptions {
   mode: AppMode
   log: Logger
   onStep?: (step: ConstructionStep) => void | Promise<void>
+  /**
+   * The recipe new constructions are computed by: the current one (`LOCAL_TEST_CONSTRUCTION_RECIPE`), always, outside
+   * tests. A test passes an earlier one only to write a database as an earlier build did, under that build's migrations;
+   * from migration 0014 the database refuses any recipe but the current one.
+   */
+  recipe?: ConstructionRecipe
 }
 
 /** What `world_property_constructions_guard` and `world_test_credit_entries_guard` (0013) raise when the session is not live. */
@@ -301,9 +372,21 @@ const pendingGrants = (account: Account, grants: readonly TestCreditGrant[]) => 
 /** The role an input names, or null. */
 const roleOf = (v: unknown): ConstructionRole | null => (v === 'owner' || v === 'patron' ? v : null)
 
-export function createWorldConstructionStore(db: Database, { mode, log, onStep }: WorldConstructionStoreOptions): WorldConstructionStore {
+/** What a viewer may do on a property with `built` units, whose controller the source names as `controller`, with `available` credits. */
+function standingOf(recipe: ConstructionRecipe, built: number, controller: string | null, viewer: string, available: number): ConstructionStanding {
+  const role: ConstructionRole = controller === viewer ? 'owner' : 'patron'
+  const step = constructionStep(recipe, built)
+  return step === null ? { kind: 'complete' } : available >= step ? { kind: 'ready', role, units: step } : { kind: 'insufficient', role, units: step }
+}
+
+/** The control era of a property that is current now: its latest, while the source still names that era's controller. */
+const currentEraOf = (latest: { era_seq: number; controller_discord_user_id: string } | undefined, controller: string | null) =>
+  latest && controller !== null && latest.controller_discord_user_id === controller ? latest.era_seq : null
+
+const sumUnits = (rows: readonly { units: number }[]) => rows.reduce((n, r) => n + r.units, 0)
+
+export function createWorldConstructionStore(db: Database, { mode, log, onStep, recipe = LOCAL_TEST_CONSTRUCTION_RECIPE }: WorldConstructionStoreOptions): WorldConstructionStore {
   const isRefusal = (err: unknown) => err instanceof WorldConstructionRefusal || err instanceof WorldRefusal
-  const recipe = LOCAL_TEST_CONSTRUCTION_RECIPE
 
   async function construct(actor: LivePlaySession, input: ConstructionInput, authority: ConstructionAuthority): Promise<ConstructionResult> {
     // The service's own hold, before anything is read. The database holds the same line (0013).
@@ -457,16 +540,14 @@ export function createWorldConstructionStore(db: Database, { mode, log, onStep }
 
         const built = rows[0]?.built_after ?? 0
         const controller = authority.controllerOf({ guildId: viewer.scope.discordGuildId }, asset)
-        const ownerUnits = rows.filter((r) => r.role === 'owner').reduce((n, r) => n + r.units, 0)
+        const ownerUnits = sumUnits(rows.filter((r) => r.role === 'owner'))
         // The current owner's investment is the latest era's, while the source still names that era's controller.
-        const currentEra = latestEra && controller !== null && latestEra.controller_discord_user_id === controller ? latestEra.era_seq : null
-        const currentOwner = currentEra === null ? 0 : rows.filter((r) => r.role === 'owner' && r.control_era_seq === currentEra).reduce((n, r) => n + r.units, 0)
-        const community = rows.filter((r) => r.role === 'patron').reduce((n, r) => n + r.units, 0)
-
-        const role: ConstructionRole = controller === who.discordUserId ? 'owner' : 'patron'
-        const step = constructionStep(recipe, built)
+        const currentEra = currentEraOf(latestEra, controller)
+        const currentOwner = currentEra === null ? 0 : sumUnits(rows.filter((r) => r.role === 'owner' && r.control_era_seq === currentEra))
+        const community = sumUnits(rows.filter((r) => r.role === 'patron'))
         const available = account.balance + pending
-        const standing: ConstructionStanding = step === null ? { kind: 'complete' } : available >= step ? { kind: 'ready', role, units: step } : { kind: 'insufficient', role, units: step }
+        const standing = standingOf(recipe, built, controller, who.discordUserId, available)
+        const distinct = (role: ConstructionRole) => new Set(rows.filter((r) => r.role === role).map((r) => `${r.contributor_discord_user_id}/${r.contributor_core_user_id}`)).size
         return {
           recipe,
           property: { propertyId: property.id, buildingId: property.building_id, tier: constructionTier(recipe, built), built, nextTierAt: nextTierAt(recipe, built), maxTier: recipeMaxTier(recipe) },
@@ -475,8 +556,10 @@ export function createWorldConstructionStore(db: Database, { mode, log, onStep }
           credits: { available, recorded: account.balance, pending },
           investment: { currentOwner, previousOwners: ownerUnits - currentOwner, community, total: built },
           viewer: { ownerUnits: Number(mine.find((m) => m.role === 'owner')?.units ?? 0), patronUnits: Number(mine.find((m) => m.role === 'patron')?.units ?? 0) },
+          contributors: { owners: distinct('owner'), patrons: distinct('patron') },
           history: rows.slice(0, HISTORY_LIMIT).map((r) => ({
             sequence: Number(r.sequence),
+            recipe: r.recipe,
             role: r.role,
             units: r.units,
             tierAfter: r.tier_after,
@@ -485,6 +568,96 @@ export function createWorldConstructionStore(db: Database, { mode, log, onStep }
             at: r.constructed_at.toISOString(),
           })),
           historyCount: rows.length,
+        }
+      })
+    },
+
+    async architect(viewer, authority) {
+      const where = { guildId: viewer.scope.discordGuildId }
+      if (!authority.opensIn(where)) throw new WorldConstructionRefusal('construction_not_open', 'Construction is not open in this city on this local server.')
+      const who = viewer.player
+      return withTransaction(db, isRefusal, async (client) => {
+        await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+        await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`)
+        // Every property of exactly the world the session names, through its whole binding: nothing of another world or installation.
+        const properties = (
+          await client.query<PropertyRef & { collection_key: string; district_key: string; plot_id: string; ward: number; plot: number; founded: boolean }>(
+            `SELECT p.id, p.building_id, p.chain, p.standard, p.contract, p.token_id, p.collection_key, p.district_key, p.plot_id, p.ward, p.plot,
+                    (p.activator_discord_user_id = $6 AND p.activator_core_user_id = $7) IS TRUE AS founded
+               FROM world_properties p JOIN world_play_bindings b ON b.world_id = p.world_id
+              WHERE p.world_id = $1 AND b.play_environment = $2 AND b.play_game_key = $3 AND b.play_installation_id = $4 AND b.discord_guild_id = $5
+              ORDER BY p.activated_sequence`,
+            [viewer.scope.worldId, viewer.scope.environment, viewer.scope.gameKey, viewer.scope.installationId, viewer.scope.discordGuildId, who.discordUserId, who.coreUserId],
+          )
+        ).rows
+        const rows = (await client.query<ConstructionRow>(`SELECT ${CONSTRUCTION_COLUMNS} FROM world_property_constructions WHERE world_id = $1 ORDER BY sequence`, [viewer.scope.worldId])).rows
+        const eras = (await client.query<{ property_id: string; era_seq: number; controller_discord_user_id: string }>('SELECT property_id, era_seq, controller_discord_user_id FROM world_property_control_eras WHERE world_id = $1 ORDER BY property_id, era_seq', [viewer.scope.worldId])).rows
+        const account = await accountOf(client, viewer.scope.worldId, { discordUserId: who.discordUserId, coreUserId: who.coreUserId })
+        const pending = pendingGrants(account, authority.grantsFor({ ...where, discordUserId: who.discordUserId })).reduce((n, g) => n + g.units, 0)
+        const available = account.balance + pending
+        // The player's own records: by the player Proofy Play redeemed for this session, both ids, never anyone a browser names.
+        const isMine = (r: ConstructionRow) => r.contributor_discord_user_id === who.discordUserId && r.contributor_core_user_id === who.coreUserId
+
+        const listed: ArchitectProperty[] = []
+        for (const p of properties) {
+          const asset = assetOf(p)
+          if (!asset) continue
+          const here = rows.filter((r) => r.property_id === p.id)
+          const mine = here.filter(isMine)
+          const controller = authority.controllerOf(where, asset)
+          if (!p.founded && mine.length === 0 && controller !== who.discordUserId) continue
+          const built = here.at(-1)?.built_after ?? 0
+          const currentEra = currentEraOf(eras.filter((e) => e.property_id === p.id).at(-1), controller)
+          const owner = mine.filter((r) => r.role === 'owner')
+          const currentEraOwnerUnits = currentEra === null ? 0 : sumUnits(owner.filter((r) => r.control_era_seq === currentEra))
+          listed.push({
+            propertyId: p.id,
+            buildingId: p.building_id,
+            asset: `${p.chain}/${p.standard}:${p.contract}/${p.token_id}`,
+            collection: p.collection_key,
+            districtKey: p.district_key,
+            plotId: p.plot_id,
+            ward: p.ward,
+            plot: p.plot,
+            founded: p.founded,
+            control: controller === null ? 'unknown' : controller === who.discordUserId ? 'viewer' : 'other',
+            tier: constructionTier(recipe, built),
+            built,
+            nextTierAt: nextTierAt(recipe, built),
+            standing: standingOf(recipe, built, controller, who.discordUserId, available),
+            yours: {
+              ownerUnits: sumUnits(owner),
+              currentEraOwnerUnits,
+              earlierEraOwnerUnits: sumUnits(owner) - currentEraOwnerUnits,
+              patronUnits: sumUnits(mine.filter((r) => r.role === 'patron')),
+              actions: mine.length,
+              tiersCompleted: mine.filter((r) => r.tier_after > r.tier_before).length,
+              lastSequence: mine.length === 0 ? null : Number(mine.at(-1)!.sequence),
+            },
+          })
+        }
+        // Most recent activity of the player first; then the rest in the order they were activated.
+        const order = (a: ArchitectProperty) => a.yours.lastSequence ?? -1
+        const sorted = listed.map((a, i) => ({ a, i })).sort((x, y) => order(y.a) - order(x.a) || x.i - y.i).map((x) => x.a)
+        const mine = rows.filter(isMine)
+        const owner = mine.filter((r) => r.role === 'owner')
+        const currentEraOwnerUnits = listed.reduce((n, a) => n + a.yours.currentEraOwnerUnits, 0)
+        return {
+          recipe,
+          credits: { available, recorded: account.balance, pending },
+          totals: {
+            ownerUnits: sumUnits(owner),
+            currentEraOwnerUnits,
+            earlierEraOwnerUnits: sumUnits(owner) - currentEraOwnerUnits,
+            patronUnits: sumUnits(mine.filter((r) => r.role === 'patron')),
+            ownerActions: owner.length,
+            patronActions: mine.length - owner.length,
+            tiersCompleted: mine.filter((r) => r.tier_after > r.tier_before).length,
+            propertiesDeveloped: new Set(mine.map((r) => r.property_id)).size,
+            propertiesDevelopedAsOwner: new Set(owner.map((r) => r.property_id)).size,
+          },
+          properties: sorted.slice(0, ARCHITECT_PROPERTY_LIMIT),
+          propertyCount: sorted.length,
         }
       })
     },

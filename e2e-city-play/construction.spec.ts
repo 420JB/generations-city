@@ -7,7 +7,7 @@ import { install, launch, launchHref, publish, snowflake } from './play'
 import { constructionGuilds, CONSTRUCTION_CREDITS, CONSTRUCTION_KEEPER, CONSTRUCTION_PASS, REHEARSAL_ADA, REHEARSAL_BEA, REHEARSAL_CY } from './rehearsal'
 
 /**
- * LOCAL TEST CONSTRUCTION (P1-C2-E3A), end to end against a REAL local Proofy Play, through the property's own panel: the
+ * LOCAL TEST CONSTRUCTION (P1-C2-E3A; Tier 1 is no longer the top since P1-C2-E3B, see `tier2.spec.ts`), end to end against a REAL local Proofy Play, through the property's own panel: the
  * player whom the local file names as the NFT's current controller builds it from Tier 0 to Tier 1 in two server-computed
  * steps, paid in valueless LOCAL TEST credits; another player contributes as a patron; the city draws the building at the
  * tier the server stored, for everyone, after a reload too. The page sends only a property, a role and a press id.
@@ -180,12 +180,16 @@ test('the NFT\'s current controller builds it from Tier 0 to Tier 1 on its panel
   await expect(sprite(ada.page)).toHaveAttribute('data-tier', '0')
   expect(Object.keys(sent[0] as object).sort()).toEqual(['actionId', 'discordUserId', 'propertyId', 'role', 'sessionRef', 'worldId'])
 
-  // The second step reaches Tier 1: the panel, the map and the city note all say so; nothing more can be built here.
+  // The second step reaches Tier 1: the panel, the map and the city note all say so. The next goal is Tier 2 (C2-E3B),
+  // which Ada's 20 remaining test credits do not pay a step toward: the action is there, and held.
   await action.click()
   await expect(status).toHaveText(`Built 50 test units as owner: Tier 1 reached. Recorded at city sequence ${sequence + 2}.`)
   await expect(card).toHaveAttribute('data-tier', '1')
-  await expect(card).toHaveAttribute('data-standing', 'complete')
-  await expect(card.getByTestId('construction-action')).toHaveCount(0)
+  await expect(card).toHaveAttribute('data-standing', 'insufficient')
+  await expect(card).toHaveAttribute('data-next-tier-at', '250')
+  await expect(card.getByTestId('construction-goal')).toHaveText('Next goal: Tier 2 at 250 lifetime units, 3 more steps by anyone. Provisional LOCAL TEST goal, not a final tier rule.')
+  await expect(card.getByTestId('construction-action')).toBeDisabled()
+  await expect(card.getByTestId('construction-insufficient')).toHaveText(`You have ${CONSTRUCTION_CREDITS.ada - 100} test credits here; one step costs 50.`)
   await expect(panel.getByTestId('panel-tier')).toContainText('1')
   await expect(sprite(ada.page)).toHaveAttribute('data-tier', '1')
   await expect(sprite(ada.page)).toHaveAccessibleName(/Tier 1/)
@@ -218,7 +222,9 @@ test('the NFT\'s current controller builds it from Tier 0 to Tier 1 on its panel
   await expect(sprite(bea.page)).toHaveAttribute('data-tier', '1')
   const beaCard = await openProperty(bea.page, placed.plotId, placed.buildingId)
   await expect(beaCard).toHaveAttribute('data-control', 'other')
-  await expect(beaCard.getByTestId('construction-action')).toHaveCount(0)
+  // Bea may contribute toward Tier 2, as a patron only.
+  await expect(beaCard.getByTestId('construction-action')).toHaveAttribute('data-role', 'patron')
+  await expect(beaCard.getByTestId('construction-action')).toBeEnabled()
   await expect(beaCard.getByTestId('investment-current-owner')).toHaveText('100')
   await expect(beaCard.getByTestId('construction-history-entry').first()).toHaveAttribute('data-by', 'other')
   // Nobody is told it is "their NFT", and Bea is never told who Ada is.
@@ -269,11 +275,12 @@ test('a patron\'s contribution develops the property as community investment, ne
   const read = await openProperty(visitor.page, placed.plotId, placed.buildingId)
   await expect(read.getByTestId('construction-action')).toHaveCount(0)
   await expect(read.getByTestId('construction-history-entry')).toHaveCount(2)
-  // Cy has credits but the property is complete: nothing to press.
+  // Cy has credits, and the property's next goal is Tier 2 (C2-E3B): Cy may contribute toward it, as a patron.
   const cy = await player(browser, guild, 'Cy', REHEARSAL_CY)
   const cyCard = await openProperty(cy.page, placed.plotId, placed.buildingId)
-  await expect(cyCard).toHaveAttribute('data-standing', 'complete')
-  await expect(cyCard.getByTestId('construction-action')).toHaveCount(0)
+  await expect(cyCard).toHaveAttribute('data-standing', 'ready')
+  await expect(cyCard.getByTestId('construction-action')).toHaveAttribute('data-role', 'patron')
+  await expect(cyCard.getByTestId('construction-goal')).toContainText('Next goal: Tier 2 at 250 lifetime units, 3 more steps by anyone.')
   for (const p of [ada, bea, visitor, cy]) await p.context.close()
 })
 

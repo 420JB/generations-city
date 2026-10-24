@@ -10,6 +10,7 @@ import type { PropertyHome } from '../preview/home'
 import { foundedProperties, foundingOrder } from '../preview/properties'
 import type { ConstructionAccess, ConstructionLoad, ConstructionOutcome } from '../preview/construction'
 import { pressBook } from '../preview/constructionPress'
+import type { ArchitectLoad } from '../preview/architect'
 import { AssignedDistrict, ClaimAnnouncer, ClaimCountdown, RehearsalFlag, type AssignedTicket, type PlacementRehearsal, type RehearsalNft, type RehearsalResult, type TicketResult } from '../preview/rehearsal'
 import { wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
@@ -18,11 +19,13 @@ import { CONSTRUCTED_WORLD_CITY_STATE_VERSION, type WorldBuildingRecord } from '
 import { worldProperty } from '../../world/property'
 import {
   parseRehearsalActivationResponse,
+  parseRehearsalArchitectView,
   parseRehearsalAssetsResponse,
   parseRehearsalConstructionResponse,
   parseRehearsalConstructionView,
   parseRehearsalTicketResponse,
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
@@ -344,7 +347,12 @@ export function PlayCityApp() {
   // call goes to the handlers of the latest render (the city drawn now).
   const handlers = useRef<ConstructionAccess | null>(null)
   const constructionAccess = useMemo<ConstructionAccess>(
-    () => ({ load: (id) => handlers.current!.load(id), build: (id, role, action) => handlers.current!.build(id, role, action), presses: () => handlers.current!.presses() }),
+    () => ({
+      load: (id) => handlers.current!.load(id),
+      build: (id, role, action) => handlers.current!.build(id, role, action),
+      presses: () => handlers.current!.presses(),
+      activity: () => handlers.current!.activity(),
+    }),
     [],
   )
 
@@ -494,6 +502,14 @@ export function PlayCityApp() {
     return view ? { ok: true, view } : { ok: false, problem: constructionProblemOf(answer.response.ok ? null : (answer.body as { error?: unknown } | null)?.error) }
   }
 
+  /** The session's player's own construction record in this city, as the server reads it for the cookie's session. */
+  async function loadActivity(): Promise<ArchitectLoad> {
+    const answer = await ask(PLAY_REHEARSAL_ARCHITECT_ENDPOINT)
+    if (!answer) return { ok: false, problem: UNREACHABLE }
+    const view = answer.response.ok ? parseRehearsalArchitectView(answer.body) : null
+    return view ? { ok: true, view } : { ok: false, problem: constructionProblemOf(answer.response.ok ? null : (answer.body as { error?: unknown } | null)?.error) }
+  }
+
   async function construct(drawn: PlayCityResponse, propertyId: string, role: ConstructionRole, actionId: string): Promise<ConstructionOutcome> {
     const request: RehearsalConstructionRequest = { ...actorOf(drawn), propertyId, role, actionId }
     const answer = await post(PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT, request)
@@ -524,6 +540,7 @@ export function PlayCityApp() {
   useEffect(() => {
     handlers.current = {
       load: loadConstruction,
+      activity: loadActivity,
       build: (id, role, action) => (phase.kind === 'ready' ? construct(phase.city, id, role, action) : Promise.resolve({ ok: false, problem: UNREACHABLE })),
       // The presses of exactly the player and world drawn now: never sent for another.
       presses: () => pressBook(phase.kind === 'ready' ? { worldId: phase.city.world.id, discordUserId: phase.city.viewer.player.discordUserId } : { worldId: '', discordUserId: '' }),

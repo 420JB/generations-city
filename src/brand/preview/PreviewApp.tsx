@@ -8,13 +8,15 @@ import { mayAct, previewClaimAccess, type PreviewMember } from '../core/eligibil
 import { districtPlots, loadBrandCity, type LoadedBrandCity } from '../load'
 import type { SampleBrand } from '../samples'
 import type { WorldPoint } from '../../game/world'
+import { ArchitectPanel } from './architect'
 import type { ConstructionAccess } from './construction'
 import { MyPropertiesPanel, PropertyContextCard, type HomeClaim, type PropertyHome } from './home'
 import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
 import { propertyContext } from './properties'
 import { RehearsalPlotPanel, type PlacementRehearsal, type StoredProperty } from './rehearsal'
 
-type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string } | { kind: 'properties' } | null
+/** A building panel opened from the Architect activity goes back to it. */
+type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string; from?: 'architect' } | { kind: 'properties' } | { kind: 'architect' } | null
 
 /** A plot the engine offers, as the renderer's placement layer takes it. */
 export type PreviewCandidate = ScenePlotCandidate & { plotId: string }
@@ -103,7 +105,8 @@ const candidatesIn = (city: LoadedBrandCity, districtId: string): PreviewCandida
  * permanent record says. The HUD then offers MY PROPERTIES, each a tap from its panel and the camera, and a
  * stored property's panel says what surrounds it in the stored city. In a local rehearsal it passes
  * `construction` too: a stored property's panel then shows its LOCAL TEST construction and the one test
- * action the server says this viewer has (`construction.tsx`).
+ * action the server says this viewer has (`construction.tsx`), and the player's own construction record opens
+ * from MY PROPERTIES and from the construction card (ARCHITECT ACTIVITY, `architect.tsx`).
  */
 export function BrandCityPreview({
   city,
@@ -176,11 +179,22 @@ export function BrandCityPreview({
     setPanel({ kind: 'building', id: buildingId })
     setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
   }, [])
+  /** As `warp`, from the Architect activity: the panel's back goes there. */
+  const warpFromArchitect = useCallback((buildingId: string) => {
+    setPanel({ kind: 'building', id: buildingId, from: 'architect' })
+    setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
+  }, [])
 
   const openHome = useCallback(() => {
     setPlacing(null)
     setPanel({ kind: 'properties' })
   }, [])
+  /** The player's own construction record: only where the server runs the local rehearsal's construction. */
+  const openArchitect = useCallback(() => {
+    setPlacing(null)
+    setPanel({ kind: 'architect' })
+  }, [])
+  const loadActivity = useCallback(() => construction!.activity(), [construction])
   /** The player's properties, by building id. */
   const founded = useMemo(() => new Set(home?.founded.map((p) => p.buildingId)), [home])
   // A panel opened from the player's properties takes the keyboard with it (the list it was opened from is gone).
@@ -313,10 +327,23 @@ export function BrandCityPreview({
         city={city}
         home={home}
         claim={homeClaim}
+        onArchitect={construction ? openArchitect : undefined}
         onView={(buildingId) => {
           warp(buildingId)
           setDrawerFocus((n) => n + 1)
         }}
+        onClose={() => setPanel(null)}
+      />
+    ) : panel?.kind === 'architect' && construction ? (
+      <ArchitectPanel
+        city={city}
+        load={loadActivity}
+        onView={(buildingId) => {
+          if (!state.buildings[buildingId]) return
+          warpFromArchitect(buildingId)
+          setDrawerFocus((n) => n + 1)
+        }}
+        onBack={home ? openHome : undefined}
         onClose={() => setPanel(null)}
       />
     ) : panel?.kind === 'building' && state.buildings[panel.id] ? (
@@ -328,8 +355,9 @@ export function BrandCityPreview({
         stored={stored?.(panel.id) ?? null}
         context={home && <HomeContext city={city} buildingId={panel.id} onWarp={warp} onDistrict={openDistrict} />}
         construction={construction ?? null}
+        onArchitect={construction ? openArchitect : undefined}
         onDistrict={openDistrict}
-        onBack={founded.has(panel.id) ? openHome : undefined}
+        onBack={panel.from === 'architect' ? openArchitect : founded.has(panel.id) ? openHome : undefined}
         onClose={() => setPanel(null)}
         onBuild={() => allowedIn(state.buildings[panel.id].districtId) && say('Preview only: nothing was built or spent. Building will use the shared Proofy community points, which are not connected yet.')}
       />

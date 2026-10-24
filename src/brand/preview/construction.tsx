@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { ProgressBar } from '../../ui/common'
 import type { ConstructionRole, RehearsalConstruction, RehearsalConstructionView } from '../../protocol/playRehearsal'
+import type { ArchitectLoad } from './architect'
 import type { ClaimProblem } from './claim'
 import { settlementOf, type ConstructionPress, type PressBook } from './constructionPress'
 import { ConstructionNote } from './home'
 
 /**
- * LOCAL TEST CONSTRUCTION on a stored property's panel (P1-C2-E3A). Only the Proofy Play page passes access to it, and only
+ * LOCAL TEST CONSTRUCTION on a stored property's panel (P1-C2-E3A; Tier 2 and the next goal in P1-C2-E3B). Only the Proofy Play page passes access to it, and only
  * when its server runs the local rehearsal. Everything shown is what the server answered: the tier and progress the city
  * stores, the viewer's local test credits, who invested (the current owner, earlier owners, patrons) and the history. The
  * one action asks the server to build one fixed step of the provisional local recipe; the page names only the property,
@@ -15,6 +16,10 @@ import { ConstructionNote } from './home'
  *
  * A press whose answer is not known is asked about again with the same id before anything new is spent
  * (`constructionPress.ts`): the card says it could not confirm the build, never that nothing was built.
+ *
+ * The next goal is the server's recipe as it answered it: the tier the property reaches next, the lifetime units that
+ * reach it and how many steps are left, all PROVISIONAL LOCAL TEST tuning. Each history entry names the recipe that
+ * computed it, so a step built by an earlier recipe reads as what it was.
  */
 
 export type ConstructionLoad = { ok: true; view: RehearsalConstructionView } | { ok: false; problem: ClaimProblem }
@@ -28,6 +33,8 @@ export interface ConstructionAccess {
   build(propertyId: string, role: ConstructionRole, actionId: string): Promise<ConstructionOutcome>
   /** The presses of the player and world this page acts for. */
   presses(): PressBook
+  /** The signed-in player's own construction record in this city (Architect activity). */
+  activity(): Promise<ArchitectLoad>
 }
 
 const ROLE: Record<ConstructionRole, string> = { owner: 'Owner', patron: 'Patron' }
@@ -39,7 +46,7 @@ const UNCONFIRMED_ELSEWHERE =
 const CONFLICT: ClaimProblem = { message: 'This press’s id is already recorded for a construction that does not match this request, so nothing more was built or spent for it. That construction may be this build, recorded earlier: check this property’s history before you press again.', kind: 'retry', code: 'action_conflict' }
 
 /** `tier`: the tier the page draws, for a city where construction is not open (the standing note says so, as before). */
-export function ConstructionCard({ propertyId, tier, access, color }: { propertyId: string; tier: number; access: ConstructionAccess; color: string }) {
+export function ConstructionCard({ propertyId, tier, access, color, onArchitect }: { propertyId: string; tier: number; access: ConstructionAccess; color: string; onArchitect?: () => void }) {
   const [view, setView] = useState<RehearsalConstructionView | null>(null)
   const [problem, setProblem] = useState<ClaimProblem | null>(null)
   const [busy, setBusy] = useState(false)
@@ -67,7 +74,7 @@ export function ConstructionCard({ propertyId, tier, access, color }: { property
     sending.current = true
     const book = access.presses()
     // An unresolved press is sent again exactly as it was first sent (its property, role and id), whatever was pressed.
-    const sent = book.next(propertyId, role)
+    const sent = book.next(propertyId, role, view ? { recipe: view.recipe.key, tier: view.property.tier } : null)
     const elsewhere = sent.propertyId !== propertyId
     setBusy(true)
     setProblem(null)
@@ -110,7 +117,7 @@ export function ConstructionCard({ propertyId, tier, access, color }: { property
       ? `Your earlier build is confirmed: ${done.fresh ? 'built' : 'it had built'} ${done.construction.units} test units on another property, recorded at city sequence ${done.construction.sequence}. Nothing more was spent. You can build here now.`
       : done.fresh
         ? `Built ${done.construction.units} test units as ${done.construction.role === 'owner' ? 'owner' : 'a patron'}${done.construction.tierAfter > done.construction.tierBefore ? `: Tier ${done.construction.tierAfter} reached` : ''}. Recorded at city sequence ${done.construction.sequence}.`
-        : `Already built by this press, at city sequence ${done.construction.sequence}. Nothing more was spent.`
+        : `Already built by this press, at city sequence ${done.construction.sequence}${done.construction.tierAfter > done.construction.tierBefore ? `, when it reached Tier ${done.construction.tierAfter}` : ''}. Nothing more was spent.`
     : problem
       ? problem.message
       : ''
@@ -128,27 +135,45 @@ export function ConstructionCard({ propertyId, tier, access, color }: { property
       </div>
     )
 
-  const { property: p, standing, credits, investment, control } = view
+  const { property: p, standing, credits, investment, control, contributors } = view
   const top = p.nextTierAt === null
   const floor = p.tier === 0 ? 0 : view.recipe.tierThresholds[p.tier - 1]
   const progress = top ? 1 : (p.built - floor) / (p.nextTierAt! - floor)
   const step = standing.kind === 'complete' ? null : standing
+  /** Steps of the recipe's size left to the next tier (the last one may be smaller). */
+  const stepsLeft = top ? 0 : Math.ceil((p.nextTierAt! - p.built) / view.recipe.unitsPerAction)
   // Read only for anyone this local file gives no test credits to: no control that cannot do anything.
   const canAct = step !== null && (credits.available > 0 || credits.recorded > 0 || view.viewer.ownerUnits + view.viewer.patronUnits > 0)
   return (
-    <div className="fund-box construction-card" data-testid="construction-card" data-state="ready" data-tier={p.tier} data-built={p.built} data-control={control} data-standing={standing.kind}>
+    <div
+      className="fund-box construction-card"
+      data-testid="construction-card"
+      data-state="ready"
+      data-tier={p.tier}
+      data-built={p.built}
+      data-next-tier-at={p.nextTierAt ?? ''}
+      data-max-tier={p.maxTier}
+      data-recipe={view.recipe.key}
+      data-control={control}
+      data-standing={standing.kind}
+    >
       <ConstructionHeading />
       <p className="small" data-testid="construction-tier" data-tier={p.tier}>
         <b>Tier {p.tier}</b> · {p.built} test units built
         {top ? ` · Tier ${p.tier} is the highest tier this local rehearsal builds.` : ` · ${p.nextTierAt! - p.built} more to reach Tier ${p.tier + 1}.`}
       </p>
       <ProgressBar value={progress} color={color} label={top ? `Tier ${p.tier} complete` : `Test construction progress to Tier ${p.tier + 1}`} />
+      <p className="muted small" data-testid="construction-goal" data-goal-tier={top ? '' : p.tier + 1} data-steps-left={stepsLeft}>
+        {top
+          ? `Complete: Tier ${p.tier} is the last tier of the local test recipe (${view.recipe.tierThresholds.join(' · ')} units). Nothing more can be built here in this rehearsal.`
+          : `Next goal: Tier ${p.tier + 1} at ${p.nextTierAt} lifetime units, ${stepsLeft} more ${stepsLeft === 1 ? 'step' : 'steps'} by anyone. Provisional LOCAL TEST goal, not a final tier rule.`}
+      </p>
       <p className="muted small" data-testid="construction-control" data-control={control}>
         {control === 'viewer'
           ? 'This local server’s test file names you as this NFT’s current controller, so you build here as its owner. Test data, not verified ownership.'
           : control === 'other'
-            ? 'This local server’s test file names another player as this NFT’s current controller. You can contribute as a patron.'
-            : 'No current controller is named for this NFT on this local server, so nobody can build as its owner. You can contribute as a patron.'}
+            ? `This local server’s test file names another player as this NFT’s current controller.${step ? ' You can contribute as a patron.' : ''}`
+            : `No current controller is named for this NFT on this local server, so nobody can build as its owner.${step ? ' You can contribute as a patron.' : ''}`}
       </p>
       <dl className="stat-grid construction-stats">
         <div>
@@ -214,18 +239,32 @@ export function ConstructionCard({ propertyId, tier, access, color }: { property
           <dd data-testid="investment-total">{investment.total}</dd>
         </div>
       </dl>
+      <p className="muted small" data-testid="construction-contributors" data-owners={contributors.owners} data-patrons={contributors.patrons}>
+        {investment.total === 0
+          ? 'Nobody has built here yet.'
+          : `Built by ${contributors.owners} ${contributors.owners === 1 ? 'owner' : 'owners'} and ${contributors.patrons} ${contributors.patrons === 1 ? 'patron' : 'patrons'} over its lifetime.`}
+      </p>
       <p className="muted small" data-testid="construction-viewer-progress" data-owner-units={view.viewer.ownerUnits} data-patron-units={view.viewer.patronUnits}>
         You in this city: {view.viewer.ownerUnits} units as an owner (your own builder progression) · {view.viewer.patronUnits} as a patron (develops others’ properties, not your own
         progression).
+        {onArchitect && (
+          <>
+            {' '}
+            <button type="button" className="link-btn" onClick={onArchitect} data-testid="construction-architect">
+              Your Architect activity
+            </button>
+          </>
+        )}
       </p>
       {view.history.length > 0 ? (
         <>
           <p className="muted small home-sub">Construction history, newest first</p>
           <ul className="patron-list" data-testid="construction-history" data-count={view.historyCount}>
             {view.history.map((h) => (
-              <li key={h.sequence} data-testid="construction-history-entry" data-role={h.role} data-by={h.by} data-sequence={h.sequence}>
+              <li key={h.sequence} data-testid="construction-history-entry" data-role={h.role} data-by={h.by} data-sequence={h.sequence} data-recipe={h.recipe}>
                 <span className="grow">
                   {ROLE[h.role]} · {h.by === 'viewer' ? 'You' : 'Another player'} · +{h.units} test units{h.era !== null ? ` · control era ${h.era}` : ''}
+                  {h.recipe !== view.recipe.key && <span className="muted small"> · earlier test recipe</span>}
                 </span>
                 <span className="muted small">
                   Tier {h.tierAfter} · #{h.sequence}

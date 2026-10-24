@@ -431,9 +431,11 @@ collection is never closed by removing it from a configuration.
 The first thing a player can build into a property, through the property's own panel (no separate
 page), against the real session, world and stores (`server/src/world/construction.ts`):
 
-- **What one action is.** One fixed step of the one recipe the engine has, `local-test-tier1-v1`
-  (`src/world/construction.ts`): 50 units an action, Tier 1 at 100 lifetime units, nothing above Tier
-  1 (`construction_complete`). These are PROVISIONAL LOCAL TUNING, not a price or a tier policy. The
+- **What one action is.** One fixed step of the engine's current recipe, since P1-C2-E3B
+  `local-test-tier2-v1` (`src/world/construction.ts`): 50 units an action, Tier 1 at 100 lifetime
+  units, Tier 2 at 250, nothing above Tier 2 (`construction_complete`); a step stops at each tier's
+  threshold. These are PROVISIONAL LOCAL TUNING, not a price or a tier policy. (E3A's
+  `local-test-tier1-v1`, which stopped at Tier 1, is retired: its records keep its meaning.) The
   page sends `POST /v1/play/rehearsal/constructions` with exactly `{ sessionRef, worldId,
   discordUserId, propertyId, role, actionId }`: never an amount, a cost, a tier or a state. The server
   computes the step under the city lock and answers what committed; `GET
@@ -485,9 +487,37 @@ page), against the real session, world and stores (`server/src/world/constructio
   construction event with no construction behind it. `city:verify` replays activations and
   constructions together and checks eras and ledgers.
 
-Not decided, on purpose: any real currency or price, tiers above 1, any other recipe, verified NFT
-control (Proofy Core), real transfers, patron rewards and recognition, Architect levels, and whether
-or how construction opens outside the local rehearsal.
+**Tier 2 and Architect activity (P1-C2-E3B, migration 0014): LOCAL ONLY, VALUELESS TEST CREDITS ONLY.**
+
+- **Versioned recipes.** Every construction record and event names the recipe that computed it. The
+  current recipe `local-test-tier2-v1` extends `local-test-tier1-v1` (the same step and Tier 1), so a
+  Tier 1 property built under E3A simply continues: three more steps reach Tier 2. Migration 0014
+  adds the new recipe to the database's two recipe functions (their tier1-v1 answers unchanged) and
+  refuses any new construction by another recipe; the server never accepts a tier, recipe, goal or
+  amount from the browser. A repeated press answers its own stored record, whatever recipe is current.
+  `city:verify` also refuses a construction by an older recipe after a newer one on the same property.
+- **Tier 2 in the city.** The stored tier is drawn by the standard renderer's own Tier 2 (taller), and
+  progress inside Tier 1 rises with each step. Tier 2 from local test construction earns no Crown,
+  Capital or monument, as Tier 1 did not.
+- **The card.** It shows the next provisional goal (the tier, the lifetime units that reach it and the
+  steps left by anyone), how many players built as owners and as patrons (nobody named), and marks a
+  history entry an earlier recipe built. A pending press also keeps the recipe and tier the page showed
+  when it was made (`intent`): display only, never sent.
+- **Architect activity.** `GET /v1/play/rehearsal/architect` (read only, the cookie's session's
+  player only, nothing the request names) and its panel, opened from MY PROPERTIES and from the
+  construction card: the player's owner units (built while the local file named them the NFT's
+  controller), split into control eras they still hold and earlier ones; their patron units (which
+  never count as their own progression); tier changes their steps completed; and every property of
+  this city they founded, are named controller of now, or built on, with its tier, progress and the
+  next step they could take. Descriptive only: no rank, level, XP, badge or reward. A new controller
+  starts from none of a previous owner's units; earlier owners keep theirs.
+- **Browser tests.** `tier2.spec.ts` (and the E3A tests in `construction.spec.ts`, whose Tier 1 is no
+  longer the top). Construction Discord servers per run: 100.
+
+Not decided, on purpose: any real currency or price, tiers above 2 and final tier balancing, any
+other recipe, verified NFT control (Proofy Core), real transfers, patron rewards and recognition,
+Architect ranks, levels or rewards, official civic awards for construction, and whether or how
+construction opens outside the local rehearsal.
 
 Needs a verified Proofy Core / Play contract:
 

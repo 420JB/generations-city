@@ -21,11 +21,19 @@ import {
  * The caller names only WHICH building. The recipe decides everything else: how many units this
  * one action builds, and the tier that results. Nothing here accepts an amount, a tier or a state.
  *
- * THE ONE RECIPE THIS BUILD HAS IS LOCAL REHEARSAL TUNING. `local-test-tier1-v1` builds a Tier 0
- * foundation up to Tier 1, in fixed steps, with valueless TEST units. Its numbers are provisional,
- * chosen only so a local rehearsal shows one real tier change in a couple of actions. They are not
- * a price, not an exchange rate with any currency and not a decision about tiers above 1, which
- * this recipe refuses to build (`construction-complete`).
+ * EVERY RECIPE THIS BUILD HAS IS LOCAL REHEARSAL TUNING, in valueless TEST units. Recipes are
+ * versioned, and a recipe's key is permanent: every construction record names the recipe that
+ * computed it, and is read by that recipe forever.
+ *   `local-test-tier1-v1` (P1-C2-E3A)  Tier 0 to Tier 1 in fixed steps; nothing above Tier 1. RETIRED:
+ *                                     its records stay valid, nothing new is built by it.
+ *   `local-test-tier2-v1` (P1-C2-E3B)  the CURRENT recipe: exactly tier1-v1 up to Tier 1, then on to
+ *                                     Tier 2 in the same fixed steps; nothing above Tier 2.
+ * A later recipe extends the one before it (same step, same thresholds, one more tier), so a city
+ * built under an earlier recipe is read the same under the current one, and a Tier 1 building
+ * simply continues. The numbers are provisional, chosen only so a local rehearsal shows real tier
+ * changes in a few actions. They are not a price, not an exchange rate with any currency and not a
+ * decision about final tiers: the ladder ends at the current recipe's highest tier
+ * (`construction-complete`), on purpose.
  */
 export const PROPERTY_CONSTRUCTED_EVENT = 'world.property.constructed'
 
@@ -38,11 +46,28 @@ export interface ConstructionRecipe {
   tierThresholds: readonly number[]
 }
 
-/** PROVISIONAL LOCAL REHEARSAL TUNING, not product economics (see the top of this file). Mirrored by migration 0013. */
-export const LOCAL_TEST_CONSTRUCTION_RECIPE: ConstructionRecipe = Object.freeze({ key: 'local-test-tier1-v1', unitsPerAction: 50, tierThresholds: Object.freeze([100]) })
+/** PROVISIONAL LOCAL REHEARSAL TUNING (P1-C2-E3A), RETIRED: read for its records only. Mirrored by migration 0013. */
+export const LOCAL_TEST_TIER1_RECIPE: ConstructionRecipe = Object.freeze({ key: 'local-test-tier1-v1', unitsPerAction: 50, tierThresholds: Object.freeze([100]) })
 
-/** The recipes this build can read, by key. */
-export const CONSTRUCTION_RECIPES: Readonly<Record<string, ConstructionRecipe>> = Object.freeze({ [LOCAL_TEST_CONSTRUCTION_RECIPE.key]: LOCAL_TEST_CONSTRUCTION_RECIPE })
+/** PROVISIONAL LOCAL REHEARSAL TUNING (P1-C2-E3B), not product economics (see the top of this file). Mirrored by migration 0014. */
+export const LOCAL_TEST_TIER2_RECIPE: ConstructionRecipe = Object.freeze({ key: 'local-test-tier2-v1', unitsPerAction: 50, tierThresholds: Object.freeze([100, 250]) })
+
+/** The recipe every new construction is computed by. */
+export const LOCAL_TEST_CONSTRUCTION_RECIPE: ConstructionRecipe = LOCAL_TEST_TIER2_RECIPE
+
+/** The recipes this build can read, by key, oldest first: every record names one of them. */
+export const CONSTRUCTION_RECIPES: Readonly<Record<string, ConstructionRecipe>> = Object.freeze({
+  [LOCAL_TEST_TIER1_RECIPE.key]: LOCAL_TEST_TIER1_RECIPE,
+  [LOCAL_TEST_TIER2_RECIPE.key]: LOCAL_TEST_TIER2_RECIPE,
+})
+
+/**
+ * Whether `later` extends `earlier`: the same step, and every threshold of `earlier` unchanged at the start of `later`'s.
+ * Then every amount `earlier` can build is at the same tier, and has the same next step, under `later`.
+ */
+export function recipeExtends(later: ConstructionRecipe, earlier: ConstructionRecipe): boolean {
+  return later.unitsPerAction === earlier.unitsPerAction && later.tierThresholds.length >= earlier.tierThresholds.length && earlier.tierThresholds.every((t, i) => later.tierThresholds[i] === t)
+}
 
 /** The highest tier a recipe builds. */
 export const recipeMaxTier = (recipe: ConstructionRecipe) => recipe.tierThresholds.length
@@ -62,10 +87,14 @@ export function nextTierAt(recipe: ConstructionRecipe, built: number): number | 
   return tier >= recipeMaxTier(recipe) ? null : recipe.tierThresholds[tier]
 }
 
-/** The units the recipe's next action builds into a building with `built` units, or null when it is at the recipe's highest tier. */
+/**
+ * The units the recipe's next action builds into a building with `built` units, or null when it is at the recipe's
+ * highest tier. A step never passes the next tier's threshold: it stops exactly there, so every tier is reached by a
+ * step of its own and none is skipped.
+ */
 export function constructionStep(recipe: ConstructionRecipe, built: number): number | null {
-  const ceiling = recipe.tierThresholds[recipe.tierThresholds.length - 1]
-  return built >= ceiling ? null : Math.min(recipe.unitsPerAction, ceiling - built)
+  const next = nextTierAt(recipe, built)
+  return next === null ? null : Math.min(recipe.unitsPerAction, next - built)
 }
 
 /** What a building has had built into it in a stored state (nothing for a version 1 or 2 city). */

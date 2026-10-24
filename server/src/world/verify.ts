@@ -66,7 +66,7 @@ import { verifyDistrictTickets, type TicketVerifyReport } from './verifyTickets'
  *               stored state byte for byte (so plots, ward openings, development and sequences all
  *               agree), and each event must be exactly the engine's;
  *   construction (migration 0013) each construction names a property of its world, a recipe this build
- *               has and its exact step, an owner in the control era current then whose controller is
+ *               has and its exact step (0014: never by a recipe older than one the property was built by before), an owner in the control era current then whose controller is
  *               the owner, a patron in that era under someone else or in none, and is paid by exactly
  *               one debit of its contributor; control eras are numbered 1, 2, 3 ... per property, each a
  *               new controller, each observed by a construction of that property in that era; every
@@ -537,6 +537,9 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
     const ownEras = eras.filter((e) => e.world_id === w.id)
     report.controlEras = ownEras.length
     let replayable = steps.length === mine2.length
+    // (0014) Recipes are versioned, oldest first, and an older one builds nothing after a newer one on the same property.
+    const recipeOrder = Object.keys(CONSTRUCTION_RECIPES)
+    const latestRecipe = new Map<string, number>()
     for (const c of built) {
       const cLabel = `${label} construction ${c.sequence}`
       const property = mine2.find((p) => p.id === c.property_id)
@@ -547,6 +550,10 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       else if (c.units !== constructionStep(recipe, c.built_before) || c.built_after !== c.built_before + c.units || c.tier_before !== constructionTier(recipe, c.built_before) || c.tier_after !== constructionTier(recipe, c.built_after))
         add('construction', `${cLabel} is not its recipe's step from ${c.built_before} units`)
       if (c.resource !== 'local-test-credit') add('construction', `${cLabel} is paid in ${c.resource}`)
+      if (recipe) {
+        if (recipeOrder.indexOf(c.recipe) < (latestRecipe.get(c.property_id) ?? 0)) add('construction', `${cLabel} is built by recipe ${c.recipe}, older than one its property was already built by`)
+        latestRecipe.set(c.property_id, Math.max(latestRecipe.get(c.property_id) ?? 0, recipeOrder.indexOf(c.recipe)))
+      }
       // The era current when it was built: the latest observed at or before its sequence.
       const current = ownEras.filter((e) => e.property_id === c.property_id && Number(e.observed_at_sequence) <= Number(c.sequence)).at(-1) ?? null
       if (c.role === 'owner' ? c.control_era_seq === null || c.control_era_seq !== current?.era_seq || current.controller_discord_user_id !== c.contributor_discord_user_id : c.role !== 'patron')

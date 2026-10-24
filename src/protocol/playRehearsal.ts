@@ -44,14 +44,19 @@ import type { PlayErrorCode } from './play'
  * nothing is written. The same player repeating it gets the same
  * property back (`fresh: false`); anyone else is refused.
  *
- * CONSTRUCTION (P1-C2-E3A). LOCAL TEST CONSTRUCTION ONLY: one fixed step of a provisional local
- * recipe (Tier 0 to Tier 1), paid in valueless `local-test-credit` units the local file grants.
+ * CONSTRUCTION (P1-C2-E3A, Tier 2 in P1-C2-E3B). LOCAL TEST CONSTRUCTION ONLY: one fixed step of a
+ * provisional, versioned local recipe (now Tier 0 to Tier 2), paid in valueless `local-test-credit`
+ * units the local file grants. Every construction names the recipe that computed it.
  *
  *   `GET  /v1/play/rehearsal/construction?property=<id>`  a property's construction as this session's
  *                                          player may see it: tier, progress, the viewer's test credits,
  *                                          investment by the current owner, previous owners and patrons,
  *                                          history (no other player is named), and what the viewer may do
  *   `POST /v1/play/rehearsal/constructions`  `{ sessionRef, worldId, discordUserId, propertyId, role, actionId }`
+ *   `GET  /v1/play/rehearsal/architect`    this session's player's own construction record in this city
+ *                                          (P1-C2-E3B): owner units (current and earlier control eras), patron
+ *                                          units, and the properties they founded, control now or built into.
+ *                                          Descriptive statistics only: no rank, level, XP or reward.
  *
  * The page names a property, a role (`owner` only when the local file names this player as the NFT's
  * current controller; `patron` otherwise) and a fresh UUID per press. Never an amount, a price, a
@@ -68,6 +73,7 @@ export const PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT = '/v1/play/rehearsal/assignment
 export const PLAY_REHEARSAL_RELEASE_ENDPOINT = '/v1/play/rehearsal/release'
 export const PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT = '/v1/play/rehearsal/construction'
 export const PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT = '/v1/play/rehearsal/constructions'
+export const PLAY_REHEARSAL_ARCHITECT_ENDPOINT = '/v1/play/rehearsal/architect'
 
 /** How every rehearsal answer marks itself: test data, never verified holdings. */
 export interface RehearsalMark {
@@ -216,9 +222,54 @@ export interface RehearsalConstructionView {
   investment: { currentOwner: number; previousOwners: number; community: number; total: number }
   /** What this player has built in this city, as an owner (their own progression) and as a patron. */
   viewer: { ownerUnits: number; patronUnits: number }
-  /** Newest first. `by` says only whether it was this player. */
-  history: { sequence: number; role: ConstructionRole; units: number; tierAfter: number; by: 'viewer' | 'other'; era: number | null; at: string }[]
+  /** How many different players have built here as an owner and as a patron. Nobody is named. */
+  contributors: { owners: number; patrons: number }
+  /** Newest first, each with the recipe that computed it. `by` says only whether it was this player. */
+  history: { sequence: number; recipe: string; role: ConstructionRole; units: number; tierAfter: number; by: 'viewer' | 'other'; era: number | null; at: string }[]
   historyCount: number
+}
+
+/** One property in the player's Architect activity. */
+export interface RehearsalArchitectProperty {
+  propertyId: string
+  buildingId: string
+  asset: string
+  collection: string
+  districtKey: string
+  plotId: string
+  ward: number
+  plot: number
+  /** This player is its original activator: a permanent record, never ownership. */
+  founded: boolean
+  /** Whom the local file names as the NFT's current controller. Never verified. */
+  control: 'viewer' | 'other' | 'unknown'
+  tier: number
+  built: number
+  nextTierAt: number | null
+  standing: ConstructionStanding
+  yours: { ownerUnits: number; currentEraOwnerUnits: number; earlierEraOwnerUnits: number; patronUnits: number; actions: number; tiersCompleted: number; lastSequence: number | null }
+}
+
+/** `GET /v1/play/rehearsal/architect`: this session's player's own LOCAL TEST construction record in this city. */
+export interface RehearsalArchitectView {
+  rehearsal: RehearsalMark
+  resource: 'local-test-credit'
+  recipe: { key: string; unitsPerAction: number; tierThresholds: number[]; provisional: true }
+  credits: { available: number; recorded: number; pending: number }
+  totals: {
+    ownerUnits: number
+    currentEraOwnerUnits: number
+    earlierEraOwnerUnits: number
+    patronUnits: number
+    ownerActions: number
+    patronActions: number
+    tiersCompleted: number
+    propertiesDeveloped: number
+    propertiesDevelopedAsOwner: number
+  }
+  /** Most recent activity first. */
+  properties: RehearsalArchitectProperty[]
+  propertyCount: number
 }
 
 /** A construction as the route answers with it. No session and no player: provenance stays on the server. */
@@ -226,6 +277,8 @@ export interface RehearsalConstruction {
   sequence: number
   propertyId: string
   actionId: string
+  /** The recipe that computed it, as recorded: a repeated press answers its own record, whatever recipe is current now. */
+  recipe: string
   role: ConstructionRole
   era: number | null
   units: number
@@ -418,41 +471,103 @@ const exact = (v: Record<string, unknown>, keys: string) => Object.keys(v).sort(
 /** A construction view, exactly, or null. */
 export function parseRehearsalConstructionView(body: unknown): RehearsalConstructionView | null {
   if (!isRecord(body) || !parseMark(body.rehearsal) || body.resource !== 'local-test-credit') return null
-  if (!exact(body, 'control,credits,history,historyCount,investment,property,recipe,rehearsal,resource,standing,viewer')) return null
-  const { recipe: r, property: p, standing: st, credits: c, investment: i, viewer: v } = body
-  if (!isRecord(r) || typeof r.key !== 'string' || !KEY.test(r.key) || !count(r.unitsPerAction) || r.unitsPerAction < 1 || r.provisional !== true) return null
-  if (!Array.isArray(r.tierThresholds) || r.tierThresholds.length === 0 || r.tierThresholds.length > 64 || !r.tierThresholds.every((x) => count(x) && x > 0)) return null
+  if (!exact(body, 'contributors,control,credits,history,historyCount,investment,property,recipe,rehearsal,resource,standing,viewer')) return null
+  const { recipe: r, property: p, standing: st, credits: c, investment: i, viewer: v, contributors: who } = body
+  const recipe = parseRecipe(r)
+  if (!recipe) return null
+  if (!isRecord(who) || !count(who.owners) || !count(who.patrons)) return null
   if (!isRecord(p) || typeof p.propertyId !== 'string' || !UUID.test(p.propertyId) || p.buildingId !== `b-${p.propertyId}` || !count(p.tier, 64) || !count(p.built) || !count(p.maxTier, 64)) return null
   if (!(p.nextTierAt === null || (count(p.nextTierAt) && p.nextTierAt > p.built))) return null
-  if (body.control !== 'viewer' && body.control !== 'other' && body.control !== 'unknown') return null
-  if (!isRecord(st)) return null
-  let standing: ConstructionStanding
-  if (st.kind === 'complete' && exact(st, 'kind')) standing = { kind: 'complete' }
-  else if ((st.kind === 'ready' || st.kind === 'insufficient') && isRole(st.role) && count(st.units) && st.units >= 1) standing = { kind: st.kind, role: st.role, units: st.units }
-  else return null
-  if (!isRecord(c) || !count(c.available) || !count(c.recorded) || !count(c.pending) || c.available !== c.recorded + c.pending) return null
+  if (!isControl(body.control)) return null
+  const standing = parseStanding(st)
+  const credits = parseCredits(c)
+  if (!standing || !credits) return null
   if (!isRecord(i) || !count(i.currentOwner) || !count(i.previousOwners) || !count(i.community) || !count(i.total) || i.currentOwner + i.previousOwners + i.community !== i.total || i.total !== p.built) return null
   if (!isRecord(v) || !count(v.ownerUnits) || !count(v.patronUnits)) return null
   if (!Array.isArray(body.history) || body.history.length > 100 || !count(body.historyCount) || body.historyCount < body.history.length) return null
   const history: RehearsalConstructionView['history'] = []
   for (const h of body.history) {
-    if (!isRecord(h) || !count(h.sequence) || h.sequence < 3 || !isRole(h.role) || !count(h.units) || h.units < 1 || !count(h.tierAfter, 64) || (h.by !== 'viewer' && h.by !== 'other')) return null
+    if (!isRecord(h) || !count(h.sequence) || h.sequence < 3 || typeof h.recipe !== 'string' || !KEY.test(h.recipe) || !isRole(h.role) || !count(h.units) || h.units < 1 || !count(h.tierAfter, 64) || (h.by !== 'viewer' && h.by !== 'other')) return null
     if (!(h.era === null || (count(h.era) && h.era >= 1)) || !isInstant(h.at)) return null
-    history.push({ sequence: h.sequence, role: h.role, units: h.units, tierAfter: h.tierAfter, by: h.by, era: h.era, at: h.at })
+    history.push({ sequence: h.sequence, recipe: h.recipe, role: h.role, units: h.units, tierAfter: h.tierAfter, by: h.by, era: h.era, at: h.at })
   }
   return {
     rehearsal: REHEARSAL_MARK,
     resource: 'local-test-credit',
-    recipe: { key: r.key, unitsPerAction: r.unitsPerAction, tierThresholds: r.tierThresholds as number[], provisional: true },
+    recipe,
     property: { propertyId: p.propertyId, buildingId: p.buildingId, tier: p.tier, built: p.built, nextTierAt: p.nextTierAt, maxTier: p.maxTier },
     control: body.control,
     standing,
-    credits: { available: c.available, recorded: c.recorded, pending: c.pending },
+    credits,
     investment: { currentOwner: i.currentOwner, previousOwners: i.previousOwners, community: i.community, total: i.total },
     viewer: { ownerUnits: v.ownerUnits, patronUnits: v.patronUnits },
+    contributors: { owners: who.owners, patrons: who.patrons },
     history,
     historyCount: body.historyCount,
   }
+}
+
+function parseRecipe(r: unknown): RehearsalConstructionView['recipe'] | null {
+  if (!isRecord(r) || typeof r.key !== 'string' || !KEY.test(r.key) || !count(r.unitsPerAction) || r.unitsPerAction < 1 || r.provisional !== true) return null
+  if (!Array.isArray(r.tierThresholds) || r.tierThresholds.length === 0 || r.tierThresholds.length > 64 || !r.tierThresholds.every((x, n, all) => count(x) && x > (n === 0 ? 0 : all[n - 1]))) return null
+  return { key: r.key, unitsPerAction: r.unitsPerAction, tierThresholds: [...(r.tierThresholds as number[])], provisional: true }
+}
+
+const isControl = (v: unknown): v is 'viewer' | 'other' | 'unknown' => v === 'viewer' || v === 'other' || v === 'unknown'
+
+function parseStanding(st: unknown): ConstructionStanding | null {
+  if (!isRecord(st)) return null
+  if (st.kind === 'complete' && exact(st, 'kind')) return { kind: 'complete' }
+  if ((st.kind === 'ready' || st.kind === 'insufficient') && isRole(st.role) && count(st.units) && st.units >= 1) return { kind: st.kind, role: st.role, units: st.units }
+  return null
+}
+
+function parseCredits(c: unknown): RehearsalConstructionView['credits'] | null {
+  if (!isRecord(c) || !count(c.available) || !count(c.recorded) || !count(c.pending) || c.available !== c.recorded + c.pending) return null
+  return { available: c.available, recorded: c.recorded, pending: c.pending }
+}
+
+const TOTAL_KEYS = ['ownerUnits', 'currentEraOwnerUnits', 'earlierEraOwnerUnits', 'patronUnits', 'ownerActions', 'patronActions', 'tiersCompleted', 'propertiesDeveloped', 'propertiesDevelopedAsOwner'] as const
+
+/** An Architect activity answer, exactly, or null. Its sums must agree: owner units are the current and earlier eras' together. */
+export function parseRehearsalArchitectView(body: unknown): RehearsalArchitectView | null {
+  if (!isRecord(body) || !parseMark(body.rehearsal) || body.resource !== 'local-test-credit') return null
+  if (!exact(body, 'credits,properties,propertyCount,recipe,rehearsal,resource,totals')) return null
+  const recipe = parseRecipe(body.recipe)
+  const credits = parseCredits(body.credits)
+  const t = body.totals
+  if (!recipe || !credits || !isRecord(t) || !exact(t, [...TOTAL_KEYS].sort().join()) || !TOTAL_KEYS.every((k) => count(t[k]))) return null
+  const totals = Object.fromEntries(TOTAL_KEYS.map((k) => [k, t[k] as number])) as RehearsalArchitectView['totals']
+  if (totals.currentEraOwnerUnits + totals.earlierEraOwnerUnits !== totals.ownerUnits || totals.propertiesDevelopedAsOwner > totals.propertiesDeveloped) return null
+  if (!Array.isArray(body.properties) || body.properties.length > 200 || !count(body.propertyCount) || body.propertyCount < body.properties.length) return null
+  const properties: RehearsalArchitectProperty[] = []
+  for (const a of body.properties) {
+    if (!isRecord(a) || typeof a.propertyId !== 'string' || !UUID.test(a.propertyId) || a.buildingId !== `b-${a.propertyId}` || !parseAssetKey(a.asset)) return null
+    if (typeof a.collection !== 'string' || !KEY.test(a.collection) || typeof a.districtKey !== 'string' || !KEY.test(a.districtKey) || !count(a.ward) || !count(a.plot) || a.plotId !== `${a.districtKey}-w${a.ward}-p${a.plot}`) return null
+    if (typeof a.founded !== 'boolean' || !isControl(a.control) || !count(a.tier, 64) || !count(a.built) || !(a.nextTierAt === null || (count(a.nextTierAt) && a.nextTierAt > a.built))) return null
+    const standing = parseStanding(a.standing)
+    const y = a.yours
+    if (!standing || !isRecord(y) || !count(y.ownerUnits) || !count(y.currentEraOwnerUnits) || !count(y.earlierEraOwnerUnits) || y.currentEraOwnerUnits + y.earlierEraOwnerUnits !== y.ownerUnits) return null
+    if (!count(y.patronUnits) || !count(y.actions) || !count(y.tiersCompleted) || !(y.lastSequence === null ? y.actions === 0 : count(y.lastSequence) && y.lastSequence >= 3 && y.actions > 0)) return null
+    properties.push({
+      propertyId: a.propertyId,
+      buildingId: a.buildingId,
+      asset: a.asset as string,
+      collection: a.collection,
+      districtKey: a.districtKey,
+      plotId: a.plotId,
+      ward: a.ward,
+      plot: a.plot,
+      founded: a.founded,
+      control: a.control,
+      tier: a.tier,
+      built: a.built,
+      nextTierAt: a.nextTierAt,
+      standing,
+      yours: { ownerUnits: y.ownerUnits, currentEraOwnerUnits: y.currentEraOwnerUnits, earlierEraOwnerUnits: y.earlierEraOwnerUnits, patronUnits: y.patronUnits, actions: y.actions, tiersCompleted: y.tiersCompleted, lastSequence: y.lastSequence as number | null },
+    })
+  }
+  return { rehearsal: REHEARSAL_MARK, resource: 'local-test-credit', recipe, credits, totals, properties, propertyCount: body.propertyCount }
 }
 
 /** A construction answer, exactly, or null. */
@@ -462,6 +577,7 @@ export function parseRehearsalConstructionResponse(body: unknown): RehearsalCons
   const c = body.construction
   if (body.view !== null && !view) return null
   if (!isRecord(c) || typeof c.propertyId !== 'string' || !UUID.test(c.propertyId) || (view && c.propertyId !== view.property.propertyId) || typeof c.actionId !== 'string' || !UUID.test(c.actionId) || !isRole(c.role)) return null
+  if (typeof c.recipe !== 'string' || !KEY.test(c.recipe)) return null
   if (!count(c.sequence) || c.sequence < 3 || c.sequence > body.sequence || !(c.era === null || (count(c.era) && c.era >= 1)) || !count(c.units) || c.units < 1) return null
   if (!count(c.builtBefore) || c.builtAfter !== c.builtBefore + c.units || !count(c.tierBefore, 64) || !count(c.tierAfter, 64) || c.tierAfter < c.tierBefore || !isInstant(c.constructedAt)) return null
   return {
@@ -470,7 +586,7 @@ export function parseRehearsalConstructionResponse(body: unknown): RehearsalCons
     fresh: body.fresh,
     sequence: body.sequence,
     balance: body.balance,
-    construction: { sequence: c.sequence, propertyId: c.propertyId, actionId: c.actionId, role: c.role, era: c.era, units: c.units, builtBefore: c.builtBefore, builtAfter: c.builtAfter, tierBefore: c.tierBefore, tierAfter: c.tierAfter, constructedAt: c.constructedAt },
+    construction: { sequence: c.sequence, propertyId: c.propertyId, actionId: c.actionId, recipe: c.recipe, role: c.role, era: c.era, units: c.units, builtBefore: c.builtBefore, builtAfter: c.builtAfter, tierBefore: c.tierBefore, tierAfter: c.tierAfter, constructedAt: c.constructedAt },
     view,
   }
 }

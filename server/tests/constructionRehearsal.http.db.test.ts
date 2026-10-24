@@ -17,7 +17,7 @@ import { createWorldPropertyStore } from '../src/world/properties'
 import { createLocalPropertyRehearsal, parseRehearsalFile, REHEARSAL_FILE_KIND_V3, REHEARSAL_FILE_KIND_V4, rehearsalConstructionAuthority, rehearsalEligibility } from '../src/world/rehearsal'
 import { createWorldStore } from '../src/world/store'
 import { createDistrictTicketStore } from '../src/world/tickets'
-import { parseRehearsalConstructionResponse, parseRehearsalConstructionView } from '../../src/protocol/playRehearsal'
+import { parseRehearsalArchitectView, parseRehearsalConstructionResponse, parseRehearsalConstructionView } from '../../src/protocol/playRehearsal'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
 import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
 import { TEST_ORIGIN, testConfig } from './testConfig'
@@ -32,6 +32,7 @@ const KEEPERS = 'eip155:8453/erc721:0x000000000000000000000000000000000000a001'
 const keeper = (id: string | number) => `${KEEPERS}/${id}`
 const CONSTRUCTION = '/v1/play/rehearsal/construction'
 const CONSTRUCTIONS = '/v1/play/rehearsal/constructions'
+const ARCHITECT = '/v1/play/rehearsal/architect'
 const FILE_V4 = {
   kind: REHEARSAL_FILE_KIND_V4,
   players: { [ADA.discordUserId]: [keeper(1), keeper(2)], [BEA.discordUserId]: [keeper(3)] },
@@ -129,7 +130,7 @@ describe.skipIf(NO_TEST_DATABASE)('local test construction routes against a disp
     expect(first.status).toBe(200)
     const v0 = parseRehearsalConstructionView(await first.json())!
     expect(v0).toMatchObject({ rehearsal: { kind: 'local-test-assets', verified: false }, resource: 'local-test-credit', control: 'viewer', standing: { kind: 'ready', role: 'owner', units: 50 }, credits: { available: 120, recorded: 0, pending: 120 } })
-    expect(v0.recipe).toEqual({ key: 'local-test-tier1-v1', unitsPerAction: 50, tierThresholds: [100], provisional: true })
+    expect(v0.recipe).toEqual({ key: 'local-test-tier2-v1', unitsPerAction: 50, tierThresholds: [100, 250], provisional: true })
     // Bea sees the same property read only as to ownership: another player controls it.
     const vb = parseRehearsalConstructionView(await (await view(bea, p.id)).json())!
     expect(vb).toMatchObject({ control: 'other', standing: { kind: 'ready', role: 'patron', units: 50 }, credits: { available: 50 } })
@@ -147,20 +148,24 @@ describe.skipIf(NO_TEST_DATABASE)('local test construction routes against a disp
     // Bea, a patron, takes it to Tier 1; as an owner she is refused.
     expect(await (await build(bea, p.id, 'owner')).json()).toEqual({ error: 'not_current_controller' })
     const patron = parseRehearsalConstructionResponse(await (await build(bea, p.id, 'patron')).json())!
-    expect(patron).toMatchObject({ fresh: true, balance: 0, construction: { role: 'patron', tierAfter: 1 }, view: { property: { tier: 1, built: 100, nextTierAt: null }, standing: { kind: 'complete' } } })
+    // Tier 1 is reached; its next goal is Tier 2 (C2-E3B), which Bea's spent credits do not pay a step toward.
+    expect(patron).toMatchObject({ fresh: true, balance: 0, construction: { role: 'patron', tierAfter: 1, recipe: 'local-test-tier2-v1' }, view: { property: { tier: 1, built: 100, nextTierAt: 250, maxTier: 2 }, standing: { kind: 'insufficient', role: 'patron', units: 50 } } })
     expect(patron.view!.investment).toEqual({ currentOwner: 50, previousOwners: 0, community: 50, total: 100 })
     expect(patron.view!.viewer).toEqual({ ownerUnits: 0, patronUnits: 50 })
     expect(patron.view!.history.map((h) => [h.role, h.by])).toEqual([
       ['patron', 'viewer'],
       ['owner', 'other'],
     ])
-    expect(await (await build(ada, p.id, 'owner')).json()).toEqual({ error: 'construction_complete' })
+    expect(patron.view!.contributors).toEqual({ owners: 1, patrons: 1 })
 
     // Every player of the city reads the building at Tier 1 from the stored city.
     for (const b of [ada, bea]) {
       const state = parseWorldCityState((await city(b)).world.state)
       expect(state?.version === 3 && state.development[p.buildingId]).toEqual({ tier: 1, built: 100, sequence: at + 1 })
     }
+    // And its owner continues toward Tier 2: progress inside Tier 1.
+    const onward = parseRehearsalConstructionResponse(await (await build(ada, p.id, 'owner')).json())!
+    expect(onward).toMatchObject({ fresh: true, balance: 20, construction: { builtBefore: 100, builtAfter: 150, tierBefore: 1, tierAfter: 1 }, view: { property: { tier: 1, built: 150, nextTierAt: 250 } } })
   })
 
   it('founding is not owning, and controlling the NFT elsewhere is not controlling it here', async () => {
@@ -458,5 +463,101 @@ describe.skipIf(NO_TEST_DATABASE)('local test construction routes against a disp
     }
     expect(await constructionsOf(worldId)).toEqual([{ action_id: action, role: 'owner', units: 50, tier_after: 0 }])
     expect((await ledgerOf(worldId)).filter((e) => e.kind === 'construction-debit')).toEqual([debit(70)])
+  })
+
+  /*
+   * TIER 2 AND ARCHITECT ACTIVITY OVER THE ROUTES (P1-C2-E3B). Enough credits for Ada to reach Tier 2 on her own.
+   */
+  const FILE_TIER2 = { ...FILE_V4, testCredits: [{ ...FILE_V4.testCredits[0], units: 300 }, { ...FILE_V4.testCredits[1], units: 100 }] }
+  const architectOf = async (base: string, b: { cookie: string }, query = '') => fetch(`${base}${ARCHITECT}${query}`, { headers: { cookie: b.cookie } })
+
+  it('18, 6. Tier 2 cannot be asked for: no tier, recipe or goal is read from the browser; a Tier 2 press whose answer was lost is the same press, once', async () => {
+    const { launchAs, place, build, view, sequence } = await boot({ fixture: FILE_TIER2, wrap: answerLostAfterBuild })
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const p = await place(ada, keeper(1))
+    const worldId = ada.actor.worldId
+    // The first press's answer is lost (the wrapper's one failure): it is checked again with the same id, as the page does.
+    const first = randomUUID()
+    expect((await build(ada, p.id, 'owner', first)).status).toBe(503)
+    expect((await build(ada, p.id, 'owner', first)).status).toBe(200)
+    expect((await build(ada, p.id, 'owner')).status).toBe(200)
+    const at = await sequence(worldId)
+    for (const extra of [{ tier: 2 }, { tierAfter: 2 }, { targetTier: 2 }, { recipe: 'local-test-tier1-v1' }, { recipe: 'local-test-tier2-v1' }, { builtAfter: 250 }, { units: 150 }])
+      expect([extra, await (await build(ada, p.id, 'owner', randomUUID(), extra)).json()]).toEqual([extra, { error: 'invalid_request' }])
+    expect(await sequence(worldId)).toBe(at)
+    expect(parseRehearsalConstructionView(await (await view(ada, p.id)).json())).toMatchObject({ property: { tier: 1, built: 100, nextTierAt: 250 } })
+    // Honest presses only, one step each: three to Tier 2.
+    const steps = []
+    for (let i = 0; i < 3; i++) steps.push(parseRehearsalConstructionResponse(await (await build(ada, p.id, 'owner')).json())!)
+    expect(steps.map((r) => [r.construction.builtAfter, r.construction.tierAfter, r.construction.recipe])).toEqual([
+      [150, 1, 'local-test-tier2-v1'],
+      [200, 1, 'local-test-tier2-v1'],
+      [250, 2, 'local-test-tier2-v1'],
+    ])
+    expect(steps[2].view).toMatchObject({ property: { tier: 2, built: 250, nextTierAt: null }, standing: { kind: 'complete' } })
+    const again = parseRehearsalConstructionResponse(await (await build(ada, p.id, 'owner', steps[2].construction.actionId)).json())!
+    expect(again).toMatchObject({ fresh: false, balance: steps[2].balance, construction: steps[2].construction })
+    expect(await (await build(ada, p.id, 'owner')).json()).toEqual({ error: 'construction_complete' })
+    expect(await constructionsOf(worldId)).toHaveLength(5)
+    expect((await ledgerOf(worldId)).filter((e) => e.kind === 'construction-debit').map((e) => e.balance_after)).toEqual([250, 200, 150, 100, 50])
+    expect((await verifyCity(t.db)).violations).toEqual([])
+  })
+
+  it('Architect activity over its route: the cookie\'s player\'s own record only, read only, nothing the browser names believed; held where construction is', async () => {
+    const { base, launchAs, place, build, post, sequence } = await boot({ fixture: FILE_TIER2 })
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const bea = await launchAs(INSTALLATION_A, BEA)
+    const p1 = await place(ada, keeper(1))
+    const p2 = await place(ada, keeper(2))
+    for (let i = 0; i < 2; i++) expect((await build(ada, p1.id, 'owner')).status).toBe(200)
+    expect((await build(bea, p1.id, 'patron')).status).toBe(200)
+    // Bea controls keeper #2, which Ada founded: Bea builds there as its owner.
+    expect((await build(bea, p2.id, 'owner')).status).toBe(200)
+    const at = await sequence(ada.actor.worldId)
+
+    const res = await architectOf(base, ada)
+    expect([res.status, res.headers.get('cache-control')]).toEqual([200, expect.stringMatching(/private|no-store/)])
+    const mine = parseRehearsalArchitectView(await res.json())!
+    expect(mine).toMatchObject({ rehearsal: { kind: 'local-test-assets', verified: false }, resource: 'local-test-credit', recipe: { key: 'local-test-tier2-v1', provisional: true } })
+    expect(mine.totals).toEqual({ ownerUnits: 100, currentEraOwnerUnits: 100, earlierEraOwnerUnits: 0, patronUnits: 0, ownerActions: 2, patronActions: 0, tiersCompleted: 1, propertiesDeveloped: 1, propertiesDevelopedAsOwner: 1 })
+    expect(mine.properties.map((x) => [x.propertyId, x.founded, x.control, x.yours.ownerUnits])).toEqual([
+      [p1.id, true, 'viewer', 100],
+      [p2.id, true, 'other', 0],
+    ])
+    const hers = parseRehearsalArchitectView(await (await architectOf(base, bea)).json())!
+    expect(hers.totals).toMatchObject({ ownerUnits: 50, patronUnits: 50, propertiesDeveloped: 2, propertiesDevelopedAsOwner: 1 })
+    expect(hers.properties.map((x) => [x.propertyId, x.founded, x.control])).toEqual([
+      [p2.id, false, 'viewer'],
+      [p1.id, false, 'other'],
+    ])
+    // Nothing the browser names changes whose record it is: a query naming Bea still reads Ada's.
+    expect(parseRehearsalArchitectView(await (await architectOf(base, ada, `?discordUserId=${BEA.discordUserId}&player=${BEA.coreUserId}`)).json())).toEqual(mine)
+    // Read only, a GET only, and nothing was written by any of it.
+    expect((await post(ARCHITECT, ada, {})).status).toBe(405)
+    expect(await sequence(ada.actor.worldId)).toBe(at)
+    // No session: 401. Another world's player reads only their own (empty) record there.
+    expect((await architectOf(base, { cookie: '' })).status).toBe(401)
+    const adaB = await launchAs(INSTALLATION_B, ADA)
+    const inB = parseRehearsalArchitectView(await (await architectOf(base, adaB)).json())!
+    expect(inB).toMatchObject({ totals: { ownerUnits: 0, patronUnits: 0 }, properties: [], propertyCount: 0, credits: { available: 0 } })
+  })
+
+  it('the Architect route does not exist without the rehearsal, or outside local mode', async () => {
+    for (const options of [{ rehearsal: false }, { mode: 'staging' as const }]) {
+      const { base, launchAs } = await boot(options)
+      const cookie = options.mode ? '' : (await launchAs(INSTALLATION_A)).cookie
+      expect((await architectOf(base, { cookie })).status).toBe(404)
+    }
+  })
+
+  it('a rehearsal built without the construction store holds Architect activity too', async () => {
+    const { base, launchAs } = await boot({ construction: false })
+    expect(await (await architectOf(base, await launchAs(INSTALLATION_A))).json()).toEqual({ error: 'mutations_held' })
+  })
+
+  it('a city whose Discord server the file has no construction data for has no Architect activity either', async () => {
+    const { base, launchAs } = await boot({ fixture: { ...FILE_V4, controllers: FILE_V4.controllers.filter((c) => c.guild !== GUILD_B) } })
+    const res = await architectOf(base, await launchAs(INSTALLATION_B, ADA))
+    expect([res.status, await res.json()]).toEqual([403, { error: 'construction_not_open' }])
   })
 })
