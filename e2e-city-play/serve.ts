@@ -8,7 +8,8 @@
  *   2. as Rare City: register its configuration schema (`npm run play:register-schema:dev`);
  *   3. migrate the DISPOSABLE database named by CITY_PLAY_DATABASE_URL (a `*_test` database,
  *      stamped local), where every launch founds or opens its installation's persistent city;
- *   4. write the LOCAL PROPERTY REHEARSAL file (`rehearsal.ts`: test NFTs, traits, district rules and Proofy rule results for five made-up players);
+ *   4. write the LOCAL PROPERTY REHEARSAL file (`rehearsal.ts`: test NFTs, traits, district rules and Proofy rule results for five made-up players,
+ *      and construction test data for this run's fresh construction Discord servers, written beside it for the tests);
  *   5. start the server (`server/src/main.ts`) with PLAY_API_URL, that credential, that database and
  *      LOCAL_PROPERTY_REHEARSAL_FILE (APP_MODE=local: the server refuses the file in any other mode).
  *
@@ -16,10 +17,10 @@
  * uses fresh Discord servers, so no test meets another's city.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { operator, playUrl } from './play.ts'
-import { REHEARSAL_FILE } from './rehearsal.ts'
+import { operator, playUrl, snowflake } from './play.ts'
+import { CONSTRUCTION_GUILD_COUNT, CONSTRUCTION_GUILDS_FILE, rehearsalFile as rehearsalFileFor } from './rehearsal.ts'
 
 const repo = resolve(import.meta.dirname, '..')
 const port = process.env.CITY_PLAY_SERVER_PORT ?? '4351'
@@ -45,7 +46,14 @@ const credential = minted.body.secret as string
 const rehearsalDir = resolve(repo, 'test-artifacts')
 mkdirSync(rehearsalDir, { recursive: true })
 const rehearsalFile = resolve(rehearsalDir, 'city-play-rehearsal.json')
-writeFileSync(rehearsalFile, JSON.stringify(REHEARSAL_FILE, null, 2))
+// Fresh construction Discord servers for every run, unless a restart proof asks to keep the last run's (its cities must
+// stay construction cities across the restart).
+const constructionGuilds =
+  process.env.CITY_PLAY_KEEP_CONSTRUCTION_GUILDS === '1' && existsSync(CONSTRUCTION_GUILDS_FILE)
+    ? (JSON.parse(readFileSync(CONSTRUCTION_GUILDS_FILE, 'utf8')) as { guilds: string[] }).guilds
+    : Array.from({ length: CONSTRUCTION_GUILD_COUNT }, () => snowflake())
+writeFileSync(CONSTRUCTION_GUILDS_FILE, JSON.stringify({ guilds: constructionGuilds }, null, 2))
+writeFileSync(rehearsalFile, JSON.stringify(rehearsalFileFor(constructionGuilds), null, 2))
 
 const env = { ...process.env, APP_MODE: 'local', NODE_ENV: 'test', PORT: port, HOST: '127.0.0.1', PUBLIC_ORIGIN: `http://localhost:${pagePort}`, OWNERSHIP_PROVIDER: 'fixture', ROBINHOOD_RPC_URL: 'http://127.0.0.1:1/unused', RATE_LIMITS: 'off', TRUSTED_PROXY: 'none', DATABASE_URL: databaseUrl, PLAY_API_URL: playUrl(), PLAY_SERVICE_CREDENTIAL: credential, LOCAL_PROPERTY_REHEARSAL_FILE: rehearsalFile }
 

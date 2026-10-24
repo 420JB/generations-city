@@ -558,7 +558,7 @@ export function StoredPropertyCard({ stored, cityName }: { stored: StoredPropert
           'Its original activator is unknown: it was placed before original activators were recorded, and none was recorded for it.'
         )}
       </p>
-      <p className="muted small">Tier 0, nothing built. Permanent in {cityName}: its identity and plot never change. Who holds the NFT now is not tracked here.</p>
+      <p className="muted small">Founded as a Tier 0 foundation. Permanent in {cityName}: its identity and plot never change, whatever is built on it. Who holds the NFT now is not tracked here.</p>
     </div>
   )
 }

@@ -62,7 +62,8 @@ server/
     world/properties.ts  LOCAL ONLY: authoritative world property activation (migration 0007); only the local rehearsal uses it
     world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011; held by the database too, 0012)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
-    world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs and district rules from a file, APP_MODE=local only (see e2e-city-play/README.md)
+    world/construction.ts  LOCAL ONLY: test construction of a property (migration 0013), paid in valueless test credits; only the local rehearsal uses it
+    world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011, leases and governing configuration 0012)
     world/ids.ts       UUIDv7 world ids
@@ -1253,6 +1254,10 @@ configuration and is not affected by anything here.
   locks the four ticket tables against every other session while it runs (stop issuing first, or
   it waits up to its 10 s lock timeout and rolls back), and it must run as the owner of the ticket
   tables: it turns their two lease guards off for one statement each, inside its own transaction.
+  And `0013` (local test construction): a world's city may now advance by a construction too, and
+  holds state version 3 once it has one. An older build reads such a city as one it cannot read
+  (`world_unavailable`, nothing drawn), and its activation in such a city is refused (it would write
+  state version 2); a city with no construction is unchanged for it. 0013 changes no row.
 
 ## Tests
 

@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import { PLAY_ENVIRONMENTS_FOR_MODE, type AppMode } from '../config'
 import {
+  CONSTRUCTED_WORLD_CITY_STATE_VERSION,
+  CONSTRUCTION_RECIPES,
+  constructionStep,
+  constructionTier,
   cityMode,
   establishedCollections,
   geometryOf,
@@ -14,7 +18,8 @@ import {
   parseWorldGeometry,
   POPULATED_WORLD_CITY_STATE_VERSION,
   PROPERTY_ACTIVATED_EVENT,
-  replayPropertyActivations,
+  PROPERTY_CONSTRUCTED_EVENT,
+  replayWorldCity,
   sameFoundation,
   sameGeometry,
   SUPPORTED_PLAY_SCHEMA_VERSIONS,
@@ -24,13 +29,13 @@ import {
   worldCityStateText,
   worldProperty,
   type FoundationCollection,
-  type RecordedActivation,
+  type RecordedCityChange,
   type World,
   type WorldFoundation,
   type WorldGeometry,
 } from '../engine'
 import { canonicalJson } from '../play/canonical'
-import { parityProblem, worldCityId, type PropertyRow } from './store'
+import { parityProblem, worldCityId, type ConstructionParity, type PropertyRow } from './store'
 import { verifyDistrictTickets, type TicketVerifyReport } from './verifyTickets'
 
 /**
@@ -42,22 +47,31 @@ import { verifyDistrictTickets, type TicketVerifyReport } from './verifyTickets'
  *   binding     exactly one Play binding, for a Play environment this database may serve;
  *   city        its city is `world:<id>`, of the kind 0005 founds a world on in this environment
  *               (canonical in production, a rehearsal elsewhere), and holds no Rare Friends records;
- *   state       a state this build writes: version 1 (founded empty) at sequence 1, or version 2 (with
- *               properties) after it. Anything else is a state no code here wrote, and is reported,
- *               never guessed at;
+ *   state       a state this build writes: version 1 (founded empty) at sequence 1, version 2 (with
+ *               properties) after it, or (0013) version 3 once anything is built. Anything else is a
+ *               state no code here wrote, and is reported, never guessed at;
  *   events      exactly one per sequence; the first is `city.initialized` and records the city as
  *               its row is (origin, canonical, rehearsal), the founding state version, the environment
  *               the database is stamped for, the world, its binding, its founding configuration
  *               (version, hash and schema version, as the stored copy has them) and its foundation;
- *               every later one is `world.property.activated`;
+ *               every later one is `world.property.activated` or (0013) `world.property.constructed`;
  *   properties  (migration 0007) one `world_properties` row per later sequence, each exactly a building
  *               of the state; its id the V2 property id of its NFT in this world; its NFT from a
  *               collection of the version that governed the world when it was activated, under that
  *               key; its district's geometry the frozen one; its event exactly the engine's
  *               transition; (0008) its original activator recorded, unless it was written before
- *               0008. REPLAY: every activation, in order, from the empty founded city, through
- *               the engine's own proposal on its governing version, must be valid and rebuild the
- *               stored state byte for byte (so plots, ward openings and sequences all agree);
+ *               0008. REPLAY: every activation and (0013) every construction, in sequence order, from
+ *               the empty founded city, through the engine's own proposals (an activation's on its
+ *               governing version, a construction's by its recipe), must be valid and rebuild the
+ *               stored state byte for byte (so plots, ward openings, development and sequences all
+ *               agree), and each event must be exactly the engine's;
+ *   construction (migration 0013) each construction names a property of its world, a recipe this build
+ *               has and its exact step, an owner in the control era current then whose controller is
+ *               the owner, a patron in that era under someone else or in none, and is paid by exactly
+ *               one debit of its contributor; control eras are numbered 1, 2, 3 ... per property, each a
+ *               new controller, each observed by a construction of that property in that era; every
+ *               test credit account is numbered 1, 2, 3 ..., each entry leaving the balance before it
+ *               plus its delta, never below zero, with at most 20 grants;
  *   freeze      (migration 0008) present exactly when the world has a property: at its first
  *               property's sequence, adoption and version, holding exactly that version's geometry
  *               (for a freeze 0008 recorded, the founding geometry);
@@ -89,6 +103,11 @@ export interface WorldVerifyReport {
   geometryFrozenAt: number | null
   /** Its district ticket rotation (0010), or null if nobody has entered it through a build that issues tickets. */
   districtTickets: TicketVerifyReport | null
+  /** Construction actions (0013), the properties they developed, control eras, and test credit accounts. */
+  constructions: number
+  developedProperties: number
+  controlEras: number
+  testCreditAccounts: number
 }
 
 export type AddViolation = (rule: string, detail: string) => void
@@ -161,6 +180,48 @@ interface VersionRow {
   judged_by: string
 }
 
+interface ConstructionRow {
+  world_id: string
+  city_id: string
+  sequence: string
+  property_id: string
+  action_id: string
+  recipe: string
+  role: string
+  contributor_core_user_id: string
+  contributor_discord_user_id: string
+  control_era_seq: number | null
+  resource: string
+  units: number
+  built_before: number
+  built_after: number
+  tier_before: number
+  tier_after: number
+}
+
+interface EraRow {
+  world_id: string
+  property_id: string
+  era_seq: number
+  controller_discord_user_id: string
+  source: string
+  city_id: string
+  observed_at_sequence: string
+}
+
+interface CreditRow {
+  world_id: string
+  account_discord_user_id: string
+  account_core_user_id: string
+  entry_seq: number
+  kind: string
+  delta: number
+  balance_after: number
+  grant_key: string | null
+  city_id: string | null
+  construction_sequence: string | null
+}
+
 const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -206,6 +267,27 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
     ? (await client.query<FreezeRow>('SELECT world_id, city_id, frozen_at_sequence, adoption_seq, config_version, layout_key, layout_geometry_fingerprint, districts, frozen_by FROM world_geometry_freezes ORDER BY world_id')).rows
     : []
   const geometries = policies ? (await client.query<GeometryRow>('SELECT world_id, version, layout_key, layout_geometry_fingerprint, districts FROM world_config_geometries ORDER BY world_id, version')).rows : []
+  // Before 0013 there is no construction, control era or test credit.
+  const building = await present('world_property_constructions')
+  const constructions = building
+    ? (
+        await client.query<ConstructionRow>(
+          `SELECT world_id, city_id, sequence, property_id, action_id, recipe, role, contributor_core_user_id, contributor_discord_user_id, control_era_seq, resource, units, built_before, built_after, tier_before, tier_after
+             FROM world_property_constructions ORDER BY world_id, sequence`,
+        )
+      ).rows
+    : []
+  const eras = building
+    ? (await client.query<EraRow>('SELECT world_id, property_id, era_seq, controller_discord_user_id, source, city_id, observed_at_sequence FROM world_property_control_eras ORDER BY world_id, property_id, era_seq')).rows
+    : []
+  const credits = building
+    ? (
+        await client.query<CreditRow>(
+          `SELECT world_id, account_discord_user_id, account_core_user_id, entry_seq, kind, delta, balance_after, grant_key, city_id, construction_sequence
+             FROM world_test_credit_entries ORDER BY world_id, account_discord_user_id, account_core_user_id, entry_seq`,
+        )
+      ).rows
+    : []
   // When 0008 was applied: a property written since must name its original activator.
   const policiesSince = policies ? ((await client.query<{ applied_at: Date }>('SELECT applied_at FROM schema_migrations WHERE version = 8')).rows[0]?.applied_at ?? null) : null
   const legacy = (
@@ -232,6 +314,10 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       propertiesWithoutActivator: 0,
       geometryFrozenAt: null,
       districtTickets: null,
+      constructions: 0,
+      developedProperties: 0,
+      controlEras: 0,
+      testCreditAccounts: 0,
     }
     reports.push(report)
 
@@ -254,16 +340,22 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
     const sequence = Number(w.sequence)
     report.sequence = sequence
     const state = parseWorldCityState(w.state)
-    const expectedVersion = sequence === 1 ? WORLD_CITY_STATE_VERSION : POPULATED_WORLD_CITY_STATE_VERSION
+    const built = constructions.filter((c) => c.world_id === w.id)
+    report.constructions = built.length
+    const expectedVersion = sequence === 1 ? WORLD_CITY_STATE_VERSION : built.length > 0 ? CONSTRUCTED_WORLD_CITY_STATE_VERSION : POPULATED_WORLD_CITY_STATE_VERSION
     if (!state || state.version !== expectedVersion || w.state_version !== expectedVersion)
-      add('state', `${label} holds state version ${w.state_version} at sequence ${sequence}; this build writes version ${WORLD_CITY_STATE_VERSION} as founded and version ${POPULATED_WORLD_CITY_STATE_VERSION} with properties`)
+      add(
+        'state',
+        `${label} holds state version ${w.state_version} at sequence ${sequence}; this build writes version ${WORLD_CITY_STATE_VERSION} as founded, version ${POPULATED_WORLD_CITY_STATE_VERSION} with properties and version ${CONSTRUCTED_WORLD_CITY_STATE_VERSION} once anything is built`,
+      )
     const records = legacy.find((l) => l.city_id === w.city_id)
     if (records && (records.intents > 0 || records.properties > 0)) add('legacy-records', `${label} holds Rare Friends activation records (${records.intents} intents, ${records.properties} properties)`)
 
     // Events and the founding record.
     const own = events.filter((e) => e.city_id === w.city_id)
     if (own.length !== sequence || own.some((e, i) => Number(e.sequence) !== i + 1)) add('events', `${label} is at sequence ${sequence} but has events ${own.map((e) => e.sequence).join(',') || 'none'}`)
-    for (const e of own.slice(1)) if (e.type !== PROPERTY_ACTIVATED_EVENT) add('events', `${label}'s event ${e.sequence} is ${e.type}; a world's city changes only by activating a property`)
+    for (const e of own.slice(1))
+      if (e.type !== PROPERTY_ACTIVATED_EVENT && e.type !== PROPERTY_CONSTRUCTED_EVENT) add('events', `${label}'s event ${e.sequence} is ${e.type}; a world's city changes only by activating a property or building on one`)
     const founding = own[0]?.type === 'city.initialized' ? own[0].payload?.world : undefined
     if (own.filter((e) => e.type === 'city.initialized').length !== 1 || !isRecord(founding)) {
       add('founding', `${label} has no city.initialized event recording the world`)
@@ -384,7 +476,11 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
     const mine2 = properties.filter((p) => p.world_id === w.id)
     report.properties = mine2.length
     if (state && state.version === expectedVersion) {
-      const mismatch = parityProblem(state, sequence, mine2)
+      const latest = new Map<string, ConstructionRow>()
+      for (const c of built) latest.set(c.property_id, c)
+      const parity: ConstructionParity = { count: built.length, latest: [...latest.values()].map((c) => ({ property_id: c.property_id, sequence: c.sequence, built_after: c.built_after, tier_after: c.tier_after })) }
+      report.developedProperties = latest.size
+      const mismatch = parityProblem(state, sequence, mine2, parity)
       if (mismatch) add('properties', `${label}'s city and its property records disagree: ${mismatch}`)
       const governingWorld = report.governingConfigVersion === null ? undefined : acceptedWorlds.get(report.governingConfigVersion)
       if (governingWorld) for (const p of worldCityProblems(governingWorld, state)) add('state', `${label}: ${p}`)
@@ -402,7 +498,7 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
           add('freeze', `${label}'s geometry freeze says it was ${frozenRow.frozen_by}, which it cannot have been`)
       }
     }
-    const steps: RecordedActivation[] = []
+    const steps: RecordedCityChange[] = []
     let lastAdoption = 0
     for (const p of mine2) {
       const pLabel = `${label} property ${p.id}`
@@ -435,24 +531,88 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
         if (p.activator_core_user_id !== p.activator_discord_user_id) add('activator', `${pLabel} records half an original activator`)
         else if (policiesSince && p.activated_at >= policiesSince) add('activator', `${pLabel} was activated after migration 0008 but records no original activator`)
       }
-      steps.push({ world, request: { asset, plotId: p.plot_id }, sequence: Number(p.activated_sequence) })
+      steps.push({ kind: 'activation', world, request: { asset, plotId: p.plot_id }, sequence: Number(p.activated_sequence) })
     }
-    if (steps.length === mine2.length && mine2.length > 0) {
-      const replay = replayPropertyActivations(steps)
-      if (!replay.ok) add('replay', `${label} cannot be rebuilt from its properties: ${replay.detail}`)
+    // Construction (0013): each record's own rules; its place in the city is the replay's.
+    const ownEras = eras.filter((e) => e.world_id === w.id)
+    report.controlEras = ownEras.length
+    let replayable = steps.length === mine2.length
+    for (const c of built) {
+      const cLabel = `${label} construction ${c.sequence}`
+      const property = mine2.find((p) => p.id === c.property_id)
+      const recipe = Object.hasOwn(CONSTRUCTION_RECIPES, c.recipe) ? CONSTRUCTION_RECIPES[c.recipe] : null
+      if (!property) add('construction', `${cLabel} names property ${c.property_id}, which is not a property of this world`)
+      if (c.city_id !== w.city_id) add('construction', `${cLabel} names city ${c.city_id}`)
+      if (!recipe) add('construction', `${cLabel} names recipe ${c.recipe}, which this build does not have`)
+      else if (c.units !== constructionStep(recipe, c.built_before) || c.built_after !== c.built_before + c.units || c.tier_before !== constructionTier(recipe, c.built_before) || c.tier_after !== constructionTier(recipe, c.built_after))
+        add('construction', `${cLabel} is not its recipe's step from ${c.built_before} units`)
+      if (c.resource !== 'local-test-credit') add('construction', `${cLabel} is paid in ${c.resource}`)
+      // The era current when it was built: the latest observed at or before its sequence.
+      const current = ownEras.filter((e) => e.property_id === c.property_id && Number(e.observed_at_sequence) <= Number(c.sequence)).at(-1) ?? null
+      if (c.role === 'owner' ? c.control_era_seq === null || c.control_era_seq !== current?.era_seq || current.controller_discord_user_id !== c.contributor_discord_user_id : c.role !== 'patron')
+        add('construction', `${cLabel} is an ${c.role} construction outside the era its controller held`)
+      if (c.role === 'patron' && c.control_era_seq !== null && (c.control_era_seq !== current?.era_seq || current.controller_discord_user_id === c.contributor_discord_user_id))
+        add('construction', `${cLabel} is a patron construction in an era it was not built in, or by that era's controller`)
+      const paid = credits.filter((t) => t.city_id === c.city_id && t.construction_sequence === c.sequence)
+      if (paid.length !== 1 || paid[0].world_id !== w.id || paid[0].kind !== 'construction-debit' || paid[0].delta !== -c.units || paid[0].account_discord_user_id !== c.contributor_discord_user_id || paid[0].account_core_user_id !== c.contributor_core_user_id)
+        add('construction', `${cLabel} is not paid by exactly one debit of its contributor, by its units`)
+      if (!property || !recipe) replayable = false
+      else steps.push({ kind: 'construction', buildingId: property.building_id, recipe, sequence: Number(c.sequence) })
+    }
+    const erasByProperty = new Map<string, EraRow[]>()
+    for (const e of ownEras) erasByProperty.set(e.property_id, [...(erasByProperty.get(e.property_id) ?? []), e])
+    for (const [propertyId, list] of erasByProperty) {
+      list.forEach((e, i) => {
+        const eLabel = `${label} property ${propertyId} control era ${e.era_seq}`
+        if (e.era_seq !== i + 1) add('construction', `${label} property ${propertyId}'s control eras are not numbered 1, 2, 3 ...`)
+        if (i > 0 && e.controller_discord_user_id === list[i - 1].controller_discord_user_id) add('construction', `${eLabel} names the controller of the era before it`)
+        if (e.source !== 'local-fixture' || e.city_id !== w.city_id) add('construction', `${eLabel} has another source or city than this build records`)
+        if (!built.some((c) => c.property_id === propertyId && c.sequence === e.observed_at_sequence && c.control_era_seq === e.era_seq)) add('construction', `${eLabel} was not observed by a construction of its property in it`)
+      })
+    }
+    const accounts = new Map<string, CreditRow[]>()
+    for (const t of credits.filter((x) => x.world_id === w.id)) accounts.set(`${t.account_discord_user_id}/${t.account_core_user_id}`, [...(accounts.get(`${t.account_discord_user_id}/${t.account_core_user_id}`) ?? []), t])
+    report.testCreditAccounts = accounts.size
+    for (const [account, entries] of accounts) {
+      let balance = 0
+      entries.forEach((t, i) => {
+        const tLabel = `${label} test credit account ${account} entry ${t.entry_seq}`
+        if (t.entry_seq !== i + 1) add('credits', `${label} test credit account ${account} is not numbered 1, 2, 3 ...`)
+        balance += t.delta
+        if (t.balance_after !== balance || balance < 0) add('credits', `${tLabel} leaves ${t.balance_after}; its entries add up to ${balance}`)
+        if (t.kind === 'construction-debit' && !built.some((c) => c.city_id === t.city_id && c.sequence === t.construction_sequence)) add('credits', `${tLabel} pays for no construction of this world`)
+        if (t.kind !== 'construction-debit' && t.kind !== 'fixture-grant') add('credits', `${tLabel} is a ${t.kind}`)
+      })
+      if (entries.filter((t) => t.kind === 'fixture-grant').length > 20) add('credits', `${label} test credit account ${account} holds more than 20 grants`)
+    }
+    if (replayable && steps.length > 0) {
+      steps.sort((a, b) => a.sequence - b.sequence)
+      const replay = replayWorldCity(steps)
+      if (!replay.ok) add('replay', `${label} cannot be rebuilt from its properties and constructions: ${replay.detail}`)
       else {
-        if (!state || worldCityStateText(replay.state) !== JSON.stringify(w.state)) add('replay', `${label}'s stored state is not the state its properties rebuild`)
-        replay.transitions.forEach((t, i) => {
+        if (!state || worldCityStateText(replay.state) !== JSON.stringify(w.state)) add('replay', `${label}'s stored state is not the state its properties and constructions rebuild`)
+        for (const change of replay.changes) {
+          const t = change.transition
           const event = own.find((e) => Number(e.sequence) === t.to)
-          const expected = { ...t.event, configVersion: mine2[i].activated_config_version, adoption: mine2[i].activated_adoption_seq }
-          if (!event || JSON.stringify(sortKeys(event.payload)) !== JSON.stringify(sortKeys(expected))) add('replay', `${label}'s event ${t.to} does not record the activation of property ${t.property.propertyId} as the engine makes it`)
-          if (t.districtGeometryFingerprint !== mine2[i].district_geometry_fingerprint) add('replay', `${label} property ${t.property.propertyId} records another district geometry than the engine's`)
-        })
+          if (change.kind === 'activation') {
+            const p = mine2.find((x) => Number(x.activated_sequence) === t.to)!
+            const expected = { ...change.transition.event, configVersion: p.activated_config_version, adoption: p.activated_adoption_seq }
+            if (!event || JSON.stringify(sortKeys(event.payload)) !== JSON.stringify(sortKeys(expected))) add('replay', `${label}'s event ${t.to} does not record the activation of property ${change.transition.property.propertyId} as the engine makes it`)
+            if (change.transition.districtGeometryFingerprint !== p.district_geometry_fingerprint) add('replay', `${label} property ${change.transition.property.propertyId} records another district geometry than the engine's`)
+          } else {
+            const c = built.find((x) => Number(x.sequence) === t.to)!
+            const expected = { ...change.transition.event, action: c.action_id, role: c.role }
+            if (!event || JSON.stringify(sortKeys(event.payload)) !== JSON.stringify(sortKeys(expected))) add('replay', `${label}'s event ${t.to} does not record the construction of property ${change.transition.propertyId} as the engine makes it`)
+            if (change.transition.units !== c.units || change.transition.builtAfter !== c.built_after || change.transition.tierAfter !== c.tier_after) add('replay', `${label} construction ${c.sequence} records another step than the engine's`)
+          }
+        }
       }
     }
   }
 
   for (const p of properties) if (!worlds.some((w) => w.id === p.world_id)) add('properties', `property ${p.id} names world ${p.world_id}, which does not exist`)
+  for (const c of constructions) if (!worlds.some((w) => w.id === c.world_id)) add('construction', `construction ${c.city_id}/${c.sequence} names world ${c.world_id}, which does not exist`)
+  for (const t of credits) if (!worlds.some((w) => w.id === t.world_id)) add('credits', `test credit account ${t.account_discord_user_id} names world ${t.world_id}, which does not exist`)
 
   // District tickets (0010): the rotation, its slots and tickets.
   const tickets = await verifyDistrictTickets(client, add)

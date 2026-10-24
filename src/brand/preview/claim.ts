@@ -138,6 +138,16 @@ const REHEARSAL_KINDS: Record<RehearsalErrorCode | 'invalid_request', ProblemKin
   district_rule_ambiguous: 'config',
   district_rule_ref_too_long: 'config',
   ticket_asset_mismatch: 'renew',
+  // Construction (P1-C2-E3A): only a lost answer is worth pressing again; the rest change only with the city or the local file.
+  unknown_property: 'refused',
+  construction_not_open: 'refused',
+  construction_complete: 'refused',
+  not_current_controller: 'refused',
+  control_unverified: 'refused',
+  controller_builds_as_owner: 'renew',
+  insufficient_test_credits: 'refused',
+  action_conflict: 'retry',
+  construction_unconfirmed: 'retry',
 }
 
 /** Play session refusals a claim can meet. Anything else (the session ended, a stale tab) leaves the city entirely. */

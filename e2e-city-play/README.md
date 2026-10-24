@@ -427,6 +427,68 @@ field that Play stores and serves:
 Until Play authorizes that change, no client-side or Rare City-only field stands in for it, and a
 collection is never closed by removing it from a configuration.
 
+**Local test construction (P1-C2-E3A, migration 0013): LOCAL ONLY, VALUELESS TEST CREDITS ONLY.**
+The first thing a player can build into a property, through the property's own panel (no separate
+page), against the real session, world and stores (`server/src/world/construction.ts`):
+
+- **What one action is.** One fixed step of the one recipe the engine has, `local-test-tier1-v1`
+  (`src/world/construction.ts`): 50 units an action, Tier 1 at 100 lifetime units, nothing above Tier
+  1 (`construction_complete`). These are PROVISIONAL LOCAL TUNING, not a price or a tier policy. The
+  page sends `POST /v1/play/rehearsal/constructions` with exactly `{ sessionRef, worldId,
+  discordUserId, propertyId, role, actionId }`: never an amount, a cost, a tier or a state. The server
+  computes the step under the city lock and answers what committed; `GET
+  /v1/play/rehearsal/construction?property=<id>` reads a property's construction for the session's
+  player (tier, progress, their test credits, investment split, history naming nobody else).
+- **One transaction.** The city advances exactly one sequence (state version 3: the building's tier,
+  lifetime units and latest construction sequence) with its `world.property.constructed` event, a new
+  control era if one began, the construction record and the debit (with any file grants not recorded
+  yet), or nothing. Property id, NFT, district, plot, original activator and the activation event
+  never change.
+- **Test credits.** Rehearsal file version 4 (`rare-city/local-property-rehearsal-v4`) adds
+  `"testCredits": [{ "id", "guild", "discordUserId", "units" }]` (1 to 1000 units, at most 20 per
+  player and server). A grant is recorded once, by its id, inside the first construction of that
+  player in that server's city; nothing else grants credits, and no route does. One append-only
+  running balance per player and world (`world_test_credit_entries`), never below zero; an action
+  costs exactly its units. Not RF, Proofy Points or any currency.
+- **Who builds as owner.** Founding a property does NOT make anyone its owner here. File version 4
+  also adds `"controllers": [{ "guild", "asset", "discordUserId" }]`: who controls an NFT NOW in one
+  Discord server's city, as TEST DATA (one per NFT and server; never shown as verified ownership).
+  `role: "owner"` needs exactly that player (`not_current_controller`, or `control_unverified` when
+  nobody is named); anyone else builds as `patron` (the controller cannot: `controller_builds_as_owner`).
+  A construction is open only in a server the file names in either list (`construction_not_open`
+  elsewhere, read and write: those cities look exactly as before).
+- **Eras and attribution.** The first action to see a controller records the property's next control
+  era (`world_property_control_eras`). Investment is split into the current owner's (owner units of
+  the latest era, while the file still names its controller), previous owners' (every other owner
+  unit) and patrons' (every patron unit); a player's own builder progression counts only their owner
+  units. Changing a controller in the file and restarting simulates a transfer; no transfer mechanism
+  exists.
+- **Idempotency and concurrency.** `actionId` is a fresh UUID per press, unique per world. The same
+  press again (a retry after a lost answer) answers the construction it made, `fresh: false`, and
+  costs nothing; any other use of the id is refused (`action_conflict`). Every construction of a world
+  queues on its city row, so concurrent actions never overspend.
+- **An answer that does not say what happened (independent audit M1).** A construction that committed
+  is answered as built even when the property cannot be read again just after (`view: null`; the page
+  reads it itself). Any other failure nobody refused is `503 construction_unconfirmed`: it may or may
+  not have been written. The page keeps a press (its world, player, property, role and id, in this
+  browser's storage) until the server answers it with a construction or a refusal decided after no
+  construction was found under the id; until then it says it could not confirm the build (never that
+  nothing was built), its one action asks again with that same press, after a reload or relaunch too,
+  and no other property of that player in that city gets a new press.
+- **No civic award (independent audit M2).** Local test construction is drawn at its tier, but the
+  Crown, the Capital and monuments are not computed from it: in a persistent city they stay vacant,
+  and the city note says so. Whether real construction will ever count toward them is not decided.
+- **Database defense.** Migration 0013 refuses every construction, era and ledger entry outside a
+  local database, any change or removal of one, a step that is not the recipe's, a contributor who is
+  not the acting session's player, an owner outside the current era, an unpaid or mis-paid
+  construction, a balance that is not its running sum or goes below zero, and a city advanced by a
+  construction event with no construction behind it. `city:verify` replays activations and
+  constructions together and checks eras and ledgers.
+
+Not decided, on purpose: any real currency or price, tiers above 1, any other recipe, verified NFT
+control (Proofy Core), real transfers, patron rewards and recognition, Architect levels, and whether
+or how construction opens outside the local rehearsal.
+
 Needs a verified Proofy Core / Play contract:
 
 - **F3. Game status.** Play's installation answer does not include the game's status. While

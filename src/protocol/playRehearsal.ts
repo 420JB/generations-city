@@ -43,6 +43,22 @@ import type { PlayErrorCode } from './play'
  * still have exactly the governing configuration active; otherwise `config_superseded` (409) and
  * nothing is written. The same player repeating it gets the same
  * property back (`fresh: false`); anyone else is refused.
+ *
+ * CONSTRUCTION (P1-C2-E3A). LOCAL TEST CONSTRUCTION ONLY: one fixed step of a provisional local
+ * recipe (Tier 0 to Tier 1), paid in valueless `local-test-credit` units the local file grants.
+ *
+ *   `GET  /v1/play/rehearsal/construction?property=<id>`  a property's construction as this session's
+ *                                          player may see it: tier, progress, the viewer's test credits,
+ *                                          investment by the current owner, previous owners and patrons,
+ *                                          history (no other player is named), and what the viewer may do
+ *   `POST /v1/play/rehearsal/constructions`  `{ sessionRef, worldId, discordUserId, propertyId, role, actionId }`
+ *
+ * The page names a property, a role (`owner` only when the local file names this player as the NFT's
+ * current controller; `patron` otherwise) and a fresh UUID per press. Never an amount, a price, a
+ * tier or a state: the server computes the step and its cost, and answers what committed. The same
+ * press again answers the same construction (`fresh: false`) and costs nothing more. Founding a
+ * property does not make its founder its owner here, and the local file's controller is TEST DATA,
+ * never verified NFT ownership.
  */
 export const PLAY_REHEARSAL_ASSETS_ENDPOINT = '/v1/play/rehearsal/assets'
 export const PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT = '/v1/play/rehearsal/activations'
@@ -50,6 +66,8 @@ export const PLAY_REHEARSAL_TICKET_ENDPOINT = '/v1/play/rehearsal/ticket'
 export const PLAY_REHEARSAL_ENTRY_ENDPOINT = '/v1/play/rehearsal/entry'
 export const PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT = '/v1/play/rehearsal/assignment'
 export const PLAY_REHEARSAL_RELEASE_ENDPOINT = '/v1/play/rehearsal/release'
+export const PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT = '/v1/play/rehearsal/construction'
+export const PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT = '/v1/play/rehearsal/constructions'
 
 /** How every rehearsal answer marks itself: test data, never verified holdings. */
 export interface RehearsalMark {
@@ -170,6 +188,71 @@ export interface RehearsalActivationResponse {
   consumedTicket: string | null
 }
 
+/** Who builds: the NFT's current controller (as the local file names them), or anyone else. */
+export type ConstructionRole = 'owner' | 'patron'
+
+/** `POST /v1/play/rehearsal/constructions` request. Exactly these keys. */
+export interface RehearsalConstructionRequest extends RehearsalActorRequest {
+  propertyId: string
+  role: ConstructionRole
+  /** A fresh UUID per press: the same press again is the same construction. */
+  actionId: string
+}
+
+/** What a viewer may do on a property now, as the server judged it when it answered. */
+export type ConstructionStanding = { kind: 'ready' | 'insufficient'; role: ConstructionRole; units: number } | { kind: 'complete' }
+
+/** `GET /v1/play/rehearsal/construction`: a property's construction as this session's player may see it. Every amount is local test units. */
+export interface RehearsalConstructionView {
+  rehearsal: RehearsalMark
+  resource: 'local-test-credit'
+  /** The recipe that computes every step. Provisional local tuning, not a price or a tier policy. */
+  recipe: { key: string; unitsPerAction: number; tierThresholds: number[]; provisional: true }
+  property: { propertyId: string; buildingId: string; tier: number; built: number; nextTierAt: number | null; maxTier: number }
+  /** Whom the local file names as the NFT's current controller: this player, someone else, or nobody. Never verified. */
+  control: 'viewer' | 'other' | 'unknown'
+  standing: ConstructionStanding
+  credits: { available: number; recorded: number; pending: number }
+  investment: { currentOwner: number; previousOwners: number; community: number; total: number }
+  /** What this player has built in this city, as an owner (their own progression) and as a patron. */
+  viewer: { ownerUnits: number; patronUnits: number }
+  /** Newest first. `by` says only whether it was this player. */
+  history: { sequence: number; role: ConstructionRole; units: number; tierAfter: number; by: 'viewer' | 'other'; era: number | null; at: string }[]
+  historyCount: number
+}
+
+/** A construction as the route answers with it. No session and no player: provenance stays on the server. */
+export interface RehearsalConstruction {
+  sequence: number
+  propertyId: string
+  actionId: string
+  role: ConstructionRole
+  era: number | null
+  units: number
+  builtBefore: number
+  builtAfter: number
+  tierBefore: number
+  tierAfter: number
+  constructedAt: string
+}
+
+/** `POST /v1/play/rehearsal/constructions`. `fresh` is false when this press had already built: nothing more was spent. */
+export interface RehearsalConstructionResponse {
+  rehearsal: RehearsalMark
+  resource: 'local-test-credit'
+  fresh: boolean
+  /** The city's sequence after this call. */
+  sequence: number
+  /** The player's recorded test credit balance after this call. */
+  balance: number
+  construction: RehearsalConstruction
+  /**
+   * The property's construction as read after this call, or null when that read failed after the construction was
+   * written: the construction above is still exactly what was built, and the page reads the view again itself.
+   */
+  view: RehearsalConstructionView | null
+}
+
 /** Refusals of the rehearsal routes, besides the play session's own (`PlayErrorCode`). */
 export type RehearsalErrorCode =
   /** The NFT is not one the local rehearsal file lists for this player. */
@@ -211,6 +294,27 @@ export type RehearsalErrorCode =
   | 'district_rule_ref_too_long'
   /** The rule ticket was issued for another NFT. */
   | 'ticket_asset_mismatch'
+  /** Not a property of this city. */
+  | 'unknown_property'
+  /** Construction is not open in this city: this local server's file has no construction test data for its Discord server. */
+  | 'construction_not_open'
+  /** The property stands at the highest tier the local test recipe builds. */
+  | 'construction_complete'
+  /** An owner construction, and the local file names someone else as the NFT's current controller. */
+  | 'not_current_controller'
+  /** An owner construction, and the local file names nobody as the NFT's current controller. */
+  | 'control_unverified'
+  /** A patron construction by the player the local file names as the NFT's current controller. */
+  | 'controller_builds_as_owner'
+  /** The player's local test credits do not cover the step. Nothing was built or spent. */
+  | 'insufficient_test_credits'
+  /** The press's id already names another construction. */
+  | 'action_conflict'
+  /**
+   * The construction request failed in a way that does not say whether it was written (a lost database answer, a
+   * failed commit). Ask again with the same press id: it returns that construction if it was built, and builds it once if not.
+   */
+  | 'construction_unconfirmed'
 
 export type RehearsalRouteErrorCode = RehearsalErrorCode | PlayErrorCode
 
@@ -304,5 +408,69 @@ export function parseRehearsalActivationResponse(body: unknown): RehearsalActiva
       activatedAt: p.activatedAt,
     },
     consumedTicket: body.consumedTicket,
+  }
+}
+
+const count = (v: unknown, max = 1_000_000_000): v is number => nonNegInt(v) && v <= max
+const isRole = (v: unknown): v is ConstructionRole => v === 'owner' || v === 'patron'
+const exact = (v: Record<string, unknown>, keys: string) => Object.keys(v).sort().join() === keys
+
+/** A construction view, exactly, or null. */
+export function parseRehearsalConstructionView(body: unknown): RehearsalConstructionView | null {
+  if (!isRecord(body) || !parseMark(body.rehearsal) || body.resource !== 'local-test-credit') return null
+  if (!exact(body, 'control,credits,history,historyCount,investment,property,recipe,rehearsal,resource,standing,viewer')) return null
+  const { recipe: r, property: p, standing: st, credits: c, investment: i, viewer: v } = body
+  if (!isRecord(r) || typeof r.key !== 'string' || !KEY.test(r.key) || !count(r.unitsPerAction) || r.unitsPerAction < 1 || r.provisional !== true) return null
+  if (!Array.isArray(r.tierThresholds) || r.tierThresholds.length === 0 || r.tierThresholds.length > 64 || !r.tierThresholds.every((x) => count(x) && x > 0)) return null
+  if (!isRecord(p) || typeof p.propertyId !== 'string' || !UUID.test(p.propertyId) || p.buildingId !== `b-${p.propertyId}` || !count(p.tier, 64) || !count(p.built) || !count(p.maxTier, 64)) return null
+  if (!(p.nextTierAt === null || (count(p.nextTierAt) && p.nextTierAt > p.built))) return null
+  if (body.control !== 'viewer' && body.control !== 'other' && body.control !== 'unknown') return null
+  if (!isRecord(st)) return null
+  let standing: ConstructionStanding
+  if (st.kind === 'complete' && exact(st, 'kind')) standing = { kind: 'complete' }
+  else if ((st.kind === 'ready' || st.kind === 'insufficient') && isRole(st.role) && count(st.units) && st.units >= 1) standing = { kind: st.kind, role: st.role, units: st.units }
+  else return null
+  if (!isRecord(c) || !count(c.available) || !count(c.recorded) || !count(c.pending) || c.available !== c.recorded + c.pending) return null
+  if (!isRecord(i) || !count(i.currentOwner) || !count(i.previousOwners) || !count(i.community) || !count(i.total) || i.currentOwner + i.previousOwners + i.community !== i.total || i.total !== p.built) return null
+  if (!isRecord(v) || !count(v.ownerUnits) || !count(v.patronUnits)) return null
+  if (!Array.isArray(body.history) || body.history.length > 100 || !count(body.historyCount) || body.historyCount < body.history.length) return null
+  const history: RehearsalConstructionView['history'] = []
+  for (const h of body.history) {
+    if (!isRecord(h) || !count(h.sequence) || h.sequence < 3 || !isRole(h.role) || !count(h.units) || h.units < 1 || !count(h.tierAfter, 64) || (h.by !== 'viewer' && h.by !== 'other')) return null
+    if (!(h.era === null || (count(h.era) && h.era >= 1)) || !isInstant(h.at)) return null
+    history.push({ sequence: h.sequence, role: h.role, units: h.units, tierAfter: h.tierAfter, by: h.by, era: h.era, at: h.at })
+  }
+  return {
+    rehearsal: REHEARSAL_MARK,
+    resource: 'local-test-credit',
+    recipe: { key: r.key, unitsPerAction: r.unitsPerAction, tierThresholds: r.tierThresholds as number[], provisional: true },
+    property: { propertyId: p.propertyId, buildingId: p.buildingId, tier: p.tier, built: p.built, nextTierAt: p.nextTierAt, maxTier: p.maxTier },
+    control: body.control,
+    standing,
+    credits: { available: c.available, recorded: c.recorded, pending: c.pending },
+    investment: { currentOwner: i.currentOwner, previousOwners: i.previousOwners, community: i.community, total: i.total },
+    viewer: { ownerUnits: v.ownerUnits, patronUnits: v.patronUnits },
+    history,
+    historyCount: body.historyCount,
+  }
+}
+
+/** A construction answer, exactly, or null. */
+export function parseRehearsalConstructionResponse(body: unknown): RehearsalConstructionResponse | null {
+  if (!isRecord(body) || !parseMark(body.rehearsal) || body.resource !== 'local-test-credit' || typeof body.fresh !== 'boolean' || !count(body.sequence) || !count(body.balance)) return null
+  const view = body.view === null ? null : parseRehearsalConstructionView(body.view)
+  const c = body.construction
+  if (body.view !== null && !view) return null
+  if (!isRecord(c) || typeof c.propertyId !== 'string' || !UUID.test(c.propertyId) || (view && c.propertyId !== view.property.propertyId) || typeof c.actionId !== 'string' || !UUID.test(c.actionId) || !isRole(c.role)) return null
+  if (!count(c.sequence) || c.sequence < 3 || c.sequence > body.sequence || !(c.era === null || (count(c.era) && c.era >= 1)) || !count(c.units) || c.units < 1) return null
+  if (!count(c.builtBefore) || c.builtAfter !== c.builtBefore + c.units || !count(c.tierBefore, 64) || !count(c.tierAfter, 64) || c.tierAfter < c.tierBefore || !isInstant(c.constructedAt)) return null
+  return {
+    rehearsal: REHEARSAL_MARK,
+    resource: 'local-test-credit',
+    fresh: body.fresh,
+    sequence: body.sequence,
+    balance: body.balance,
+    construction: { sequence: c.sequence, propertyId: c.propertyId, actionId: c.actionId, role: c.role, era: c.era, units: c.units, builtBefore: c.builtBefore, builtAfter: c.builtAfter, tierBefore: c.tierBefore, tierAfter: c.tierAfter, constructedAt: c.constructedAt },
+    view,
   }
 }

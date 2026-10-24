@@ -6,7 +6,6 @@ import { withTransaction } from '../db/transaction'
 import {
   assetKey,
   nftAsset,
-  POPULATED_WORLD_CITY_STATE_VERSION,
   PROPERTY_ACTIVATED_EVENT,
   proposePropertyActivation,
   worldCityStateText,
@@ -407,7 +406,8 @@ export function createWorldPropertyStore(db: Database, { mode, log, onStep }: Wo
 
           const moved = await client.query(
             'UPDATE city SET state = $1::json, state_version = $2, sequence = $3, updated_at = now() WHERE id = $4 AND instance_id = $5 AND sequence = $6',
-            [worldCityStateText(t.state), POPULATED_WORLD_CITY_STATE_VERSION, t.to, read.cityId, read.instance, t.from],
+            // Version 2, or 3 in a city with construction (0013): the engine's state says which.
+            [worldCityStateText(t.state), t.state.version, t.to, read.cityId, read.instance, t.from],
           )
           if (moved.rowCount !== 1) throw new WorldPropertyRefusal('sequence_conflict')
           await onStep?.('city')

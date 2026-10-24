@@ -8,25 +8,33 @@ import { problemKind, serverClockOffset, type ClaimProblem } from '../preview/cl
 import type { CityControls } from '../preview/PreviewApp'
 import type { PropertyHome } from '../preview/home'
 import { foundedProperties, foundingOrder } from '../preview/properties'
+import type { ConstructionAccess, ConstructionLoad, ConstructionOutcome } from '../preview/construction'
+import { pressBook } from '../preview/constructionPress'
 import { AssignedDistrict, ClaimAnnouncer, ClaimCountdown, RehearsalFlag, type AssignedTicket, type PlacementRehearsal, type RehearsalNft, type RehearsalResult, type TicketResult } from '../preview/rehearsal'
 import { wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
 import { nftAsset, parseAssetKey } from '../../world/asset'
-import type { WorldBuildingRecord } from '../../world/cityState'
+import { CONSTRUCTED_WORLD_CITY_STATE_VERSION, type WorldBuildingRecord } from '../../world/cityState'
 import { worldProperty } from '../../world/property'
 import {
   parseRehearsalActivationResponse,
   parseRehearsalAssetsResponse,
+  parseRehearsalConstructionResponse,
+  parseRehearsalConstructionView,
   parseRehearsalTicketResponse,
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
+  PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
+  PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
   PLAY_REHEARSAL_ENTRY_ENDPOINT,
   PLAY_REHEARSAL_RELEASE_ENDPOINT,
   PLAY_REHEARSAL_TICKET_ENDPOINT,
   type RehearsalActivationRequest,
   type RehearsalActorRequest,
+  type ConstructionRole,
   type RehearsalAsset,
+  type RehearsalConstructionRequest,
   type RehearsalErrorCode,
   type RehearsalTicket,
 } from '../../protocol/playRehearsal'
@@ -147,6 +155,15 @@ const REHEARSAL_REFUSALS: Record<RehearsalErrorCode | 'invalid_request', string>
   district_rule_ambiguous: 'District rules for this NFT name different districts, so it cannot be placed until the city’s administrator fixes them.',
   district_rule_ref_too_long: 'Too many district rules apply to this NFT for its district to be recorded, so it cannot be placed. The rules need fixing first.',
   ticket_asset_mismatch: 'Your district was assigned for another NFT. Select this NFT again so the server can assign its district.',
+  unknown_property: 'That is not a property of this city.',
+  construction_not_open: 'Construction is not open in this city on this local server.',
+  construction_complete: 'This property already stands at the highest tier this local rehearsal builds. Nothing was spent.',
+  not_current_controller: 'This local server’s test file does not name you as this NFT’s current controller, so you cannot build as its owner. Nothing was spent.',
+  control_unverified: 'No current controller is named for this NFT on this local server, so nobody can build as its owner. Nothing was spent.',
+  controller_builds_as_owner: 'This local server’s test file names you as this NFT’s current controller: build as its owner. Nothing was spent.',
+  insufficient_test_credits: 'You do not have enough local test credits for this step. Nothing was built or spent.',
+  action_conflict: 'This press’s id is already recorded for a construction that does not match this request, so nothing more was built or spent for it. That construction may be this build, recorded earlier: check this property’s history before you press again.',
+  construction_unconfirmed: 'We could not confirm this build. It may already have been built and paid for. Check it with the same press: one press is never built or paid twice.',
 }
 
 /** Session and Play refusals of a placement, said as what happened to the placement rather than to the city view. */
@@ -207,6 +224,16 @@ async function ask(path: string, init: RequestInit = {}): Promise<Answer | null>
   } catch {
     return null
   }
+}
+
+/** City reads that failed for now: the session is kept, and nothing about the city is known to have changed. */
+const TRANSIENT_READS: ReadonlySet<string> = new Set(['play_session_unavailable', 'world_unavailable', 'play_unavailable', 'installation_unverified', 'rate_limited', 'unreadable'])
+
+/** A construction read's refusal code: a session or Play problem is said as what happened to the city view, never as a placement's. */
+function constructionProblemOf(code: unknown): ClaimProblem {
+  if (typeof code === 'string' && Object.hasOwn(REHEARSAL_REFUSALS, code)) return { message: REHEARSAL_REFUSALS[code as RehearsalErrorCode], kind: problemKind(code), code }
+  if (typeof code === 'string' && Object.hasOwn(REFUSALS, code)) return { message: REFUSALS[code as PlayErrorCode], kind: problemKind(code), code }
+  return { message: REFUSALS.unreadable, kind: 'retry', code: null }
 }
 
 /** A rehearsal route's refusal code, as the player is told it and what it asks of them. */
@@ -312,6 +339,14 @@ export function PlayCityApp() {
     window.addEventListener('hashchange', relaunch)
     return () => window.removeEventListener('hashchange', relaunch)
   }, [])
+
+  // The panel reads a property's construction once per property, so its access stays one object for the page's life; each
+  // call goes to the handlers of the latest render (the city drawn now).
+  const handlers = useRef<ConstructionAccess | null>(null)
+  const constructionAccess = useMemo<ConstructionAccess>(
+    () => ({ load: (id) => handlers.current!.load(id), build: (id, role, action) => handlers.current!.build(id, role, action), presses: () => handlers.current!.presses() }),
+    [],
+  )
 
   /** Show a phase; a launch that opened a session tells the other tabs. */
   const show = (p: Phase) => {
@@ -447,6 +482,54 @@ export function PlayCityApp() {
     return !('refused' in held) && !!held.ticket && held.ticket.id === ending
   }
 
+  /**
+   * LOCAL REHEARSAL construction: read a property's construction, or build one step of it for exactly the session, world
+   * and player this page drew, then read the city again so the building is drawn as stored. A refusal that ends the
+   * session leaves the city, as a placement's does.
+   */
+  async function loadConstruction(propertyId: string): Promise<ConstructionLoad> {
+    const answer = await ask(`${PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT}?property=${encodeURIComponent(propertyId)}`)
+    if (!answer) return { ok: false, problem: UNREACHABLE }
+    const view = answer.response.ok ? parseRehearsalConstructionView(answer.body) : null
+    return view ? { ok: true, view } : { ok: false, problem: constructionProblemOf(answer.response.ok ? null : (answer.body as { error?: unknown } | null)?.error) }
+  }
+
+  async function construct(drawn: PlayCityResponse, propertyId: string, role: ConstructionRole, actionId: string): Promise<ConstructionOutcome> {
+    const request: RehearsalConstructionRequest = { ...actorOf(drawn), propertyId, role, actionId }
+    const answer = await post(PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT, request)
+    // No answer, or none this page can read: whether it was built is not known (the card asks again with the same press).
+    if (!answer) return { ok: false, problem: { message: REHEARSAL_REFUSALS.construction_unconfirmed, kind: 'retry', code: null } }
+    const refused = (answer.body as { error?: unknown } | null)?.error
+    if (refused === 'play_actor_mismatch') {
+      setPhase({ kind: 'superseded' })
+      return { ok: false, problem: { message: REFUSALS.play_actor_mismatch, kind: 'refused', code: refused } }
+    }
+    if ((answer.response.status === 401 || answer.response.status === 403) && typeof refused === 'string' && refused !== 'origin_mismatch' && Object.hasOwn(REFUSALS, refused)) {
+      setPhase(refusal(answer.body))
+      return { ok: false, problem: { message: REFUSALS[refused as PlayErrorCode], kind: 'refused', code: refused } }
+    }
+    const built = answer.response.ok ? parseRehearsalConstructionResponse(answer.body) : null
+    // Only an answer about exactly this press confirms it.
+    const c = built?.construction
+    if (!built || c!.actionId !== actionId || c!.propertyId !== propertyId || c!.role !== role) return { ok: false, problem: constructionProblemOf(answer.response.ok ? null : refused) }
+    // The city as stored now: the building is drawn at the tier the server stored, everything else on the page kept. A
+    // read that fails for now keeps the city drawn (the construction is confirmed either way); one that ends the session leaves it.
+    const next = await readSession()
+    if (next.kind === 'ready' && next.city.viewer.session.ref !== drawn.viewer.session.ref) setPhase({ kind: 'superseded' })
+    else if (next.kind === 'ready') setPhase((p) => (p.kind === 'ready' ? { ...p, city: next.city, loaded: next.loaded } : p))
+    else if (!(next.kind === 'refused' && TRANSIENT_READS.has(next.code))) setPhase(next)
+    return { ok: true, fresh: built.fresh, construction: built.construction, view: built.view }
+  }
+
+  useEffect(() => {
+    handlers.current = {
+      load: loadConstruction,
+      build: (id, role, action) => (phase.kind === 'ready' ? construct(phase.city, id, role, action) : Promise.resolve({ ok: false, problem: UNREACHABLE })),
+      // The presses of exactly the player and world drawn now: never sent for another.
+      presses: () => pressBook(phase.kind === 'ready' ? { worldId: phase.city.world.id, discordUserId: phase.city.viewer.player.discordUserId } : { worldId: '', discordUserId: '' }),
+    }
+  })
+
   if (phase.kind === 'ready') {
     const { city, ticket } = phase
     return (
@@ -464,6 +547,7 @@ export function PlayCityApp() {
         onPlace={(asset, plotId) => placeProperty(city, ticket.ticket, asset, plotId)}
         onRefresh={(ending) => refreshTicket(city, ending)}
         onSignOut={signOut}
+        construction={phase.rehearsal ? constructionAccess : null}
       />
     )
   }
@@ -554,6 +638,7 @@ function PlayCity({
   onPlace,
   onRefresh,
   onSignOut,
+  construction,
 }: {
   source: Source
   city: PlayCityResponse
@@ -567,6 +652,8 @@ function PlayCity({
   onPlace: (asset: string, plotId: string) => Promise<RehearsalResult>
   onRefresh: (ending: string | null) => Promise<boolean>
   onSignOut: () => void
+  /** The server runs the local rehearsal: stored properties' panels show their LOCAL TEST construction. */
+  construction: ConstructionAccess | null
 }) {
   const { play, viewer, world } = response
   const ticket: AssignedTicket | null = held.ticket
@@ -653,6 +740,7 @@ function PlayCity({
   const geometry = world.definition.districtGeometry
   const player = viewer.player
   const buildings = Object.keys(city.state.buildings).length
+  const developed = world.state.version === CONSTRUCTED_WORLD_CITY_STATE_VERSION ? Object.keys(world.state.development).length : 0
   const members = useMemo<(PreviewMember | null)[]>(
     () => [
       null,
@@ -680,6 +768,7 @@ function PlayCity({
       data-original-activations={viewer.originalActivations.length}
       data-founded={home.founded.length}
       data-buildings={buildings}
+      data-developed={developed}
       data-candidates={world.districts.reduce((n, d) => n + d.candidates.plotIds.length, 0)}
       data-player={player.discordUserId}
       data-session-ref={viewer.session.ref}
@@ -695,6 +784,7 @@ function PlayCity({
         stored={stored}
         rehearsal={rehearsal}
         home={home}
+        construction={construction}
         bar={(controls) => (
           <div className={`preview-bar play-bar${controls.claiming ? ' claiming' : ''}`} role="region" aria-label="Proofy Play installation" data-testid="preview-bar">
             <span className="preview-flag play-flag">PROOFY PLAY · {play.environment.toUpperCase()}</span>
@@ -702,7 +792,10 @@ function PlayCity({
             {rehearsal && <ClaimCard city={city} rehearsal={rehearsal} claimed={claimed} controls={controls} />}
             <span className="preview-note" data-testid="play-world-note">
               {world.created ? 'This server’s city was just founded. ' : 'This server’s city. '}
-              {buildings === 0 ? 'Nothing has been claimed or built yet.' : `${buildings} ${buildings === 1 ? 'property' : 'properties'}, nothing built yet.`}{' '}
+              {buildings === 0
+                ? 'Nothing has been claimed or built yet.'
+                : `${buildings} ${buildings === 1 ? 'property' : 'properties'}, ${developed === 0 ? 'nothing built yet' : `${developed} with local test construction`}.`}{' '}
+              {developed > 0 && 'Local test construction draws tiers only: it earns no Crown, Capital or monument. '}
               {rehearsal
                 ? `This local server lists ${rehearsal.nfts.length + rehearsal.placed} test NFT${rehearsal.nfts.length + rehearsal.placed === 1 ? '' : 's'} for you (${rehearsal.placed} placed). Not verified ownership.`
                 : 'Claims are not open; the simulated viewers only preview district rules.'}

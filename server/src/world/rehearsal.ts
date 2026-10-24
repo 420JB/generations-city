@@ -1,4 +1,5 @@
 import type { AppMode } from '../config'
+import { errorFields, silentLogger, type Logger } from '../log'
 import {
   assetKey,
   parseAssetKey,
@@ -6,6 +7,8 @@ import {
   type DistrictRuleMatch,
   type NftAsset,
   type RehearsalActivationResponse,
+  type RehearsalConstructionResponse,
+  type RehearsalConstructionView,
   type RehearsalAssetsResponse,
   type RehearsalErrorCode,
   type RehearsalTicket,
@@ -13,6 +16,7 @@ import {
   type RuleAnswer,
 } from '../engine'
 import { PlaySessionError, type ExpectedActor, type LivePlaySession, type PlaySessionService } from '../play/session'
+import { createConstructionService, WorldConstructionRefusal, type ConstructionAuthority, type ConstructionOverview, type WorldConstructionRefusalCode, type WorldConstructionStore } from './construction'
 import { createPropertyActivationService, WorldPropertyRefusal, type WorldPropertyRefusalCode, type WorldPropertyStore } from './properties'
 import type { TicketEligibility } from './rotation'
 import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalCode, type DistrictTicketStore } from './tickets'
@@ -49,6 +53,14 @@ import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalC
  *   - The page names the geometry it drew; under the city's lock it must be the governing one, and a
  *     world's first property also needs Play to name the governing version as active (`properties.ts`).
  *
+ *   - CONSTRUCTION (P1-C2-E3A, file version 4): a player builds one fixed step of the local TEST recipe into
+ *     a property (`construction.ts`), paid in valueless TEST credits. Who controls an NFT NOW (an owner's
+ *     authority) and which test credits a player is granted are the file's `controllers` and `testCredits`,
+ *     each scoped to one Discord server (the world's): TEST DATA, never verified ownership, never a
+ *     currency. Founding an NFT's property does not make anyone its owner here. No route grants credits:
+ *     a grant is recorded once, inside the first construction of that player that needs it. A city whose
+ *     Discord server the file names in neither list has no construction at all, read or write.
+ *
  * Still open, and not replaced here: F5 (browser-bound launch), F7 (fresh membership and entitlement),
  * F3 (Play game status), Core NFT/role/trait eligibility and verified rule results, and a separate
  * non-owner database role. Conflicting explicit rules are refused (D3), never ordered.
@@ -56,11 +68,18 @@ import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalC
 
 /**
  * The rehearsal file's `kind`: v1 lists NFTs only; v2 also gives NFTs traits and declares explicit district rules; v3 also
- * gives Proofy rule results for players (restricted districts, D1).
+ * gives Proofy rule results for players (restricted districts, D1); v4 also names current NFT controllers and test credit
+ * grants for construction (P1-C2-E3A).
  */
 export const REHEARSAL_FILE_KIND = 'rare-city/local-property-rehearsal-v1'
 export const REHEARSAL_FILE_KIND_V2 = 'rare-city/local-property-rehearsal-v2'
 export const REHEARSAL_FILE_KIND_V3 = 'rare-city/local-property-rehearsal-v3'
+export const REHEARSAL_FILE_KIND_V4 = 'rare-city/local-property-rehearsal-v4'
+const MAX_CONTROLLERS = 1_000
+const MAX_TEST_CREDITS = 1_000
+/** At most this many grants per player and Discord server, and units per grant (migration 0013 holds the same bounds). */
+const MAX_GRANTS_PER_PLAYER = 20
+const MAX_GRANT_UNITS = 1_000
 const MAX_RULE_RESULTS = 1_000
 const MAX_PLAYERS = 200
 const MAX_ASSETS_PER_PLAYER = 200
@@ -76,6 +95,7 @@ const ACTOR_KEYS = ['discordUserId', 'sessionRef', 'worldId']
 const ACTIVATION_KEYS = ['asset', 'discordUserId', 'geometryFingerprint', 'plotId', 'sessionRef', 'ticketId', 'worldId']
 const ASSIGNMENT_KEYS = ['asset', 'discordUserId', 'sessionRef', 'ticketId', 'worldId']
 const RELEASE_KEYS = ['discordUserId', 'sessionRef', 'ticketId', 'worldId']
+const CONSTRUCTION_KEYS = ['actionId', 'discordUserId', 'propertyId', 'role', 'sessionRef', 'worldId']
 
 /** Which test NFTs each player may place, by Discord user id. */
 export type RehearsalGrants = ReadonlyMap<string, readonly NftAsset[]>
@@ -101,12 +121,32 @@ export interface RehearsalRuleResult {
   qualifies: RuleAnswer
 }
 
-/** The whole local fixture: grants, each NFT's traits, explicit district rules, Proofy rule results. */
+/**
+ * Who the local fixture says controls an NFT NOW in one Discord server's city (file v4): the only thing that lets a player
+ * build on a property as its owner. TEST DATA, never verified ownership; changing it (and restarting) simulates a transfer.
+ */
+export interface RehearsalController {
+  guild: string
+  asset: string
+  discordUserId: string
+}
+
+/** Valueless TEST credits the local fixture grants one player in one Discord server's city, once, by `id` (file v4). */
+export interface RehearsalTestCredit {
+  id: string
+  guild: string
+  discordUserId: string
+  units: number
+}
+
+/** The whole local fixture: grants, each NFT's traits, explicit district rules, Proofy rule results, controllers and test credits. */
 export interface RehearsalFixture {
   grants: RehearsalGrants
   traits: ReadonlyMap<string, Readonly<Record<string, string>>>
   rules: readonly RehearsalDistrictRule[]
   results: readonly RehearsalRuleResult[]
+  controllers: readonly RehearsalController[]
+  testCredits: readonly RehearsalTestCredit[]
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -128,12 +168,13 @@ function parseTraits(where: string, v: unknown): Record<string, string> {
  * NFT's traits the same wherever it is listed. Throws with the reason otherwise.
  */
 export function parseRehearsalFile(raw: unknown): RehearsalFixture {
-  const v3 = isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V3
+  const v4 = isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V4
+  const v3 = v4 || (isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V3)
   const v2 = v3 || (isRecord(raw) && raw.kind === REHEARSAL_FILE_KIND_V2)
-  const keys = v3 ? 'districtRules,kind,players,ruleResults' : v2 ? 'districtRules,kind,players' : 'kind,players'
+  const keys = v4 ? 'controllers,districtRules,kind,players,ruleResults,testCredits' : v3 ? 'districtRules,kind,players,ruleResults' : v2 ? 'districtRules,kind,players' : 'kind,players'
   if (!isRecord(raw) || Object.keys(raw).sort().join() !== keys || (raw.kind !== REHEARSAL_FILE_KIND && !v2) || !isRecord(raw.players))
     throw new Error(
-      `a local rehearsal file is exactly { "kind": "${REHEARSAL_FILE_KIND}", "players": { … } }, { "kind": "${REHEARSAL_FILE_KIND_V2}", "players": { … }, "districtRules": [ … ] }, or { "kind": "${REHEARSAL_FILE_KIND_V3}", "players", "districtRules", "ruleResults": [ … ] }`,
+      `a local rehearsal file is exactly { "kind": "${REHEARSAL_FILE_KIND}", "players": { … } }, { "kind": "${REHEARSAL_FILE_KIND_V2}", "players": { … }, "districtRules": [ … ] }, { "kind": "${REHEARSAL_FILE_KIND_V3}", "players", "districtRules", "ruleResults": [ … ] }, or { "kind": "${REHEARSAL_FILE_KIND_V4}", "players", "districtRules", "ruleResults", "controllers": [ … ], "testCredits": [ … ] }`,
     )
   const entries = Object.entries(raw.players)
   if (entries.length > MAX_PLAYERS) throw new Error(`a local rehearsal file lists at most ${MAX_PLAYERS} players`)
@@ -187,7 +228,33 @@ export function parseRehearsalFile(raw: unknown): RehearsalFixture {
       results.push(Object.freeze(result))
     }
   }
-  return { grants, traits, rules: Object.freeze(rules), results: Object.freeze(results) }
+  const controllers: RehearsalController[] = []
+  const testCredits: RehearsalTestCredit[] = []
+  if (v4) {
+    if (!Array.isArray(raw.controllers) || raw.controllers.length > MAX_CONTROLLERS) throw new Error(`controllers is a list of at most ${MAX_CONTROLLERS} entries`)
+    for (const c of raw.controllers) {
+      if (!isRecord(c) || Object.keys(c).sort().join() !== 'asset,discordUserId,guild') throw new Error('a controller is exactly { "guild", "asset", "discordUserId" }')
+      if (typeof c.guild !== 'string' || !DISCORD_ID.test(c.guild)) throw new Error(`controller guild ${JSON.stringify(c.guild)} is not a Discord server id`)
+      if (!parseAssetKey(c.asset)) throw new Error(`controller asset ${JSON.stringify(c.asset)} is not a canonical ERC-721 CAIP-19 asset id`)
+      if (typeof c.discordUserId !== 'string' || !DISCORD_ID.test(c.discordUserId)) throw new Error(`controller of ${String(c.asset)}: ${JSON.stringify(c.discordUserId)} is not a Discord user id`)
+      // One controller per NFT and server: two would be ambiguous evidence, which authorizes nobody.
+      if (controllers.some((x) => x.guild === c.guild && x.asset === c.asset)) throw new Error(`${String(c.asset)} has two controllers in ${c.guild}`)
+      controllers.push(Object.freeze({ guild: c.guild, asset: c.asset as string, discordUserId: c.discordUserId }))
+    }
+    if (!Array.isArray(raw.testCredits) || raw.testCredits.length > MAX_TEST_CREDITS) throw new Error(`testCredits is a list of at most ${MAX_TEST_CREDITS} grants`)
+    for (const g of raw.testCredits) {
+      if (!isRecord(g) || Object.keys(g).sort().join() !== 'discordUserId,guild,id,units') throw new Error('a test credit grant is exactly { "id", "guild", "discordUserId", "units" }')
+      if (typeof g.id !== 'string' || !RULE_ID.test(g.id)) throw new Error(`test credit grant id ${JSON.stringify(g.id)} is not a short lowercase id`)
+      if (typeof g.guild !== 'string' || !DISCORD_ID.test(g.guild)) throw new Error(`test credit grant ${g.id}: ${JSON.stringify(g.guild)} is not a Discord server id`)
+      if (typeof g.discordUserId !== 'string' || !DISCORD_ID.test(g.discordUserId)) throw new Error(`test credit grant ${g.id}: ${JSON.stringify(g.discordUserId)} is not a Discord user id`)
+      if (typeof g.units !== 'number' || !Number.isSafeInteger(g.units) || g.units < 1 || g.units > MAX_GRANT_UNITS) throw new Error(`test credit grant ${g.id}: units are a whole number from 1 to ${MAX_GRANT_UNITS}`)
+      const mine = testCredits.filter((x) => x.guild === g.guild && x.discordUserId === g.discordUserId)
+      if (mine.some((x) => x.id === g.id)) throw new Error(`test credit grant ${g.id} is listed twice for ${g.discordUserId} in ${g.guild}`)
+      if (mine.length >= MAX_GRANTS_PER_PLAYER) throw new Error(`a player has at most ${MAX_GRANTS_PER_PLAYER} test credit grants in one Discord server`)
+      testCredits.push(Object.freeze({ id: g.id, guild: g.guild, discordUserId: g.discordUserId, units: g.units }))
+    }
+  }
+  return { grants, traits, rules: Object.freeze(rules), results: Object.freeze(results), controllers: Object.freeze(controllers), testCredits: Object.freeze(testCredits) }
 }
 
 /** The grants of a rehearsal file (either version). */
@@ -222,8 +289,20 @@ export function rehearsalEligibility(given: RehearsalFixture | RehearsalGrants):
   }
 }
 
-/** A fixture, or a bare grants map as v1 gave it (no traits, rules or results). */
-const fixtureOf = (given: RehearsalFixture | RehearsalGrants): RehearsalFixture => (given instanceof Map ? { grants: given, traits: new Map(), rules: [], results: [] } : (given as RehearsalFixture))
+/** The construction store's trusted source, from the local fixture: TEST DATA standing in for verified NFT control, and valueless test credits. */
+export function rehearsalConstructionAuthority(given: RehearsalFixture | RehearsalGrants): ConstructionAuthority {
+  const fixture = fixtureOf(given)
+  return {
+    source: 'local-fixture',
+    opensIn: (where) => fixture.controllers.some((c) => c.guild === where.guildId) || fixture.testCredits.some((g) => g.guild === where.guildId),
+    controllerOf: (where, asset) => fixture.controllers.find((c) => c.guild === where.guildId && c.asset === assetKey(asset))?.discordUserId ?? null,
+    grantsFor: (where) => fixture.testCredits.filter((g) => g.guild === where.guildId && g.discordUserId === where.discordUserId).map((g) => ({ key: g.id, units: g.units })),
+  }
+}
+
+/** A fixture, or a bare grants map as v1 gave it (no traits, rules, results, controllers or test credits). */
+const fixtureOf = (given: RehearsalFixture | RehearsalGrants): RehearsalFixture =>
+  given instanceof Map ? { grants: given, traits: new Map(), rules: [], results: [], controllers: [], testCredits: [] } : (given as RehearsalFixture)
 
 /** A refusal of the rehearsal routes, as the status and `{ "error": code }` it is answered with. */
 export class RehearsalRefusal extends Error {
@@ -237,7 +316,7 @@ export class RehearsalRefusal extends Error {
   }
 }
 
-type Answered = Exclude<WorldPropertyRefusalCode | DistrictTicketRefusalCode, 'session_ended' | 'world_unavailable' | 'config_superseded' | 'active_config_unverified'>
+type Answered = Exclude<WorldPropertyRefusalCode | DistrictTicketRefusalCode | WorldConstructionRefusalCode, 'session_ended' | 'world_unavailable' | 'config_superseded' | 'active_config_unverified'>
 
 /** How each store refusal is answered. The session layer's own answers are the rest (see `answer`). */
 const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
@@ -261,10 +340,18 @@ const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
   district_rule_ambiguous: [409, 'district_rule_ambiguous'],
   district_rule_ref_too_long: [409, 'district_rule_ref_too_long'],
   ticket_asset_mismatch: [409, 'ticket_asset_mismatch'],
+  unknown_property: [422, 'unknown_property'],
+  construction_not_open: [403, 'construction_not_open'],
+  construction_complete: [409, 'construction_complete'],
+  not_current_controller: [403, 'not_current_controller'],
+  control_unverified: [403, 'control_unverified'],
+  controller_builds_as_owner: [409, 'controller_builds_as_owner'],
+  insufficient_test_credits: [409, 'insufficient_test_credits'],
+  action_conflict: [409, 'action_conflict'],
 }
 
 /** A store's refusal, as the routes answer it: the session layer's own error for a session or world problem, else a rehearsal refusal. */
-function answer(err: WorldPropertyRefusal | DistrictTicketRefusal): never {
+function answer(err: WorldPropertyRefusal | DistrictTicketRefusal | WorldConstructionRefusal): never {
   if (err.code === 'session_ended') throw new PlaySessionError(401, 'play_session_required', err.message)
   if (err.code === 'world_unavailable') throw new PlaySessionError(503, 'world_unavailable', err.message)
   // The page's city, or Play's active configuration, is not the one that governs: the page reads the city again.
@@ -304,6 +391,10 @@ export interface LocalPropertyRehearsal {
   release(presented: string | null, body: Record<string, unknown>): Promise<RehearsalTicketResponse>
   /** Place one, for exactly the actor the page names, with its live ticket. Throws RehearsalRefusal or PlaySessionError. */
   activate(presented: string | null, body: Record<string, unknown>): Promise<RehearsalActivationResponse>
+  /** A property's construction as the cookie's player may see it. Read only. */
+  construction(presented: string | null, propertyId: string | null): Promise<RehearsalConstructionView>
+  /** Build one step of the local test recipe, for exactly the actor the page names, in the role it names. */
+  construct(presented: string | null, body: Record<string, unknown>): Promise<RehearsalConstructionResponse>
 }
 
 export interface LocalPropertyRehearsalOptions {
@@ -313,6 +404,10 @@ export interface LocalPropertyRehearsalOptions {
   sessions: Pick<PlaySessionService, 'session' | 'requireActor' | 'activeConfig'>
   store: WorldPropertyStore
   tickets: DistrictTicketStore
+  /** Construction (file v4). Without it, construction is held (`mutations_held`). */
+  construction?: WorldConstructionStore | null
+  /** Where a read that failed after a construction was written is reported (the answer still carries the construction). */
+  log?: Logger
 }
 
 /** The actor a request names, exactly these keys and shapes, or the refusal. */
@@ -332,10 +427,23 @@ const ticketIdOf = (body: Record<string, unknown>) => {
 /** An assignment may name no ticket (`null`): the one the player holds, or none in a city whose every district is restricted. */
 const heldTicketIdOf = (body: Record<string, unknown>) => (body.ticketId === null ? null : ticketIdOf(body))
 
-export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, store, tickets }: LocalPropertyRehearsalOptions): LocalPropertyRehearsal {
+export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, store, tickets, construction = null, log = silentLogger }: LocalPropertyRehearsalOptions): LocalPropertyRehearsal {
   if (mode !== 'local') throw new Error(`the local property rehearsal runs only with APP_MODE=local, not ${mode}`)
   const fixture = fixtureOf(given)
   const service = createPropertyActivationService({ sessions, store })
+  const authority = rehearsalConstructionAuthority(fixture)
+  const builder = construction ? createConstructionService({ sessions, store: construction, authority }) : null
+
+  /** A construction store call, its refusals answered. */
+  async function constructionCall<T>(work: (store: WorldConstructionStore) => Promise<T>): Promise<T> {
+    if (!construction) throw new RehearsalRefusal(403, 'mutations_held', 'This local server does not build.')
+    try {
+      return await work(construction)
+    } catch (err) {
+      if (err instanceof WorldConstructionRefusal) answer(err)
+      throw err
+    }
+  }
   const listed = (player: string) => fixture.grants.get(player) ?? []
   const granted = (player: string, key: string) => listed(player).some((a) => assetKey(a) === key)
 
@@ -431,5 +539,56 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
         consumedTicket: result.ticketId ?? null,
       }
     },
+
+    async construction(presented, propertyId) {
+      const session = await sessions.session(presented)
+      if (propertyId === null || !UUID.test(propertyId)) throw new RehearsalRefusal(400, 'invalid_request')
+      return constructionView(await constructionCall((c) => c.overview(session, propertyId, authority)))
+    },
+
+    async construct(presented, body) {
+      const expected = actorOf(body, CONSTRUCTION_KEYS)
+      const { propertyId, role, actionId } = body
+      // Which property, which role, which press: nothing else is read from the request, and no amount or tier at all.
+      if (typeof propertyId !== 'string' || !UUID.test(propertyId) || (role !== 'owner' && role !== 'patron') || typeof actionId !== 'string' || !UUID.test(actionId)) throw new RehearsalRefusal(400, 'invalid_request')
+      const done = await constructionCall(() => builder!.construct(presented, expected, { propertyId, role, actionId }))
+      // Written and committed, for exactly this actor. What follows only reads the property again for the page, so its
+      // failure (the session ended a moment later, a lost database answer) is never answered as if nothing was built:
+      // the construction is answered without a view, and the page reads the view again itself.
+      let view: RehearsalConstructionView | null = null
+      try {
+        const session = await sessions.session(presented)
+        view = constructionView(await constructionCall((c) => c.overview(session, propertyId, authority)))
+      } catch (err) {
+        log.warn('rehearsal construction committed; its view could not be read again', { sequence: done.construction.sequence, ...errorFields(err) })
+      }
+      const c = done.construction
+      return {
+        rehearsal: REHEARSAL_MARK,
+        resource: 'local-test-credit',
+        fresh: done.fresh,
+        sequence: done.sequence,
+        balance: done.balance,
+        construction: { sequence: c.sequence, propertyId: c.propertyId, actionId: c.actionId, role: c.role, era: c.era, units: c.units, builtBefore: c.builtBefore, builtAfter: c.builtAfter, tierBefore: c.tierBefore, tierAfter: c.tierAfter, constructedAt: c.constructedAt },
+        view,
+      }
+    },
+  }
+}
+
+/** A property's construction as its viewer is told it: no other player is named, and every amount is marked as local test units. */
+export function constructionView(o: ConstructionOverview): RehearsalConstructionView {
+  return {
+    rehearsal: REHEARSAL_MARK,
+    resource: 'local-test-credit',
+    recipe: { key: o.recipe.key, unitsPerAction: o.recipe.unitsPerAction, tierThresholds: [...o.recipe.tierThresholds], provisional: true },
+    property: { ...o.property },
+    control: o.control,
+    standing: o.standing.kind === 'complete' ? { kind: 'complete' } : { ...o.standing },
+    credits: { ...o.credits },
+    investment: { ...o.investment },
+    viewer: { ...o.viewer },
+    history: o.history.map((h) => ({ ...h })),
+    historyCount: o.historyCount,
   }
 }

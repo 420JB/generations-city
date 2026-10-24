@@ -74,12 +74,16 @@ export {
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
+  PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
+  PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
   PLAY_REHEARSAL_ENTRY_ENDPOINT,
   PLAY_REHEARSAL_RELEASE_ENDPOINT,
   PLAY_REHEARSAL_TICKET_ENDPOINT,
   REHEARSAL_MARK,
   type RehearsalActivationResponse,
   type RehearsalAssetsResponse,
+  type RehearsalConstructionResponse,
+  type RehearsalConstructionView,
   type RehearsalErrorCode,
   type RehearsalRouteErrorCode,
   type RehearsalTicket,
@@ -104,18 +108,47 @@ export {
   type WorldFoundation,
   type WorldGeometry,
 } from '../../src/brand/core/evolution'
-export { emptyWorldCityState, parseWorldCityState, POPULATED_WORLD_CITY_STATE_VERSION, WORLD_CITY_STATE_VERSION, worldBuildingId, worldCityStateText, type WorldBuildingRecord, type WorldCityState } from '../../src/world/cityState'
+export {
+  CONSTRUCTED_WORLD_CITY_STATE_VERSION,
+  emptyWorldCityState,
+  parseWorldCityState,
+  POPULATED_WORLD_CITY_STATE_VERSION,
+  WORLD_CITY_STATE_VERSION,
+  worldBuildingId,
+  worldCityStateText,
+  type WorldBuildingDevelopment,
+  type WorldBuildingRecord,
+  type WorldCityState,
+} from '../../src/world/cityState'
+// Property construction, pure: the one LOCAL TEST recipe, its tiers, and the proposal the server persists (server/src/world/construction.ts).
+export {
+  CONSTRUCTION_RECIPES,
+  constructionStep,
+  constructionTier,
+  developmentOf,
+  LOCAL_TEST_CONSTRUCTION_RECIPE,
+  nextTierAt,
+  PROPERTY_CONSTRUCTED_EVENT,
+  proposePropertyConstruction,
+  recipeMaxTier,
+  type ConstructionRecipe,
+  type ConstructionTransition,
+  type PropertyConstructedEvent,
+  type PropertyConstructionRefusal,
+} from '../../src/world/construction'
 // Persistent city gameplay, pure: discover plots, validate and propose a property activation on an exact plot, replay a city.
 export {
   PROPERTY_ACTIVATED_EVENT,
   proposePropertyActivation,
   replayPropertyActivations,
+  replayWorldCity,
   worldCityProblems,
   type PropertyActivatedEvent,
   type PropertyActivationRefusal,
   type PropertyActivationRequest,
   type PropertyTransition,
   type RecordedActivation,
+  type RecordedCityChange,
 } from '../../src/world/gameplay'
 export { assetKey, nftAsset, parseAssetKey, type NftAsset } from '../../src/world/asset'
 export { worldProperty, type WorldProperty } from '../../src/world/property'

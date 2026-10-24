@@ -9,6 +9,7 @@ import { nftAsset } from '../../world/asset'
 import { worldProperty } from '../../world/property'
 import { mayAct, previewClaimAccess, type ClaimAccess, type PreviewMember } from '../core/eligibility'
 import { districtPlots, type LoadedBrandCity } from '../load'
+import { ConstructionCard, type ConstructionAccess } from './construction'
 import { ConstructionNote } from './home'
 import type { Placement } from './PreviewApp'
 import { StoredPropertyCard, type StoredProperty } from './rehearsal'
@@ -268,6 +269,7 @@ export function BuildingPreviewPanel({
   member,
   stored = null,
   context = null,
+  construction = null,
   onDistrict,
   onBack,
   onClose,
@@ -283,6 +285,8 @@ export function BuildingPreviewPanel({
   stored?: StoredProperty | null
   /** For a stored property: the city and district around it. */
   context?: ReactNode
+  /** For a stored property, when the server runs the local rehearsal: its LOCAL TEST construction. */
+  construction?: ConstructionAccess | null
   onDistrict: (id: string) => void
   /** Back to where the panel was opened from (the player's properties). */
   onBack?: () => void
@@ -351,7 +355,7 @@ export function BuildingPreviewPanel({
         {d.title} · {wardName(b.ward)}
         {isFoundingWard(b.ward) && <span className="founding-tag"> Founding Ward</span>} · Plot {b.plot + 1} · <code>{`${b.districtId}-w${b.ward}-p${b.plot}`}</code>
       </div>
-      {/* A stored property records no progress: no bar promises one. */}
+      {/* A stored property's progress is what the server stored, shown only by its construction card: no preview bar promises any. */}
       {!stored && (
         <div className="tier-progress">
           <div className="row-between small">
@@ -383,7 +387,9 @@ export function BuildingPreviewPanel({
       </dl>
       {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
       {stored && context}
-      {stored ? (
+      {stored && construction ? (
+        <ConstructionCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} access={construction} color={d.color} />
+      ) : stored ? (
         <ConstructionNote tier={tier} />
       ) : (
         <div className={`fund-box access-box ${access.kind}`} data-testid="build-access" data-access={access.kind}>

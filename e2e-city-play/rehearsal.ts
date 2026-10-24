@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { BRAND_A, BRAND_B } from './brands'
 
 /**
@@ -7,6 +9,11 @@ import { BRAND_A, BRAND_B } from './brands'
  * rules for those traits, and Proofy rule results for two players (file version 3). Every other
  * player (LOCAL_PLAYER, snowflake() players) is listed for nothing, so every other test sees the
  * city exactly as without a rehearsal.
+ *
+ * File version 4 adds LOCAL TEST CONSTRUCTION data (P1-C2-E3A), and only for the Discord servers in
+ * CONSTRUCTION_GUILDS_FILE: fresh ids `serve.ts` makes for each run (worlds are permanent, so a rerun
+ * must not meet an earlier run's city) and writes there, where `construction.spec.ts` reads them.
+ * Every other test's city has none, so construction is not open there and it is exactly as before.
  */
 export const MAX_UINT256 = '115792089237316195423570985008687907853269984665640564039457584007913129639935'
 export const REHEARSAL_ADA = '900000000000000901'
@@ -39,7 +46,34 @@ export const EVE_CAPTAIN = asset(BRAND_A, 'harbor-keepers', '9005')
 /** Fay's keeper: both explicit rules apply to it, naming different districts (claim-experience.spec.ts). */
 export const FAY_TWIN = asset(BRAND_A, 'harbor-keepers', '9006')
 
-export const REHEARSAL_FILE = {
+/** Where `serve.ts` writes this run's construction Discord servers. */
+export const CONSTRUCTION_GUILDS_FILE = resolve(import.meta.dirname, '../test-artifacts/city-play-construction-guilds.json')
+/** How many construction servers a run has: each construction test (and each repetition of it) founds its own city. */
+export const CONSTRUCTION_GUILD_COUNT = 70
+/** This run's construction Discord servers, as `serve.ts` wrote them before any test ran. */
+export const constructionGuilds = (): string[] => (JSON.parse(readFileSync(CONSTRUCTION_GUILDS_FILE, 'utf8')) as { guilds: string[] }).guilds
+
+/** In every construction server: Ada controls her keeper #812 (and Cy his #300); Ada, Bea and Cy have test credits. TEST DATA. */
+export const CONSTRUCTION_KEEPER = asset(BRAND_A, 'harbor-keepers', '812')
+/** Ada's Tide Pass #77: nobody is named as its controller, so anyone with test credits builds on it as a patron. */
+export const CONSTRUCTION_PASS = asset(BRAND_A, 'tide-pass', '77')
+export const CONSTRUCTION_CREDITS = { ada: 120, bea: 50, cy: 100 } as const
+
+export const rehearsalFile = (constructionGuildIds: readonly string[]) => ({
+  ...REHEARSAL_FILE_V3,
+  kind: 'rare-city/local-property-rehearsal-v4',
+  controllers: constructionGuildIds.flatMap((guild) => [
+    { guild, asset: CONSTRUCTION_KEEPER, discordUserId: REHEARSAL_ADA },
+    { guild, asset: asset(BRAND_A, 'harbor-keepers', '300'), discordUserId: REHEARSAL_CY },
+  ]),
+  testCredits: constructionGuildIds.flatMap((guild) => [
+    { id: 'starter', guild, discordUserId: REHEARSAL_ADA, units: CONSTRUCTION_CREDITS.ada },
+    { id: 'starter', guild, discordUserId: REHEARSAL_BEA, units: CONSTRUCTION_CREDITS.bea },
+    { id: 'starter', guild, discordUserId: REHEARSAL_CY, units: CONSTRUCTION_CREDITS.cy },
+  ]),
+})
+
+const REHEARSAL_FILE_V3 = {
   kind: 'rare-city/local-property-rehearsal-v3',
   players: {
     [REHEARSAL_ADA]: [

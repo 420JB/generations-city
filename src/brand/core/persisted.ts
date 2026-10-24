@@ -1,9 +1,10 @@
 import { DEFAULT_ARCHITECTURE } from '../../config/architecture'
-import { LANDSCAPE_MAX_SLOTS } from '../../config/economy'
+import { LANDSCAPE_MAX_SLOTS, TIER_THRESHOLDS } from '../../config/economy'
 import { MONUMENTS } from '../../config/monuments'
 import { capitalHolderIn, computeMonumentHoldersIn, tallestBuilding } from '../../game/competition'
 import { parseAssetKey } from '../../world/asset'
-import type { WorldBuildingRecord, WorldCityState } from '../../world/cityState'
+import type { WorldBuildingDevelopment, WorldBuildingRecord, WorldCityState } from '../../world/cityState'
+import { developmentOf, LOCAL_TEST_CONSTRUCTION_RECIPE, recipeMaxTier, type ConstructionRecipe } from '../../world/construction'
 import type { BrandCityConfig } from './config'
 import type { BrandBuilding, BrandCityState, SampleNft } from './sampleCity'
 
@@ -15,10 +16,17 @@ import type { BrandBuilding, BrandCityState, SampleNft } from './sampleCity'
  *     founding ward open.
  *   - A city with properties (version 2) draws each property as a building on its exact plot,
  *     as the standard game draws a newly placed property: a Tier 0 foundation with the default
- *     architecture, nothing built, no landscaping, no billboard. Progress, owners and economy are
- *     not recorded anywhere yet, so none is shown; the building has no owner (`ownerId` empty).
+ *     architecture, nothing built, no landscaping, no billboard. Owners and economy are not
+ *     recorded, so none is shown; the building has no owner (`ownerId` empty).
+ *   - A city with construction (version 3) draws what has been built into each building at the
+ *     tier the server stored, through the standard renderer's own tier visuals (`renderedBuilt`).
+ *     Who built it is not drawn: the panel reads that from the server's construction records.
  *   - Monument holders, the Capital and the Crown are the standard competition rules applied to
- *     those buildings. With nothing built they are all vacant, as the rules say.
+ *     those buildings' CANONICAL development. Every development a city stores today is LOCAL TEST
+ *     construction (valueless test credits, the provisional local recipe), which the rules do not
+ *     count: a test-built building is drawn at its tier, but holds no monument, Capital or Crown, so
+ *     they are all vacant, as with nothing built. Whether real construction will ever count is not
+ *     decided here.
  *
  * The civic world (plaza, squares, monument pads, roads) is drawn from the configuration, so an
  * empty city is still a whole city.
@@ -37,7 +45,7 @@ export function persistedBrandCityState(config: Pick<BrandCityConfig, 'districts
       districtId: b.districtKey,
       ward: b.ward,
       plot: b.plot,
-      ownerBuilt: 0,
+      ownerBuilt: renderedBuilt(developmentOf(stored, id)),
       patrons: {},
       architecture: { ...DEFAULT_ARCHITECTURE },
       fixtures: [],
@@ -49,7 +57,8 @@ export function persistedBrandCityState(config: Pick<BrandCityConfig, 'districts
     nfts[id] = { collection: b.collection, tokenId }
   }
   const keys = config.districts.map((d) => d.key)
-  const list = Object.values(buildings)
+  // The competition sees each building as founded: local test construction is never an earned award.
+  const list = Object.values(buildings).map((b) => ({ ...b, ownerBuilt: 0 }))
   const holders = computeMonumentHoldersIn(keys, list, {})
   const monuments = {} as BrandCityState['monuments']
   for (const m of MONUMENTS) monuments[m.id] = { holder: holders[m.id], sinceClock: 0 }
@@ -65,4 +74,21 @@ export function persistedBrandCityState(config: Pick<BrandCityConfig, 'districts
     capital: { holder: capitalHolderIn(keys, list, null), sinceClock: 0 },
     crown: { holder: tallestBuilding(list, null), sinceClock: 0 },
   }
+}
+
+/**
+ * Where the standard renderer draws a stored building's development: the tier the server stored, and the progress
+ * through it, on the renderer's own scale (`TIER_THRESHOLDS`). The renderer draws tiers from an amount built, so this is
+ * the amount that draws exactly that tier and progress. It is a drawing position only, never a balance or a price: the
+ * recipe's units and the renderer's amounts are different scales that happen to be drawn together.
+ */
+export function renderedBuilt(d: WorldBuildingDevelopment | null, recipe: ConstructionRecipe = LOCAL_TEST_CONSTRUCTION_RECIPE): number {
+  if (!d) return 0
+  const tier = Math.min(d.tier, recipeMaxTier(recipe), TIER_THRESHOLDS.length)
+  const floor = tier === 0 ? 0 : TIER_THRESHOLDS[tier - 1]
+  if (tier >= recipeMaxTier(recipe) || tier >= TIER_THRESHOLDS.length) return floor
+  const from = tier === 0 ? 0 : recipe.tierThresholds[tier - 1]
+  const fraction = Math.max(0, Math.min(1, (d.built - from) / (recipe.tierThresholds[tier] - from)))
+  // Short of the next tier, always: progress never draws a tier the server has not stored.
+  return Math.min(TIER_THRESHOLDS[tier] - 1, floor + Math.floor(fraction * (TIER_THRESHOLDS[tier] - floor)))
 }

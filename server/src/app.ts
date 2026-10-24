@@ -35,6 +35,8 @@ import {
   PLAY_REHEARSAL_ENTRY_ENDPOINT,
   PLAY_REHEARSAL_RELEASE_ENDPOINT,
   PLAY_REHEARSAL_TICKET_ENDPOINT,
+  PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
+  PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
   type PlayErrorBody,
   type RehearsalRouteErrorCode,
@@ -396,6 +398,21 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /** LOCAL REHEARSAL: a property's LOCAL TEST construction, as the session's player may see it. Read only. */
+  async function serveRehearsalConstruction(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
+    const presented = playCookie.read(req)
+    const property = new URL(req.url ?? '/', 'http://localhost').searchParams.get('property')
+    try {
+      return send(res, 200, await service.construction(presented, property), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+      log.error('rehearsal construction read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
   /**
    * A LOCAL REHEARSAL change (local mode with the rehearsal file only, `world/rehearsal.ts`). Past the common boundary
    * (same origin, JSON only, size) it also needs an Origin header naming this service, then the per-session limit, keyed
@@ -407,9 +424,10 @@ export function createApp(deps: AppDeps): RequestListener {
     limits: { client: readonly RateRule[]; user: readonly RateRule[] },
     handle: (presented: string | null, body: Record<string, unknown>) => Promise<unknown>,
     log: string,
+    failure: PostRoute['failure']['code'] = 'play_session_unavailable',
   ): PostRoute => ({
     limit: limits.client,
-    failure: { code: 'play_session_unavailable', log },
+    failure: { code: failure, log },
     async handle({ req, res, body }) {
       if (req.headers.origin !== config.publicOrigin) return identityError(res, 403, 'origin_mismatch')
       const presented = playCookie.read(req)
@@ -509,6 +527,9 @@ export function createApp(deps: AppDeps): RequestListener {
           [PLAY_REHEARSAL_ENTRY_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_ENTRY_ENDPOINT, LIMITS.playRehearsalTicket, (presented, body) => rehearsal.enter(presented, body), 'rehearsal entry failed'),
           [PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT, LIMITS.playRehearsalTicket, (presented, body) => rehearsal.assign(presented, body), 'rehearsal assignment failed'),
           [PLAY_REHEARSAL_RELEASE_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_RELEASE_ENDPOINT, LIMITS.playRehearsalTicket, (presented, body) => rehearsal.release(presented, body), 'rehearsal release failed'),
+          // LOCAL TEST construction: one step of the local recipe on a property, in the role the page names (checked again under the lock).
+          // A failure nobody refused may have been written, so it is answered as unconfirmed: the page asks again with the same press id.
+          [PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT, LIMITS.playRehearsal, (presented, body) => rehearsal.construct(presented, body), 'rehearsal construction failed', 'construction_unconfirmed'),
         }
       : {}),
     // Ends the play session only. A wallet session in the same browser is a different cookie and is not touched.
@@ -584,6 +605,9 @@ export function createApp(deps: AppDeps): RequestListener {
         break
       case PLAY_REHEARSAL_TICKET_ENDPOINT:
         if (rehearsal) return serveRehearsalTicket(req, res, client, rehearsal)
+        break
+      case PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT:
+        if (rehearsal) return serveRehearsalConstruction(req, res, client, rehearsal)
         break
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.

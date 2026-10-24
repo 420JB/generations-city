@@ -10,7 +10,8 @@ import { createLogger, errorFields } from './log'
  * invariants, exact parity with the normalized property rows where it may hold real
  * properties, its events against its sequence, and its ownership eras. Then every persistent
  * brand city (world) the database holds: its binding, city, founding record, configuration
- * copies and adoptions, and that no two worlds share an installation, server or city.
+ * copies and adoptions, its properties, tickets and (local rehearsal) construction, control eras
+ * and test credits, and that no two worlds share an installation, server or city.
  *
  * Exit 0 = valid. Exit 1 = an invariant is violated (each is logged with its category).
  * Exit 2 = the check could not be run.
@@ -35,7 +36,7 @@ async function main(): Promise<number> {
     const report = await verifyCity(db)
     const summary = { mode: config.mode, worlds: report.worlds.length, ...(report.city ? { city: report.city.id, instance: report.city.instance, sequence: report.city.sequence, stateVersion: report.city.stateVersion, cityMode: report.city.mode ?? 'unknown', canonical: report.city.canonical, origin: report.city.origin, activationRehearsal: report.city.activationRehearsal } : {}), ...report.counts }
     for (const w of report.worlds)
-      log.info('world', { world: w.id, city: w.city, sequence: w.sequence, ...(w.play ? { playEnvironment: w.play.environment, gameKey: w.play.gameKey, installation: w.play.installationId, guild: w.play.discordGuildId } : {}), foundingConfigVersion: w.foundingConfigVersion, governingConfigVersion: w.governingConfigVersion, acceptedVersions: w.configVersions.accepted, rejectedVersions: w.configVersions.rejected, properties: w.properties, propertiesWithoutActivator: w.propertiesWithoutActivator, geometryFrozenAt: w.geometryFrozenAt, ...(w.districtTickets ? { ticketEpoch: w.districtTickets.epoch, ticketHighWater: w.districtTickets.highWater, ticketsCommitted: w.districtTickets.committed, ticketsActive: w.districtTickets.active, freeSlots: w.districtTickets.free, openClaimWindows: w.districtTickets.windows } : {}) })
+      log.info('world', { world: w.id, city: w.city, sequence: w.sequence, ...(w.play ? { playEnvironment: w.play.environment, gameKey: w.play.gameKey, installation: w.play.installationId, guild: w.play.discordGuildId } : {}), foundingConfigVersion: w.foundingConfigVersion, governingConfigVersion: w.governingConfigVersion, acceptedVersions: w.configVersions.accepted, rejectedVersions: w.configVersions.rejected, properties: w.properties, propertiesWithoutActivator: w.propertiesWithoutActivator, geometryFrozenAt: w.geometryFrozenAt, constructions: w.constructions, developedProperties: w.developedProperties, controlEras: w.controlEras, testCreditAccounts: w.testCreditAccounts, ...(w.districtTickets ? { ticketEpoch: w.districtTickets.epoch, ticketHighWater: w.districtTickets.highWater, ticketsCommitted: w.districtTickets.committed, ticketsActive: w.districtTickets.active, freeSlots: w.districtTickets.free, openClaimWindows: w.districtTickets.windows } : {}) })
     if (report.ok) {
       log.info('city verified', summary)
       return 0

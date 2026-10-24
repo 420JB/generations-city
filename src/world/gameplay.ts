@@ -1,12 +1,14 @@
 import { assetKey, nftAsset, parseAssetKey, type NftAsset } from './asset'
 import {
+  CONSTRUCTED_WORLD_CITY_STATE_VERSION,
   emptyWorldCityState,
   POPULATED_WORLD_CITY_STATE_VERSION,
   worldBuildingId,
-  type PopulatedWorldCityState,
+  type PropertiedWorldCityState,
   type WorldBuildingRecord,
   type WorldCityState,
 } from './cityState'
+import { developmentProblems, proposePropertyConstruction, type ConstructionRecipe, type ConstructionTransition } from './construction'
 import { districtOf, type World } from './definition'
 import { wardCapacityOf } from './layout'
 import { availablePlotsIn, choosePlot, formatPlotId, occupancyProblems, resolvePlot, type PlotCandidate, type PlotRef, type WorldOccupancy } from './plots'
@@ -68,7 +70,9 @@ const MAX_PROBLEMS = 20
  *   - every plot is a plot of the layout, in an open ward, and no two buildings share one;
  *   - each district's open wards are exactly one more than its highest occupied ward, written only
  *     when more than one is open (a ward opens only by placing a property in it);
- *   - buildings are stored in activation order, at sequences 2, 3, 4 ... with none missing.
+ *   - buildings are stored in activation order, at sequences 2, 3, 4 ... with none missing (version 2), or at
+ *     increasing sequences from 2 (version 3, where constructions take the sequences in between);
+ *   - (version 3) its development is possible: see `developmentProblems`.
  */
 export function worldCityProblems(world: World, state: WorldCityState): string[] {
   const problems: string[] = []
@@ -76,8 +80,10 @@ export function worldCityProblems(world: World, state: WorldCityState): string[]
   const records = Object.entries(state.buildings) as [string, WorldBuildingRecord][]
   const plots = new Set<string>()
   const highest = new Map<string, number>()
+  const constructed = state.version === CONSTRUCTED_WORLD_CITY_STATE_VERSION
   records.forEach(([key, b], i) => {
-    if (b.sequence !== i + 2) add(`building ${key} is stored at position ${i + 1} with sequence ${b.sequence}; buildings are stored in activation order from sequence 2`)
+    const inOrder = constructed ? b.sequence >= 2 && (i === 0 || b.sequence > records[i - 1][1].sequence) : b.sequence === i + 2
+    if (!inOrder) add(`building ${key} is stored at position ${i + 1} with sequence ${b.sequence}; buildings are stored in activation order from sequence 2`)
     const parsed = parseAssetKey(b.asset)
     const property = parsed && worldProperty(world, parsed)
     if (!property) add(`building ${key} is NFT ${b.asset}, which is not from a collection of this world`)
@@ -91,7 +97,8 @@ export function worldCityProblems(world: World, state: WorldCityState): string[]
     plots.add(plotId)
     highest.set(b.districtKey, Math.max(highest.get(b.districtKey) ?? 0, b.ward))
   })
-  if (records.length === 0 && state.version === POPULATED_WORLD_CITY_STATE_VERSION) add('a version 2 city holds no building')
+  if (records.length === 0 && state.version !== 1) add(`a version ${state.version} city holds no building`)
+  for (const p of developmentProblems(state)) add(p)
   for (const p of occupancyProblems(world, worldOccupancyOf(state))) add(p)
   for (const district of world.districts) {
     const expected = (highest.get(district.key) ?? 0) + 1
@@ -181,8 +188,8 @@ export interface PropertyTransition {
   plot: PlotRef
   building: WorldBuildingRecord
   districtGeometryFingerprint: string
-  /** The city's state at `to`. */
-  state: PopulatedWorldCityState
+  /** The city's state at `to`: version 2, or version 3 when the city already had construction. */
+  state: PropertiedWorldCityState
   event: PropertyActivatedEvent
 }
 
@@ -203,7 +210,12 @@ export function proposePropertyActivation(world: World, state: WorldCityState, s
   const building: WorldBuildingRecord = { propertyId: property.propertyId, asset: property.assetKey, collection: property.collection.key, districtKey: plot.districtKey, ward: plot.ward, plot: plot.plot, sequence: to }
   const nextOpen: Record<string, number> = { ...state.openWards }
   if (openWards > 1) nextOpen[plot.districtKey] = openWards
-  const next: PopulatedWorldCityState = { version: POPULATED_WORLD_CITY_STATE_VERSION, buildings: { ...state.buildings, [property.buildingId]: building }, openWards: nextOpen }
+  // A city with construction keeps it: the new building has nothing built, so no development entry.
+  const buildings = { ...state.buildings, [property.buildingId]: building }
+  const next: PropertiedWorldCityState =
+    state.version === CONSTRUCTED_WORLD_CITY_STATE_VERSION
+      ? { version: CONSTRUCTED_WORLD_CITY_STATE_VERSION, buildings, openWards: nextOpen, development: { ...state.development } }
+      : { version: POPULATED_WORLD_CITY_STATE_VERSION, buildings, openWards: nextOpen }
   const fingerprint = districtOf(world, plot.districtKey)!.geometryFingerprint
   return {
     ok: true,
@@ -263,4 +275,48 @@ export function replayPropertyActivations(steps: readonly RecordedActivation[]):
     sequence = proposed.transition.to
   }
   return { ok: true, state, transitions }
+}
+
+/** One recorded construction to replay: the building, the recipe that computed it, and the sequence it produced. */
+export interface RecordedConstruction {
+  buildingId: string
+  recipe: ConstructionRecipe
+  sequence: number
+}
+
+/** One recorded change of a world's city after its founding: an activation or a construction. */
+export type RecordedCityChange = ({ kind: 'activation' } & RecordedActivation) | ({ kind: 'construction' } & RecordedConstruction)
+
+export type CityReplay =
+  | { ok: true; state: WorldCityState; changes: ({ kind: 'activation'; transition: PropertyTransition } | { kind: 'construction'; transition: ConstructionTransition })[] }
+  | { ok: false; index: number; detail: string }
+
+/**
+ * Rebuild a city from its founding through every recorded change, activations and constructions together, in sequence
+ * order: each must be a valid proposal on the city before it and produce exactly its recorded sequence (2, 3, 4 ...).
+ */
+export function replayWorldCity(steps: readonly RecordedCityChange[]): CityReplay {
+  let state: WorldCityState = emptyWorldCityState()
+  let sequence = 1
+  const changes: Extract<CityReplay, { ok: true }>['changes'] = []
+  for (const [index, step] of steps.entries()) {
+    if (step.sequence !== sequence + 1) return { ok: false, index, detail: `change ${index + 1} is recorded at sequence ${step.sequence}; the city was at ${sequence}` }
+    try {
+      if (step.kind === 'activation') {
+        const proposed = proposePropertyActivation(step.world, state, sequence, step.request)
+        if (!proposed.ok) return { ok: false, index, detail: `activation at sequence ${step.sequence} (${assetKey(step.request.asset)} on ${step.request.plotId}) is refused on replay: ${proposed.reason}` }
+        changes.push({ kind: 'activation', transition: proposed.transition })
+        state = proposed.transition.state
+      } else {
+        const proposed = proposePropertyConstruction(state, sequence, { buildingId: step.buildingId, recipe: step.recipe })
+        if (!proposed.ok) return { ok: false, index, detail: `construction at sequence ${step.sequence} (${step.buildingId}) is refused on replay: ${proposed.reason}` }
+        changes.push({ kind: 'construction', transition: proposed.transition })
+        state = proposed.transition.state
+      }
+    } catch (err) {
+      return { ok: false, index, detail: err instanceof Error ? err.message : String(err) }
+    }
+    sequence = step.sequence
+  }
+  return { ok: true, state, changes }
 }

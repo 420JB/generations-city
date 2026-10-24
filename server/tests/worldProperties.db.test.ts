@@ -1532,9 +1532,9 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       await recordAsOldBuild(worldId, six.version, DOC_4_SIX, 'rejected')
       const before = await rows()
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11, 12], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11, 12, 13], current: 13 })
       expect(await rows()).toEqual(before)
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 13 })
 
       // The historical verdict stays readable and in force: a launch pinned to it is refused, nothing is recorded again.
       env.p.activate(INSTALLATION_A, six.version)
@@ -1569,7 +1569,7 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       const present = async () => (await t.db.query<{ n: number }>(`SELECT (SELECT count(*) FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND g.tgname = 'world_config_versions_current_judge') + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = 'world_config_versions_current_judge') AS n`, [t.schema])).rows[0].n
       expect(Number(await present())).toBe(0)
       expect((await t.db.query('SELECT max(version) AS v FROM schema_migrations')).rows[0].v).toBe(8)
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11, 12], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [9, 10, 11, 12, 13], current: 13 })
       expect(Number(await present())).toBe(2)
     })
 
@@ -1601,11 +1601,13 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
         const text = await readFile(file, 'utf8')
         if (/world\/properties|\.\/properties['"]|createWorldPropertyStore|createPropertyActivationService|world_properties/.test(text)) reaching.push(file.slice(root.length + 1))
       }
-      // The store reads world_properties (parity) and verify reads it; neither writes. The local rehearsal composes the
-      // activation service, and main builds the property store for it and for nothing else. Nothing else names it.
-      expect(reaching.sort()).toEqual(['main.ts', join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
+      // The store reads world_properties (parity) and verify reads it; neither writes. The construction store (P1-C2-E3A)
+      // reads a property to build on it, and never writes one. The local rehearsal composes the activation service, and
+      // main builds the property store for it and for nothing else. Nothing else names it.
+      expect(reaching.sort()).toEqual(['main.ts', join('world', 'construction.ts'), join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
       for (const file of reaching) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/INSERT INTO world_properties/)
-      for (const file of [join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')]) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/createWorldPropertyStore/)
+      for (const file of [join('world', 'construction.ts'), join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
+        expect(await readFile(join(root, file), 'utf8')).not.toMatch(/createWorldPropertyStore/)
       // main builds it exactly once, inside the block that only runs with the local rehearsal file (refused outside local mode).
       const main = await readFile(join(root, 'main.ts'), 'utf8')
       expect(main.match(/createWorldPropertyStore\(/g)).toHaveLength(1)

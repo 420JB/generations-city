@@ -4,6 +4,7 @@ import { PLAY_ENVIRONMENTS_FOR_MODE, type AppMode } from '../config'
 import type { Database } from '../db/pool'
 import { withTransaction } from '../db/transaction'
 import {
+  CONSTRUCTED_WORLD_CITY_STATE_VERSION,
   emptyWorldCityState,
   establishedCollections,
   governingProblems,
@@ -11,7 +12,6 @@ import {
   parseWorldCityState,
   parseWorldFoundation,
   parseWorldGeometry,
-  POPULATED_WORLD_CITY_STATE_VERSION,
   projectWorldDistricts,
   sameGeometry,
   worldBuildingId,
@@ -70,9 +70,11 @@ import { rotationBasis, syncAssignmentRotation } from './rotation'
  * nothing.
  *
  * A world's city is read only when it is one this build wrote: as founded (state version 1,
- * sequence 1), or with properties (version 2, one per sequence after the first, migration 0007),
- * where every building in the state is exactly one `world_properties` row and the engine finds the
- * state possible on the world's geometry. Anything else is refused, never drawn in part. Every
+ * sequence 1), with properties (version 2, one per sequence after the first, migration 0007), or with
+ * construction (version 3, each later sequence one property or one construction, migration 0013),
+ * where every building in the state is exactly one `world_properties` row, every development entry is
+ * exactly its building's latest `world_property_constructions` row, and the engine finds the state
+ * possible on the world's geometry. Anything else is refused, never drawn in part. Every
  * answer carries the engine's read-only projection of the districts (open wards, plot candidates).
  * Properties are written only by `world/properties.ts`, never here.
  *
@@ -210,6 +212,26 @@ interface BindingRow {
   city_id: string
   city_instance_id: string
   created_at: Date
+}
+
+/** A property's latest construction, and how many a city has in all (migration 0013), as far as a read needs them. */
+export interface ConstructionParity {
+  count: number
+  latest: { property_id: string; sequence: string; built_after: number; tier_after: number }[]
+}
+
+export const NO_CONSTRUCTION: ConstructionParity = Object.freeze({ count: 0, latest: [] })
+
+/** A world's construction records, as parity needs them. */
+export async function constructionParityOf(client: Pick<PoolClient, 'query'>, worldId: string): Promise<ConstructionParity> {
+  const count = Number((await client.query<{ n: string }>('SELECT count(*) AS n FROM world_property_constructions WHERE world_id = $1', [worldId])).rows[0].n)
+  const latest = (
+    await client.query<ConstructionParity['latest'][number]>(
+      'SELECT DISTINCT ON (property_id) property_id, sequence, built_after, tier_after FROM world_property_constructions WHERE world_id = $1 ORDER BY property_id, sequence DESC',
+      [worldId],
+    )
+  ).rows
+  return { count, latest }
 }
 
 /** A `world_properties` row, as far as a read needs it (migration 0007). */
@@ -568,9 +590,8 @@ async function readFounded(client: PoolClient, bound: Pick<BindingRow, 'world_id
   if (!city || city.instance_id !== bound.city_instance_id) throw unavailable(`world ${worldId} has no city ${bound.city_id}`)
   const sequence = Number(city.sequence)
   const state = parseWorldCityState(city.state)
-  const expected = sequence === 1 ? WORLD_CITY_STATE_VERSION : POPULATED_WORLD_CITY_STATE_VERSION
   // This build reads exactly the world cities it writes. Anything else is refused, not drawn in part.
-  if (!state || state.version !== expected || city.state_version !== expected)
+  if (!state || state.version !== city.state_version || (sequence === 1) !== (state.version === WORLD_CITY_STATE_VERSION))
     throw unavailable(`world ${worldId} holds a city this build cannot read (state version ${city.state_version}, sequence ${sequence})`)
 
   const founding = (await client.query<{ type: string; payload: { world?: { id?: unknown; foundingConfig?: { version?: unknown }; foundation?: unknown } } }>('SELECT type, payload FROM city_events WHERE city_id = $1 AND sequence = 1', [bound.city_id])).rows[0]
@@ -585,7 +606,9 @@ async function readFounded(client: PoolClient, bound: Pick<BindingRow, 'world_id
       [worldId],
     )
   ).rows
-  const mismatch = parityProblem(state, sequence, properties)
+  // Only a city with construction has construction records: the database keeps a version 2 city without any (0013).
+  const constructions = state.version === CONSTRUCTED_WORLD_CITY_STATE_VERSION ? await constructionParityOf(client, worldId) : NO_CONSTRUCTION
+  const mismatch = parityProblem(state, sequence, properties, constructions)
   if (mismatch) throw unavailable(`world ${worldId}'s city and its property records disagree: ${mismatch}`)
 
   const frozen = (
@@ -716,18 +739,33 @@ function versionRowOf(pinned: VerifiedLaunch['pinned'], judged: AcceptedJudgemen
 }
 
 /**
- * Why a city's state and its property records are not one picture, or null: one building per property, the same
- * NFT, collection, plot and sequence, and one property per sequence after the founding one.
+ * Why a city's state and its property and construction records are not one picture, or null: one building per
+ * property, the same NFT, collection, plot and sequence; one property or one construction per sequence after the
+ * founding one (with no construction, one property per sequence, in order); and each building's development exactly
+ * its latest construction, present exactly when it has one.
  */
-export function parityProblem(state: WorldCityState, sequence: number, properties: readonly PropertyRow[]): string | null {
+export function parityProblem(state: WorldCityState, sequence: number, properties: readonly PropertyRow[], constructions: ConstructionParity = NO_CONSTRUCTION): string | null {
   const buildings = Object.keys(state.buildings).length
-  if (properties.length !== buildings || sequence !== properties.length + 1) return `sequence ${sequence}, ${buildings} buildings, ${properties.length} property records`
+  if (properties.length !== buildings || sequence !== properties.length + constructions.count + 1)
+    return `sequence ${sequence}, ${buildings} buildings, ${properties.length} property records, ${constructions.count} construction records`
+  const constructed = state.version === CONSTRUCTED_WORLD_CITY_STATE_VERSION
+  if (constructed !== constructions.count > 0) return `state version ${state.version} with ${constructions.count} construction records`
+  let previous = 1
   for (const [i, p] of properties.entries()) {
     const b = (state.buildings as Record<string, WorldBuildingRecord>)[worldBuildingId(p.id)]
     const asset = `${p.chain}/${p.standard}:${p.contract}/${p.token_id}`
-    if (Number(p.activated_sequence) !== i + 2) return `property ${p.id} records sequence ${p.activated_sequence}, not ${i + 2}`
-    if (!b || b.propertyId !== p.id || b.asset !== asset || b.collection !== p.collection_key || b.districtKey !== p.district_key || b.ward !== p.ward || b.plot !== p.plot || b.sequence !== i + 2)
+    const at = Number(p.activated_sequence)
+    if (constructed ? at <= previous : at !== i + 2) return `property ${p.id} records sequence ${p.activated_sequence}, not ${constructed ? `after ${previous}` : i + 2}`
+    previous = at
+    if (!b || b.propertyId !== p.id || b.asset !== asset || b.collection !== p.collection_key || b.districtKey !== p.district_key || b.ward !== p.ward || b.plot !== p.plot || b.sequence !== at)
       return `property ${p.id} is not the building its city state holds`
+  }
+  if (state.version === CONSTRUCTED_WORLD_CITY_STATE_VERSION) {
+    if (Object.keys(state.development).length !== constructions.latest.length) return `${Object.keys(state.development).length} developed buildings, ${constructions.latest.length} constructed properties`
+    for (const c of constructions.latest) {
+      const d = state.development[worldBuildingId(c.property_id)]
+      if (!d || d.sequence !== Number(c.sequence) || d.built !== c.built_after || d.tier !== c.tier_after) return `property ${c.property_id}'s latest construction is not the development its city state holds`
+    }
   }
   return null
 }

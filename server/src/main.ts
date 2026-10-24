@@ -20,6 +20,7 @@ import { createPlayLaunchService } from './play/launch'
 import { createPlaySessionService, createPlaySessionStore } from './play/session'
 import { loadStaticSite } from './static'
 import { createWorldPropertyStore } from './world/properties'
+import { createWorldConstructionStore } from './world/construction'
 import { createLocalPropertyRehearsal, parseRehearsalFile, rehearsalEligibility, type LocalPropertyRehearsal } from './world/rehearsal'
 import { createDistrictTicketStore } from './world/tickets'
 import { createWorldStore } from './world/store'
@@ -58,7 +59,16 @@ async function main() {
       const fixture = parseRehearsalFile(JSON.parse(await readFile(config.localRehearsalFile, 'utf8')))
       // The ticket store and the rehearsal judge eligibility, rules and rule results on the same fixture.
       const tickets = createDistrictTicketStore(db, { mode: config.mode, log, eligibility: rehearsalEligibility(fixture) })
-      rehearsal = createLocalPropertyRehearsal({ mode: config.mode, fixture, sessions: playSessions, store: createWorldPropertyStore(db, { mode: config.mode, log }), tickets })
+      rehearsal = createLocalPropertyRehearsal({
+        mode: config.mode,
+        fixture,
+        sessions: playSessions,
+        store: createWorldPropertyStore(db, { mode: config.mode, log }),
+        tickets,
+        // LOCAL TEST construction, its owners and test credits from the same fixture (file v4; none in earlier versions).
+        construction: createWorldConstructionStore(db, { mode: config.mode, log }),
+        log,
+      })
       log.warn('LOCAL PROPERTY REHEARSAL ENABLED: test NFTs, district rules and Proofy rule results from a local file stand in for Proofy Core eligibility; district tickets are issued and properties placed permanently in this local database. Not verified ownership or rule results.', { players: fixture.grants.size, districtRules: fixture.rules.length, ruleResults: fixture.results.length, ticketLeaseSeconds: DISTRICT_TICKET_LEASE_SECONDS })
     } catch (err) {
       log.error(`invalid local rehearsal file: ${err instanceof Error ? err.message : String(err)}`)

@@ -237,7 +237,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket hardening (migration 0012) ag
       const kept = await history(endedBefore)
       const slots = await slotsOf(worldId)
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13], current: 13 })
 
       const after = await leases(worldId)
       // 5 s, issued 10 s ago: its own lease had run out; not cut (it was shorter), expired, slot freed.
@@ -308,7 +308,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket hardening (migration 0012) ag
       const kept = await history(endedBefore)
       const [deeWindow] = await windowsBy(worldId, DEE)
 
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [12], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [12, 13], current: 13 })
 
       const after = await leases(worldId)
       // Dee's window: cut to 900 s after her legacy claim; her live ticket ends with it; the two she cancelled keep their ends.
@@ -363,9 +363,9 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket hardening (migration 0012) ag
         expect(await state()).toEqual(before)
         expect((await t.db.query("SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND column_name = 'legacy_expires_at'", [t.schema])).rowCount).toBe(0)
       }
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [12], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [12, 13], current: 13 })
       const applied = await leases(worldId)
-      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 12 })
+      expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 13 })
       expect(await leases(worldId)).toEqual(applied)
       const triggers = (await t.db.query<{ tgname: string; tgenabled: string }>(
         `SELECT g.tgname, g.tgenabled FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname IN ('world_claim_windows', 'world_district_tickets') AND NOT g.tgisinternal ORDER BY 1`, [t.schema])).rows
@@ -400,7 +400,7 @@ describe.skipIf(NO_TEST_DATABASE)('district ticket hardening (migration 0012) ag
       expect(done).toBe(false)
       resume()
       const hal = await entering
-      expect(await migrating).toEqual({ applied: [12], current: 12 })
+      expect(await migrating).toEqual({ applied: [12, 13], current: 13 })
       expect(await statusOf(hal.id)).toBe('active')
       expect((await leases(worldId))[hal.id]).toMatchObject({ lasts: '00:15:00', legacy: null })
       expect(await verifyCity(t.db)).toMatchObject({ ok: true })

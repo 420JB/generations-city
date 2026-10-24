@@ -8,6 +8,7 @@ import { mayAct, previewClaimAccess, type PreviewMember } from '../core/eligibil
 import { districtPlots, loadBrandCity, type LoadedBrandCity } from '../load'
 import type { SampleBrand } from '../samples'
 import type { WorldPoint } from '../../game/world'
+import type { ConstructionAccess } from './construction'
 import { MyPropertiesPanel, PropertyContextCard, type HomeClaim, type PropertyHome } from './home'
 import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
 import { propertyContext } from './properties'
@@ -100,7 +101,9 @@ const candidatesIn = (city: LoadedBrandCity, districtId: string): PreviewCandida
  *
  * The Play page also passes `home`: the properties the signed-in player founded here, as the server's
  * permanent record says. The HUD then offers MY PROPERTIES, each a tap from its panel and the camera, and a
- * stored property's panel says what surrounds it in the stored city.
+ * stored property's panel says what surrounds it in the stored city. In a local rehearsal it passes
+ * `construction` too: a stored property's panel then shows its LOCAL TEST construction and the one test
+ * action the server says this viewer has (`construction.tsx`).
  */
 export function BrandCityPreview({
   city,
@@ -109,6 +112,7 @@ export function BrandCityPreview({
   stored,
   rehearsal,
   home,
+  construction,
 }: {
   city: LoadedBrandCity
   members: readonly (PreviewMember | null)[]
@@ -117,6 +121,8 @@ export function BrandCityPreview({
   stored?: (buildingId: string) => StoredProperty | null
   rehearsal?: PlacementRehearsal | null
   home?: PropertyHome | null
+  /** LOCAL TEST construction on stored properties' panels, when the server runs the local rehearsal (P1-C2-E3A). */
+  construction?: ConstructionAccess | null
 }) {
   const { scene, state, config } = city
   const [memberIndex, setMemberIndex] = useState(1)
@@ -321,6 +327,7 @@ export function BrandCityPreview({
         member={member}
         stored={stored?.(panel.id) ?? null}
         context={home && <HomeContext city={city} buildingId={panel.id} onWarp={warp} onDistrict={openDistrict} />}
+        construction={construction ?? null}
         onDistrict={openDistrict}
         onBack={founded.has(panel.id) ? openHome : undefined}
         onClose={() => setPanel(null)}
