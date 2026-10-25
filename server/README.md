@@ -63,6 +63,7 @@ server/
     world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011; held by the database too, 0012)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
     world/construction.ts  LOCAL ONLY: test construction of a property (migrations 0013, 0014: Tier 2) and each player's Architect activity, paid in valueless test credits; only the local rehearsal uses it
+    world/designs.ts     LOCAL ONLY: Architect property design (migration 0015), a catalog facade and roof saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011, leases and governing configuration 0012)
@@ -1263,6 +1264,11 @@ configuration and is not affected by anything here.
   and writes nothing; the older recipe's records stay valid. An older build also reads a city with
   more than 100 units built into any property as impossible (`world_unavailable`, nothing drawn).
   0014 changes no row.
+  And `0015` (Architect property design): one new append-only table, `world_property_designs`, and
+  its guard; nothing else is created, replaced or changed. A design never advances a city's sequence
+  or writes a city event, so an older build still reads every city exactly as before; it simply does
+  not draw saved designs (every building keeps the default design) and has no design routes. 0015
+  changes no row.
 
 ## Tests
 

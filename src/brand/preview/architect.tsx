@@ -20,6 +20,8 @@ import { plotAddress } from './properties'
  *   - founding a property is a permanent record of who activated it first, never ownership, and the TEST file's
  *     controller is never verified NFT control;
  *   - descriptive statistics only: no rank, level, XP, badge or reward exists, so none is shown.
+ *
+ * A property the TEST file names the player the controller of also offers its ARCHITECT DESIGN view (P1-C2-E4A, `design.tsx`).
  */
 
 export type ArchitectLoad = { ok: true; view: RehearsalArchitectView } | { ok: false; problem: ClaimProblem }
@@ -28,7 +30,22 @@ const collectionName = (city: LoadedBrandCity, key: string) => city.config.colle
 const tokenOf = (asset: string) => asset.slice(asset.lastIndexOf('/') + 1)
 const CONTROL: Record<RehearsalArchitectProperty['control'], string> = { viewer: 'Test controller: you', other: 'Test controller: another player', unknown: 'No test controller named' }
 
-export function ArchitectPanel({ city, load, onView, onBack, onClose }: { city: LoadedBrandCity; load: () => Promise<ArchitectLoad>; onView: (buildingId: string) => void; onBack?: () => void; onClose: () => void }) {
+export function ArchitectPanel({
+  city,
+  load,
+  onView,
+  onDesign,
+  onBack,
+  onClose,
+}: {
+  city: LoadedBrandCity
+  load: () => Promise<ArchitectLoad>
+  onView: (buildingId: string) => void
+  /** Opens a property's Architect design view (where the server runs it): offered for properties the player is named the controller of. */
+  onDesign?: (buildingId: string) => void
+  onBack?: () => void
+  onClose: () => void
+}) {
   const [answer, setAnswer] = useState<ArchitectLoad | null>(null)
   const heading = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -55,7 +72,7 @@ export function ArchitectPanel({ city, load, onView, onBack, onClose }: { city: 
           {answer && !answer.ok ? answer.problem.message : 'Reading your construction record…'}
         </p>
       ) : (
-        <ArchitectRecord city={city} view={view} onView={onView} />
+        <ArchitectRecord city={city} view={view} onView={onView} onDesign={onDesign} />
       )}
       <p className="muted small" data-testid="architect-basis">
         Owner units count only while this local server’s TEST file named you the NFT’s controller: test data, not verified NFT control. Founding a property is not owning it. Patron
@@ -65,7 +82,7 @@ export function ArchitectPanel({ city, load, onView, onBack, onClose }: { city: 
   )
 }
 
-function ArchitectRecord({ city, view, onView }: { city: LoadedBrandCity; view: RehearsalArchitectView; onView: (buildingId: string) => void }) {
+function ArchitectRecord({ city, view, onView, onDesign }: { city: LoadedBrandCity; view: RehearsalArchitectView; onView: (buildingId: string) => void; onDesign?: (buildingId: string) => void }) {
   const { totals: t, credits } = view
   return (
     <>
@@ -117,7 +134,7 @@ function ArchitectRecord({ city, view, onView }: { city: LoadedBrandCity; view: 
       ) : (
         <ul className="home-list" aria-label={`Your construction activity in ${city.config.cityName}`} data-testid="architect-properties" data-count={view.propertyCount}>
           {view.properties.map((a) => (
-            <ArchitectItem key={a.buildingId} city={city} a={a} thresholds={view.recipe.tierThresholds} onView={onView} />
+            <ArchitectItem key={a.buildingId} city={city} a={a} thresholds={view.recipe.tierThresholds} onView={onView} onDesign={a.control === 'viewer' ? onDesign : undefined} />
           ))}
         </ul>
       )}
@@ -126,7 +143,7 @@ function ArchitectRecord({ city, view, onView }: { city: LoadedBrandCity; view: 
   )
 }
 
-function ArchitectItem({ city, a, thresholds, onView }: { city: LoadedBrandCity; a: RehearsalArchitectProperty; thresholds: readonly number[]; onView: (buildingId: string) => void }) {
+function ArchitectItem({ city, a, thresholds, onView, onDesign }: { city: LoadedBrandCity; a: RehearsalArchitectProperty; thresholds: readonly number[]; onView: (buildingId: string) => void; onDesign?: (buildingId: string) => void }) {
   const d = sceneDistrict(city.scene, a.districtKey)
   const name = `${collectionName(city, a.collection)} #${tokenOf(a.asset)}`
   const floor = a.tier === 0 ? 0 : thresholds[a.tier - 1]
@@ -175,9 +192,16 @@ function ArchitectItem({ city, a, thresholds, onView }: { city: LoadedBrandCity;
           {next}
         </div>
       </div>
-      <button type="button" className="warp-btn sm" onClick={() => onView(a.buildingId)} aria-label={`Open ${name}, ${d.title}, ${plotAddress(a.ward, a.plot)}`} data-testid="architect-property-view">
-        OPEN
-      </button>
+      <div className="architect-item-actions">
+        <button type="button" className="warp-btn sm" onClick={() => onView(a.buildingId)} aria-label={`Open ${name}, ${d.title}, ${plotAddress(a.ward, a.plot)}`} data-testid="architect-property-view">
+          OPEN
+        </button>
+        {onDesign && (
+          <button type="button" className="warp-btn sm" onClick={() => onDesign(a.buildingId)} aria-label={`Architect design of ${name}`} data-testid="architect-property-design">
+            DESIGN
+          </button>
+        )}
+      </div>
     </li>
   )
 }

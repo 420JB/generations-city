@@ -11,6 +11,10 @@ import { foundedProperties, foundingOrder } from '../preview/properties'
 import type { ConstructionAccess, ConstructionLoad, ConstructionOutcome } from '../preview/construction'
 import { pressBook } from '../preview/constructionPress'
 import type { ArchitectLoad } from '../preview/architect'
+import type { DesignAccess, DesignLoad, DesignOutcome } from '../preview/design'
+import { DESIGN_REFUSALS, designBook, type DesignSave } from '../preview/designPress'
+import { withPropertyDesigns } from '../core/persisted'
+import type { PropertyDesign } from '../../world/design'
 import { AssignedDistrict, ClaimAnnouncer, ClaimCountdown, RehearsalFlag, type AssignedTicket, type PlacementRehearsal, type RehearsalNft, type RehearsalResult, type TicketResult } from '../preview/rehearsal'
 import { wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
@@ -19,17 +23,23 @@ import { CONSTRUCTED_WORLD_CITY_STATE_VERSION, type WorldBuildingRecord } from '
 import { worldProperty } from '../../world/property'
 import {
   parseRehearsalActivationResponse,
+  parseRehearsalAppearanceResponse,
   parseRehearsalArchitectView,
   parseRehearsalAssetsResponse,
   parseRehearsalConstructionResponse,
   parseRehearsalConstructionView,
+  parseRehearsalDesignResponse,
+  parseRehearsalDesignView,
   parseRehearsalTicketResponse,
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_APPEARANCE_ENDPOINT,
   PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
+  PLAY_REHEARSAL_DESIGN_ENDPOINT,
+  PLAY_REHEARSAL_DESIGNS_ENDPOINT,
   PLAY_REHEARSAL_ENTRY_ENDPOINT,
   PLAY_REHEARSAL_RELEASE_ENDPOINT,
   PLAY_REHEARSAL_TICKET_ENDPOINT,
@@ -37,7 +47,9 @@ import {
   type RehearsalActorRequest,
   type ConstructionRole,
   type RehearsalAsset,
+  type RehearsalCityDesign,
   type RehearsalConstructionRequest,
+  type RehearsalDesignRequest,
   type RehearsalErrorCode,
   type RehearsalTicket,
 } from '../../protocol/playRehearsal'
@@ -66,7 +78,16 @@ type Phase =
   /** Another tab of this browser launched or signed out: this tab's city is not the browser's session any more. */
   | { kind: 'superseded' }
   | { kind: 'refused'; code: PlayErrorCode | 'unreadable'; problems: ConfigProblem[] }
-  | { kind: 'ready'; source: Source; city: PlayCityResponse; loaded: LoadedBrandCity; rehearsal: RehearsalAsset[] | null; ticket: TicketState; claimed: ClaimedProperty | null }
+  | { kind: 'ready'; source: Source; city: PlayCityResponse; loaded: LoadedBrandCity; rehearsal: RehearsalAsset[] | null; ticket: TicketState; claimed: ClaimedProperty | null; designs: CityDesigns | null }
+
+/**
+ * The city's saved Architect designs (P1-C2-E4A), by building id, as the server answered them; null where the server runs no
+ * rehearsal. `unread`: the read failed, so buildings are drawn with the default design and the page says so.
+ */
+interface CityDesigns {
+  byBuilding: Readonly<Record<string, RehearsalCityDesign>>
+  unread: boolean
+}
 
 /**
  * The player's district ticket in a local rehearsal: the one the server holds for them, or none and why. `awaiting`: none
@@ -167,6 +188,11 @@ const REHEARSAL_REFUSALS: Record<RehearsalErrorCode | 'invalid_request', string>
   insufficient_test_credits: 'You do not have enough local test credits for this step. Nothing was built or spent.',
   action_conflict: 'This press’s id is already recorded for a construction that does not match this request, so nothing more was built or spent for it. That construction may be this build, recorded earlier: check this property’s history before you press again.',
   construction_unconfirmed: 'We could not confirm this build. It may already have been built and paid for. Check it with the same press: one press is never built or paid twice.',
+  design_not_open: 'Property design is not open in this city on this local server. Nothing was saved.',
+  design_unsupported: 'That facade or roof is not one this city offers. Nothing was saved.',
+  design_stale: 'This property’s design changed after you opened it, so nothing was saved. The latest saved design is shown now: choose again on it.',
+  design_unchanged: 'That is already this property’s saved design. Nothing was saved.',
+  design_unconfirmed: 'We could not confirm this save. It may already have been saved. Check it with the same save: one save is never applied twice, and never as a different design.',
 }
 
 /** Session and Play refusals of a placement, said as what happened to the placement rather than to the city view. */
@@ -239,6 +265,12 @@ function constructionProblemOf(code: unknown): ClaimProblem {
   return { message: REFUSALS.unreadable, kind: 'retry', code: null }
 }
 
+/** A design route's refusal: the codes it shares with construction and placement said as what happened to the design. */
+function designProblemOf(code: unknown): ClaimProblem {
+  if (typeof code === 'string' && Object.hasOwn(DESIGN_REFUSALS, code)) return { message: DESIGN_REFUSALS[code], kind: problemKind(code), code }
+  return constructionProblemOf(code)
+}
+
 /** A rehearsal route's refusal code, as the player is told it and what it asks of them. */
 function problemOf(code: unknown): ClaimProblem {
   if (typeof code === 'string' && Object.hasOwn(REHEARSAL_REFUSALS, code)) return { message: REHEARSAL_REFUSALS[code as RehearsalErrorCode], kind: problemKind(code), code }
@@ -271,7 +303,14 @@ function draw(source: Source, city: PlayCityResponse): Phase {
   if (!loaded.ok) return { kind: 'refused', code: 'config_invalid', problems: loaded.problems }
   // The server's read-only projection of districts, wards and plot candidates must be exactly what this page's engine computes.
   if (JSON.stringify(projectWorldDistricts(loaded.city.world, city.world.state)) !== JSON.stringify(city.world.districts)) return { kind: 'refused', code: 'unreadable', problems: [{ path: 'world.districts', detail: 'the city’s districts and plots do not match its stored state' }] }
-  return { kind: 'ready', source, city, loaded: loaded.city, rehearsal: null, ticket: NO_TICKET, claimed: null }
+  return { kind: 'ready', source, city, loaded: loaded.city, rehearsal: null, ticket: NO_TICKET, claimed: null, designs: null }
+}
+
+/** The saved designs of the session's city, when the server runs the local rehearsal. A failed read draws the defaults, and says so. */
+async function readDesigns(): Promise<CityDesigns> {
+  const answer = await ask(PLAY_REHEARSAL_APPEARANCE_ENDPOINT)
+  const parsed = answer?.response.ok ? parseRehearsalAppearanceResponse(answer.body) : null
+  return parsed ? { byBuilding: Object.fromEntries(parsed.designs.map((d) => [d.buildingId, d])), unread: false } : { byBuilding: {}, unread: true }
 }
 
 /** The test NFTs this session's player may place, when the server runs a local rehearsal; null when it does not (404) or cannot say. */
@@ -289,10 +328,12 @@ async function readRehearsal(): Promise<RehearsalAsset[] | null> {
 async function withRehearsal(p: Phase): Promise<Phase> {
   if (p.kind !== 'ready') return p
   const rehearsal = await readRehearsal()
-  if (!rehearsal || rehearsal.length === 0) return { ...p, rehearsal }
+  // Every player of the city sees its saved designs, whether or not the file lists anything for them.
+  const designs = rehearsal ? await readDesigns() : null
+  if (!rehearsal || rehearsal.length === 0) return { ...p, rehearsal, designs }
   const answer = p.source === 'launch' ? await post(PLAY_REHEARSAL_ENTRY_ENDPOINT, actorOf(p.city)) : await ask(PLAY_REHEARSAL_TICKET_ENDPOINT)
   const got = ticketFrom(answer)
-  return { ...p, rehearsal, ticket: 'refused' in got ? { ...NO_TICKET, note: got.refused } : got }
+  return { ...p, rehearsal, designs, ticket: 'refused' in got ? { ...NO_TICKET, note: got.refused } : got }
 }
 
 /**
@@ -352,6 +393,16 @@ export function PlayCityApp() {
       build: (id, role, action) => handlers.current!.build(id, role, action),
       presses: () => handlers.current!.presses(),
       activity: () => handlers.current!.activity(),
+    }),
+    [],
+  )
+  // The same for Architect design: one object for the page's life, each call to the latest render's handlers.
+  const designHandlers = useRef<DesignAccess | null>(null)
+  const designAccess = useMemo<DesignAccess>(
+    () => ({
+      load: (id) => designHandlers.current!.load(id),
+      save: (save) => designHandlers.current!.save(save),
+      saves: () => designHandlers.current!.saves(),
     }),
     [],
   )
@@ -537,7 +588,51 @@ export function PlayCityApp() {
     return { ok: true, fresh: built.fresh, construction: built.construction, view: built.view }
   }
 
+  /** LOCAL REHEARSAL Architect design: a property's design as the server answers it for this session's player. */
+  async function loadDesign(propertyId: string): Promise<DesignLoad> {
+    const answer = await ask(`${PLAY_REHEARSAL_DESIGN_ENDPOINT}?property=${encodeURIComponent(propertyId)}`)
+    if (!answer) return { ok: false, problem: UNREACHABLE }
+    const view = answer.response.ok ? parseRehearsalDesignView(answer.body) : null
+    return view ? { ok: true, view } : { ok: false, problem: designProblemOf(answer.response.ok ? null : (answer.body as { error?: unknown } | null)?.error) }
+  }
+
+  /**
+   * Save one design, exactly as the save book keeps it, for exactly the session, world and player this page drew. Only an
+   * answer about exactly this save (its id, property, revision, catalog and choices) confirms it; then the city is drawn
+   * with the city's saved designs as the server has them now.
+   */
+  async function saveDesign(drawn: PlayCityResponse, save: DesignSave): Promise<DesignOutcome> {
+    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof }
+    const answer = await post(PLAY_REHEARSAL_DESIGNS_ENDPOINT, request)
+    if (!answer) return { ok: false, problem: { message: REHEARSAL_REFUSALS.design_unconfirmed, kind: 'retry', code: null } }
+    const refused = (answer.body as { error?: unknown } | null)?.error
+    if (refused === 'play_actor_mismatch') {
+      setPhase({ kind: 'superseded' })
+      return { ok: false, problem: { message: REFUSALS.play_actor_mismatch, kind: 'refused', code: refused } }
+    }
+    if ((answer.response.status === 401 || answer.response.status === 403) && typeof refused === 'string' && refused !== 'origin_mismatch' && Object.hasOwn(REFUSALS, refused)) {
+      setPhase(refusal(answer.body))
+      return { ok: false, problem: { message: REFUSALS[refused as PlayErrorCode], kind: 'refused', code: refused } }
+    }
+    const saved = answer.response.ok ? parseRehearsalDesignResponse(answer.body) : null
+    const d = saved?.design
+    if (!saved || d!.actionId !== save.actionId || d!.propertyId !== save.propertyId || d!.revision !== save.baseRevision + 1 || d!.catalog !== save.catalog || d!.facade !== save.facade || d!.roof !== save.roof)
+      return { ok: false, problem: designProblemOf(answer.response.ok ? null : refused) }
+    // Drawn at once, unless the page already has a later revision of it; then as the server has every design now.
+    const mine: RehearsalCityDesign = { propertyId: d!.propertyId, buildingId: d!.buildingId, revision: d!.revision, catalog: d!.catalog, facade: d!.facade, roof: d!.roof }
+    setPhase((p) => (p.kind === 'ready' && p.designs && (p.designs.byBuilding[mine.buildingId]?.revision ?? 0) < mine.revision ? { ...p, designs: { ...p.designs, byBuilding: { ...p.designs.byBuilding, [mine.buildingId]: mine } } } : p))
+    const now = await readDesigns()
+    if (!now.unread) setPhase((p) => (p.kind === 'ready' && p.city.world.id === drawn.world.id ? { ...p, designs: now } : p))
+    return { ok: true, fresh: saved.fresh, design: saved.design, view: saved.view }
+  }
+
   useEffect(() => {
+    designHandlers.current = {
+      load: loadDesign,
+      save: (save) => (phase.kind === 'ready' ? saveDesign(phase.city, save) : Promise.resolve({ ok: false, problem: UNREACHABLE })),
+      // The saves of exactly the player and world drawn now: never sent for another.
+      saves: () => designBook(phase.kind === 'ready' ? { worldId: phase.city.world.id, discordUserId: phase.city.viewer.player.discordUserId } : { worldId: '', discordUserId: '' }),
+    }
     handlers.current = {
       load: loadConstruction,
       activity: loadActivity,
@@ -565,6 +660,8 @@ export function PlayCityApp() {
         onRefresh={(ending) => refreshTicket(city, ending)}
         onSignOut={signOut}
         construction={phase.rehearsal ? constructionAccess : null}
+        designs={phase.designs}
+        design={phase.rehearsal && phase.designs ? designAccess : null}
       />
     )
   }
@@ -656,6 +753,8 @@ function PlayCity({
   onRefresh,
   onSignOut,
   construction,
+  designs,
+  design,
 }: {
   source: Source
   city: PlayCityResponse
@@ -671,9 +770,15 @@ function PlayCity({
   onSignOut: () => void
   /** The server runs the local rehearsal: stored properties' panels show their LOCAL TEST construction. */
   construction: ConstructionAccess | null
+  /** The city's saved Architect designs, and the design view (local rehearsal only). */
+  designs: CityDesigns | null
+  design: DesignAccess | null
 }) {
   const { play, viewer, world } = response
   const ticket: AssignedTicket | null = held.ticket
+  // The city as stored, drawn with its saved designs: only the designed buildings differ from the stored drawing.
+  const choices = useMemo<Record<string, PropertyDesign>>(() => Object.fromEntries(Object.entries(designs?.byBuilding ?? {}).map(([id, d]) => [id, { facade: d.facade, roof: d.roof }])), [designs])
+  const designed = useMemo<LoadedBrandCity>(() => ({ ...city, state: withPropertyDesigns(city.state, choices) }), [city, choices])
   /** The player's test NFTs of this city's collections: those not placed yet, and how many are. */
   const mine = useMemo<{ nfts: RehearsalNft[]; placed: number } | null>(() => {
     if (!listed) return null
@@ -786,6 +891,7 @@ function PlayCity({
       data-founded={home.founded.length}
       data-buildings={buildings}
       data-developed={developed}
+      data-designed={designs ? Object.keys(designs.byBuilding).length : ''}
       data-candidates={world.districts.reduce((n, d) => n + d.candidates.plotIds.length, 0)}
       data-player={player.discordUserId}
       data-session-ref={viewer.session.ref}
@@ -796,12 +902,13 @@ function PlayCity({
     >
       {rehearsal && <ClaimAnnouncer expiresAt={expiresAt} clockOffset={offset} />}
       <BrandCityPreview
-        city={city}
+        city={designed}
         members={members}
         stored={stored}
         rehearsal={rehearsal}
         home={home}
         construction={construction}
+        design={design}
         bar={(controls) => (
           <div className={`preview-bar play-bar${controls.claiming ? ' claiming' : ''}`} role="region" aria-label="Proofy Play installation" data-testid="preview-bar">
             <span className="preview-flag play-flag">PROOFY PLAY · {play.environment.toUpperCase()}</span>
@@ -813,6 +920,7 @@ function PlayCity({
                 ? 'Nothing has been claimed or built yet.'
                 : `${buildings} ${buildings === 1 ? 'property' : 'properties'}, ${developed === 0 ? 'nothing built yet' : `${developed} with local test construction`}.`}{' '}
               {developed > 0 && 'Local test construction draws tiers only: it earns no Crown, Capital or monument. '}
+              {designs?.unread && <span data-testid="play-designs-unread">Saved building designs could not be read just now, so buildings are drawn with the default design. </span>}
               {rehearsal
                 ? `This local server lists ${rehearsal.nfts.length + rehearsal.placed} test NFT${rehearsal.nfts.length + rehearsal.placed === 1 ? '' : 's'} for you (${rehearsal.placed} placed). Not verified ownership.`
                 : 'Claims are not open; the simulated viewers only preview district rules.'}

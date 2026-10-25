@@ -2,9 +2,11 @@ import { DEFAULT_ARCHITECTURE } from '../../config/architecture'
 import { LANDSCAPE_MAX_SLOTS, TIER_THRESHOLDS } from '../../config/economy'
 import { MONUMENTS } from '../../config/monuments'
 import { capitalHolderIn, computeMonumentHoldersIn, tallestBuilding } from '../../game/competition'
+import { tierFor, totalBuilt } from '../../game/economy'
 import { parseAssetKey } from '../../world/asset'
 import type { WorldBuildingDevelopment, WorldBuildingRecord, WorldCityState } from '../../world/cityState'
 import { developmentOf, LOCAL_TEST_CONSTRUCTION_RECIPE, recipeMaxTier, type ConstructionRecipe } from '../../world/construction'
+import { DESIGN_CATALOGS, isCatalogDesign, type PropertyDesign } from '../../world/design'
 import type { BrandCityConfig } from './config'
 import type { BrandBuilding, BrandCityState, SampleNft } from './sampleCity'
 
@@ -28,10 +30,14 @@ import type { BrandBuilding, BrandCityState, SampleNft } from './sampleCity'
  *     they are all vacant, as with nothing built. Whether real construction will ever count is not
  *     decided here.
  *
+ *   - A property's saved Architect design (P1-C2-E4A, `designs`, by building id) is drawn through the same
+ *     architecture the renderer always reads: its facade finish and roof silhouette replace the default's, and
+ *     nothing else does (`withPropertyDesigns`). Tier, height, district and the NFT's label stay the stored city's.
+ *
  * The civic world (plaza, squares, monument pads, roads) is drawn from the configuration, so an
  * empty city is still a whole city.
  */
-export function persistedBrandCityState(config: Pick<BrandCityConfig, 'districts'>, stored: WorldCityState): BrandCityState {
+export function persistedBrandCityState(config: Pick<BrandCityConfig, 'districts'>, stored: WorldCityState, designs: Readonly<Record<string, PropertyDesign>> = {}): BrandCityState {
   const buildings: Record<string, BrandBuilding> = {}
   const nfts: Record<string, SampleNft> = {}
   for (const [id, b] of Object.entries(stored.buildings) as [string, WorldBuildingRecord][]) {
@@ -67,7 +73,7 @@ export function persistedBrandCityState(config: Pick<BrandCityConfig, 'districts
   for (const key of keys) wards[key] = open[key] ?? 1
   return {
     users: {},
-    buildings,
+    buildings: withPropertyDesigns({ buildings }, designs).buildings,
     nfts,
     wards,
     monuments,
@@ -91,4 +97,26 @@ export function renderedBuilt(d: WorldBuildingDevelopment | null, recipe: Constr
   const fraction = Math.max(0, Math.min(1, (d.built - from) / (recipe.tierThresholds[tier] - from)))
   // Short of the next tier, always: progress never draws a tier the server has not stored.
   return Math.min(TIER_THRESHOLDS[tier] - 1, floor + Math.floor(fraction * (TIER_THRESHOLDS[tier] - floor)))
+}
+
+/**
+ * A city's buildings with Architect designs applied (by building id): each designed building is a NEW object with that
+ * facade and roof, every other building is the very object it was, so the renderer redraws only what changed (a preview
+ * of one choice redraws one building). A design is applied only when it is exactly a choice of a catalog this build has,
+ * and only to a building of the city; anything else leaves the building as it was drawn.
+ *
+ * A Tier 0 foundation has no roof to draw, so its saved roof is drawn from Tier 1: until then the building keeps the
+ * default's (the renderer places a building's label and hit area by its roof's height, even where it draws none).
+ */
+export function withPropertyDesigns<T extends Pick<BrandCityState, 'buildings'>>(state: T, designs: Readonly<Record<string, PropertyDesign>>): T {
+  const ids = Object.keys(designs).filter((id) => Object.hasOwn(state.buildings, id) && Object.values(DESIGN_CATALOGS).some((c) => isCatalogDesign(c, designs[id])))
+  if (ids.length === 0) return state
+  const buildings = { ...state.buildings }
+  for (const id of ids) {
+    const b = buildings[id]
+    const { facade } = designs[id]
+    const roof = tierFor(totalBuilt(b)) === 0 ? b.architecture.roof : designs[id].roof
+    if (b.architecture.facade !== facade || b.architecture.roof !== roof) buildings[id] = { ...b, architecture: { ...b.architecture, facade, roof } }
+  }
+  return { ...state, buildings }
 }

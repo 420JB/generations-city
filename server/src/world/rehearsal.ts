@@ -2,19 +2,25 @@ import type { AppMode } from '../config'
 import { errorFields, silentLogger, type Logger } from '../log'
 import {
   assetKey,
+  CURRENT_DESIGN_CATALOG,
   parseAssetKey,
   REHEARSAL_MARK,
   type DistrictRuleMatch,
   type NftAsset,
   type RehearsalActivationResponse,
+  type RehearsalAppearanceResponse,
   type RehearsalConstructionResponse,
   type RehearsalConstructionView,
   type RehearsalArchitectView,
   type RehearsalAssetsResponse,
+  type RehearsalDesignCatalog,
+  type RehearsalDesignResponse,
+  type RehearsalDesignView,
   type RehearsalErrorCode,
   type RehearsalTicket,
   type RehearsalTicketResponse,
   type RuleAnswer,
+  type DesignCatalog,
 } from '../engine'
 import { PlaySessionError, type ExpectedActor, type LivePlaySession, type PlaySessionService } from '../play/session'
 import {
@@ -26,6 +32,7 @@ import {
   type WorldConstructionRefusalCode,
   type WorldConstructionStore,
 } from './construction'
+import { createDesignService, WorldDesignRefusal, type DesignOverview, type WorldDesignRefusalCode, type WorldDesignStore } from './designs'
 import { createPropertyActivationService, WorldPropertyRefusal, type WorldPropertyRefusalCode, type WorldPropertyStore } from './properties'
 import type { TicketEligibility } from './rotation'
 import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalCode, type DistrictTicketStore } from './tickets'
@@ -70,6 +77,12 @@ import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalC
  *     a grant is recorded once, inside the first construction of that player that needs it. A city whose
  *     Discord server the file names in neither list has no construction at all, read or write.
  *
+ *   - ARCHITECT DESIGN (P1-C2-E4A): the NFT's current controller, as the same `controllers` name them, saves a
+ *     facade and roof from the engine's design catalog for the property (`designs.ts`). Free, identifiers
+ *     only. Founding, patronage and earlier control authorize nothing; a design stays with the property when
+ *     the file names another controller. Every city's saved designs are read (`appearance`) wherever they
+ *     exist; only a city whose Discord server the file names saves one.
+ *
  * Still open, and not replaced here: F5 (browser-bound launch), F7 (fresh membership and entitlement),
  * F3 (Play game status), Core NFT/role/trait eligibility and verified rule results, and a separate
  * non-owner database role. Conflicting explicit rules are refused (D3), never ordered.
@@ -105,6 +118,9 @@ const ACTIVATION_KEYS = ['asset', 'discordUserId', 'geometryFingerprint', 'plotI
 const ASSIGNMENT_KEYS = ['asset', 'discordUserId', 'sessionRef', 'ticketId', 'worldId']
 const RELEASE_KEYS = ['discordUserId', 'sessionRef', 'ticketId', 'worldId']
 const CONSTRUCTION_KEYS = ['actionId', 'discordUserId', 'propertyId', 'role', 'sessionRef', 'worldId']
+const DESIGN_KEYS = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'propertyId', 'roof', 'sessionRef', 'worldId']
+/** A catalog or choice identifier a design request may name (the store judges it against the catalog). */
+const CHOICE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 
 /** Which test NFTs each player may place, by Discord user id. */
 export type RehearsalGrants = ReadonlyMap<string, readonly NftAsset[]>
@@ -325,7 +341,7 @@ export class RehearsalRefusal extends Error {
   }
 }
 
-type Answered = Exclude<WorldPropertyRefusalCode | DistrictTicketRefusalCode | WorldConstructionRefusalCode, 'session_ended' | 'world_unavailable' | 'config_superseded' | 'active_config_unverified'>
+type Answered = Exclude<WorldPropertyRefusalCode | DistrictTicketRefusalCode | WorldConstructionRefusalCode | WorldDesignRefusalCode, 'session_ended' | 'world_unavailable' | 'config_superseded' | 'active_config_unverified'>
 
 /** How each store refusal is answered. The session layer's own answers are the rest (see `answer`). */
 const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
@@ -357,10 +373,14 @@ const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
   controller_builds_as_owner: [409, 'controller_builds_as_owner'],
   insufficient_test_credits: [409, 'insufficient_test_credits'],
   action_conflict: [409, 'action_conflict'],
+  design_not_open: [403, 'design_not_open'],
+  design_unsupported: [422, 'design_unsupported'],
+  design_stale: [409, 'design_stale'],
+  design_unchanged: [409, 'design_unchanged'],
 }
 
 /** A store's refusal, as the routes answer it: the session layer's own error for a session or world problem, else a rehearsal refusal. */
-function answer(err: WorldPropertyRefusal | DistrictTicketRefusal | WorldConstructionRefusal): never {
+function answer(err: WorldPropertyRefusal | DistrictTicketRefusal | WorldConstructionRefusal | WorldDesignRefusal): never {
   if (err.code === 'session_ended') throw new PlaySessionError(401, 'play_session_required', err.message)
   if (err.code === 'world_unavailable') throw new PlaySessionError(503, 'world_unavailable', err.message)
   // The page's city, or Play's active configuration, is not the one that governs: the page reads the city again.
@@ -406,6 +426,12 @@ export interface LocalPropertyRehearsal {
   construct(presented: string | null, body: Record<string, unknown>): Promise<RehearsalConstructionResponse>
   /** The cookie's player's own construction record in its city (Architect activity). Read only. */
   architect(presented: string | null): Promise<RehearsalArchitectView>
+  /** The saved design of every property of the cookie's city that has one. Read only. */
+  appearance(presented: string | null): Promise<RehearsalAppearanceResponse>
+  /** A property's design as the cookie's player may see it. Read only. */
+  design(presented: string | null, propertyId: string | null): Promise<RehearsalDesignView>
+  /** Save one design (catalog facade and roof) for a property, for exactly the actor the page names, as the NFT's current controller. */
+  saveDesign(presented: string | null, body: Record<string, unknown>): Promise<RehearsalDesignResponse>
 }
 
 export interface LocalPropertyRehearsalOptions {
@@ -417,6 +443,8 @@ export interface LocalPropertyRehearsalOptions {
   tickets: DistrictTicketStore
   /** Construction (file v4). Without it, construction is held (`mutations_held`). */
   construction?: WorldConstructionStore | null
+  /** Architect property design (P1-C2-E4A). Without it, designs are held (`mutations_held`). */
+  designs?: WorldDesignStore | null
   /** Where a read that failed after a construction was written is reported (the answer still carries the construction). */
   log?: Logger
 }
@@ -438,12 +466,24 @@ const ticketIdOf = (body: Record<string, unknown>) => {
 /** An assignment may name no ticket (`null`): the one the player holds, or none in a city whose every district is restricted. */
 const heldTicketIdOf = (body: Record<string, unknown>) => (body.ticketId === null ? null : ticketIdOf(body))
 
-export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, store, tickets, construction = null, log = silentLogger }: LocalPropertyRehearsalOptions): LocalPropertyRehearsal {
+export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, store, tickets, construction = null, designs = null, log = silentLogger }: LocalPropertyRehearsalOptions): LocalPropertyRehearsal {
   if (mode !== 'local') throw new Error(`the local property rehearsal runs only with APP_MODE=local, not ${mode}`)
   const fixture = fixtureOf(given)
   const service = createPropertyActivationService({ sessions, store })
   const authority = rehearsalConstructionAuthority(fixture)
   const builder = construction ? createConstructionService({ sessions, store: construction, authority }) : null
+  const designer = designs ? createDesignService({ sessions, store: designs, authority }) : null
+
+  /** A design store call, its refusals answered. */
+  async function designCall<T>(work: (store: WorldDesignStore) => Promise<T>): Promise<T> {
+    if (!designs) throw new RehearsalRefusal(403, 'mutations_held', 'This local server does not save designs.')
+    try {
+      return await work(designs)
+    } catch (err) {
+      if (err instanceof WorldDesignRefusal) answer(err)
+      throw err
+    }
+  }
 
   /** A construction store call, its refusals answered. */
   async function constructionCall<T>(work: (store: WorldConstructionStore) => Promise<T>): Promise<T> {
@@ -590,6 +630,61 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
       const session = await sessions.session(presented)
       return architectView(await constructionCall((c) => c.architect(session, authority)))
     },
+
+    async appearance(presented) {
+      // Every saved design of the session's own city, for anyone signed in to it: designs are what the city looks like.
+      const session = await sessions.session(presented)
+      const saved = await designCall((d) => d.city(session))
+      return { rehearsal: REHEARSAL_MARK, catalog: catalogAnswer(CURRENT_DESIGN_CATALOG), designs: saved.map((d) => ({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog, facade: d.facade, roof: d.roof })) }
+    },
+
+    async design(presented, propertyId) {
+      const session = await sessions.session(presented)
+      if (propertyId === null || !UUID.test(propertyId)) throw new RehearsalRefusal(400, 'invalid_request')
+      return designView(await designCall((d) => d.overview(session, propertyId, authority)))
+    },
+
+    async saveDesign(presented, body) {
+      const expected = actorOf(body, DESIGN_KEYS)
+      const { propertyId, actionId, baseRevision, catalog, facade, roof } = body
+      // Which property, which press, which revision, and identifiers only: no color, markup or URL is ever read.
+      if (typeof propertyId !== 'string' || !UUID.test(propertyId) || typeof actionId !== 'string' || !UUID.test(actionId) || !Number.isSafeInteger(baseRevision) || (baseRevision as number) < 0)
+        throw new RehearsalRefusal(400, 'invalid_request')
+      if ([catalog, facade, roof].some((v) => typeof v !== 'string' || v.length > 64 || !CHOICE.test(v))) throw new RehearsalRefusal(400, 'invalid_request')
+      const done = await designCall(() => designer!.save(presented, expected, { propertyId, actionId, baseRevision, catalog, facade, roof }))
+      // Written and committed, for exactly this actor. The view only reads the property again for the page, so its
+      // failure is never answered as if nothing was saved: the design is answered without a view.
+      let view: RehearsalDesignView | null = null
+      try {
+        const session = await sessions.session(presented)
+        view = designView(await designCall((d) => d.overview(session, propertyId, authority)))
+      } catch (err) {
+        log.warn('rehearsal design committed; its view could not be read again', { property: done.design.propertyId, revision: done.design.revision, ...errorFields(err) })
+      }
+      const d = done.design
+      return {
+        rehearsal: REHEARSAL_MARK,
+        fresh: done.fresh,
+        design: { propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, actionId: d.actionId, catalog: d.catalog, facade: d.facade, roof: d.roof, atCitySequence: d.atCitySequence, designedAt: d.designedAt },
+        view,
+      }
+    },
+  }
+}
+
+const catalogAnswer = (c: DesignCatalog): RehearsalDesignCatalog => ({ key: c.key, facades: [...c.facades], roofs: [...c.roofs], default: { ...c.default } })
+
+/** A property's design as its viewer is told it: no other player is named. */
+export function designView(o: DesignOverview): RehearsalDesignView {
+  return {
+    rehearsal: REHEARSAL_MARK,
+    catalog: catalogAnswer(o.catalog),
+    property: { ...o.property },
+    saved: o.saved ? { ...o.saved } : null,
+    control: o.control,
+    open: o.open,
+    history: o.history.map((h) => ({ ...h })),
+    historyCount: o.historyCount,
   }
 }
 

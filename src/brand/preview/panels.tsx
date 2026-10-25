@@ -10,6 +10,7 @@ import { worldProperty } from '../../world/property'
 import { mayAct, previewClaimAccess, type ClaimAccess, type PreviewMember } from '../core/eligibility'
 import { districtPlots, type LoadedBrandCity } from '../load'
 import { ConstructionCard, type ConstructionAccess } from './construction'
+import { DesignCard, type DesignAccess } from './design'
 import { ConstructionNote } from './home'
 import type { Placement } from './PreviewApp'
 import { StoredPropertyCard, type StoredProperty } from './rehearsal'
@@ -270,6 +271,8 @@ export function BuildingPreviewPanel({
   stored = null,
   context = null,
   construction = null,
+  design = null,
+  onDesign,
   onArchitect,
   onDistrict,
   onBack,
@@ -288,6 +291,10 @@ export function BuildingPreviewPanel({
   context?: ReactNode
   /** For a stored property, when the server runs the local rehearsal: its LOCAL TEST construction. */
   construction?: ConstructionAccess | null
+  /** For a stored property, when the server runs the local rehearsal: its Architect design (P1-C2-E4A). */
+  design?: DesignAccess | null
+  /** Opens the property's Architect design view (with `design` only; offered to its named controller only). */
+  onDesign?: () => void
   /** Opens the player's own construction record (with `construction` only). */
   onArchitect?: () => void
   onDistrict: (id: string) => void
@@ -389,6 +396,7 @@ export function BuildingPreviewPanel({
         </div>
       </dl>
       {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
+      {stored && design && onDesign && <DesignCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} founder={stored.activator === 'viewer'} access={design} onDesign={onDesign} />}
       {stored && context}
       {stored && construction ? (
         <ConstructionCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} access={construction} color={d.color} onArchitect={onArchitect} />

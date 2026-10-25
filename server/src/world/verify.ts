@@ -5,6 +5,8 @@ import {
   CONSTRUCTED_WORLD_CITY_STATE_VERSION,
   CONSTRUCTION_RECIPES,
   constructionStep,
+  DESIGN_CATALOGS,
+  isCatalogDesign,
   constructionTier,
   cityMode,
   establishedCollections,
@@ -85,6 +87,12 @@ import { verifyDistrictTickets, type TicketVerifyReport } from './verifyTickets'
  *               adoptions before it established (collections are additive); and each from the one
  *               that governed the first property on draws the frozen geometry.
  *   tickets     (migration 0010) the district rotation, its slots and tickets, as `verifyTickets.ts` says.
+ *   designs     (migration 0015) each saved design names a property of its world, in that world's city, a facade and
+ *               roof of a catalog this build has, and the local fixture controller as its authority; revisions are
+ *               numbered 1, 2, 3 ... per property, each saved at a city sequence no earlier than the activation and the
+ *               revision before it and no later than the city's. A design is never a change of the city, so the replay
+ *               above is untouched by it. (Whether the designer was the NFT's controller is the trusted source's, which
+ *               the database cannot see: the guard and the service hold that rule.)
  * Across worlds: no installation, Discord server (per game) or city belongs to two worlds.
  */
 export interface WorldVerifyReport {
@@ -108,6 +116,9 @@ export interface WorldVerifyReport {
   developedProperties: number
   controlEras: number
   testCreditAccounts: number
+  /** Saved designs (0015), and the properties that have one. */
+  designs: number
+  designedProperties: number
 }
 
 export type AddViolation = (rule: string, detail: string) => void
@@ -199,6 +210,20 @@ interface ConstructionRow {
   tier_after: number
 }
 
+interface DesignRow {
+  world_id: string
+  city_id: string
+  city_instance_id: string
+  property_id: string
+  revision: number
+  action_id: string
+  catalog: string
+  facade: string
+  roof: string
+  authority: string
+  at_city_sequence: string
+}
+
 interface EraRow {
   world_id: string
   property_id: string
@@ -288,6 +313,14 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
         )
       ).rows
     : []
+  // Before 0015 there is no saved design.
+  const designs = (await present('world_property_designs'))
+    ? (
+        await client.query<DesignRow>(
+          'SELECT world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, authority, at_city_sequence FROM world_property_designs ORDER BY world_id, property_id, revision',
+        )
+      ).rows
+    : []
   // When 0008 was applied: a property written since must name its original activator.
   const policiesSince = policies ? ((await client.query<{ applied_at: Date }>('SELECT applied_at FROM schema_migrations WHERE version = 8')).rows[0]?.applied_at ?? null) : null
   const legacy = (
@@ -318,6 +351,8 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       developedProperties: 0,
       controlEras: 0,
       testCreditAccounts: 0,
+      designs: 0,
+      designedProperties: 0,
     }
     reports.push(report)
 
@@ -592,6 +627,28 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
       })
       if (entries.filter((t) => t.kind === 'fixture-grant').length > 20) add('credits', `${label} test credit account ${account} holds more than 20 grants`)
     }
+    // Designs (0015): each record's own rules. None is a change of the city, so none is in the replay.
+    const designed = designs.filter((d) => d.world_id === w.id)
+    report.designs = designed.length
+    const byProperty = new Map<string, DesignRow[]>()
+    for (const d of designed) byProperty.set(d.property_id, [...(byProperty.get(d.property_id) ?? []), d])
+    report.designedProperties = byProperty.size
+    for (const [propertyId, list] of byProperty) {
+      const property = mine2.find((p) => p.id === propertyId)
+      if (!property) add('design', `${label} has a design of property ${propertyId}, which is not a property of this world`)
+      list.forEach((d, i) => {
+        const dLabel = `${label} property ${propertyId} design ${d.revision}`
+        if (d.revision !== i + 1) add('design', `${label} property ${propertyId}'s designs are not numbered 1, 2, 3 ...`)
+        if (d.city_id !== w.city_id || d.city_instance_id !== w.city_instance_id) add('design', `${dLabel} names another city than its world's`)
+        const catalog = Object.hasOwn(DESIGN_CATALOGS, d.catalog) ? DESIGN_CATALOGS[d.catalog] : null
+        if (!catalog) add('design', `${dLabel} names catalog ${d.catalog}, which this build does not have`)
+        else if (!isCatalogDesign(catalog, { facade: d.facade, roof: d.roof })) add('design', `${dLabel} is ${d.facade} / ${d.roof}, which catalog ${d.catalog} does not offer`)
+        if (d.authority !== 'local-fixture-controller') add('design', `${dLabel} is authorized by ${d.authority}`)
+        const at = Number(d.at_city_sequence)
+        if ((property && at < Number(property.activated_sequence)) || at > sequence || (i > 0 && at < Number(list[i - 1].at_city_sequence)))
+          add('design', `${dLabel} is saved at city sequence ${at}, outside its property's life in the city or before the revision before it`)
+      })
+    }
     if (replayable && steps.length > 0) {
       steps.sort((a, b) => a.sequence - b.sequence)
       const replay = replayWorldCity(steps)
@@ -620,6 +677,7 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
   for (const p of properties) if (!worlds.some((w) => w.id === p.world_id)) add('properties', `property ${p.id} names world ${p.world_id}, which does not exist`)
   for (const c of constructions) if (!worlds.some((w) => w.id === c.world_id)) add('construction', `construction ${c.city_id}/${c.sequence} names world ${c.world_id}, which does not exist`)
   for (const t of credits) if (!worlds.some((w) => w.id === t.world_id)) add('credits', `test credit account ${t.account_discord_user_id} names world ${t.world_id}, which does not exist`)
+  for (const d of designs) if (!worlds.some((w) => w.id === d.world_id)) add('design', `design ${d.property_id}/${d.revision} names world ${d.world_id}, which does not exist`)
 
   // District tickets (0010): the rotation, its slots and tickets.
   const tickets = await verifyDistrictTickets(client, add)

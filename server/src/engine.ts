@@ -72,20 +72,27 @@ export {
 // The local property rehearsal: its routes and answers (local deployments only, see server/src/world/rehearsal.ts).
 export {
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_APPEARANCE_ENDPOINT,
   PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
+  PLAY_REHEARSAL_DESIGN_ENDPOINT,
+  PLAY_REHEARSAL_DESIGNS_ENDPOINT,
   PLAY_REHEARSAL_ENTRY_ENDPOINT,
   PLAY_REHEARSAL_RELEASE_ENDPOINT,
   PLAY_REHEARSAL_TICKET_ENDPOINT,
   REHEARSAL_MARK,
   type RehearsalActivationResponse,
+  type RehearsalAppearanceResponse,
   type RehearsalArchitectView,
   type RehearsalAssetsResponse,
   type RehearsalConstructionResponse,
   type RehearsalConstructionView,
+  type RehearsalDesignCatalog,
+  type RehearsalDesignResponse,
+  type RehearsalDesignView,
   type RehearsalErrorCode,
   type RehearsalRouteErrorCode,
   type RehearsalTicket,
@@ -138,6 +145,8 @@ export {
   type PropertyConstructedEvent,
   type PropertyConstructionRefusal,
 } from '../../src/world/construction'
+// Architect property design, pure: the versioned catalog of facade and roof identifiers a save may name (server/src/world/designs.ts).
+export { CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogDesign, sameDesign, type DesignCatalog, type PropertyDesign } from '../../src/world/design'
 // Persistent city gameplay, pure: discover plots, validate and propose a property activation on an exact plot, replay a city.
 export {
   PROPERTY_ACTIVATED_EVENT,

@@ -512,12 +512,54 @@ page), against the real session, world and stores (`server/src/world/constructio
   next step they could take. Descriptive only: no rank, level, XP, badge or reward. A new controller
   starts from none of a previous owner's units; earlier owners keep theirs.
 - **Browser tests.** `tier2.spec.ts` (and the E3A tests in `construction.spec.ts`, whose Tier 1 is no
-  longer the top). Construction Discord servers per run: 100.
+  longer the top).
 
 Not decided, on purpose: any real currency or price, tiers above 2 and final tier balancing, any
 other recipe, verified NFT control (Proofy Core), real transfers, patron rewards and recognition,
 Architect ranks, levels or rewards, official civic awards for construction, and whether or how
 construction opens outside the local rehearsal.
+
+**Architect design (P1-C2-E4A, migration 0015): LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.**
+
+- **What can be chosen.** A facade finish and a roof silhouette from one versioned catalog
+  (`architect-design-v1`, `src/world/design.ts`): facades slate, limestone, brick, copper, jade; roofs
+  flat, terrace, dome, spire. Each is an identifier the standard renderer already draws
+  (`FACADE_PALETTES`, `Roof`); no color, markup, URL, upload or text is ever sent, stored or drawn as
+  sent. A property never designed is drawn with slate and flat, as every new building is. A Tier 0
+  foundation draws its facade at once and its saved roof from Tier 1; the design then grows with every
+  tier. Tier, height, district color and the NFT's label are never the design's.
+- **Who may change it.** Only the player the local file's `controllers` name as the NFT's current
+  controller in this city (TEST DATA, never verified ownership), asked again for every save under the
+  city lock. Founding the property, building on it as a patron or having controlled it before allow
+  nothing; everyone sees the saved design and its card. A city the file names no test data for saves
+  none (`design_not_open`).
+- **Routes.** `GET /v1/play/rehearsal/appearance` (every saved design of the session's city, read
+  with the rehearsal data on load), `GET …/design?property=` (one property's design, its history with
+  nobody named, and whom the file names its controller) and `POST …/designs` (`{ sessionRef, worldId,
+  discordUserId, propertyId, actionId, baseRevision, catalog, facade, roof }`, exactly these keys).
+- **The player's view.** The property panel's ARCHITECT DESIGN card; for the named controller, Open
+  Architect design (also DESIGN in the Architect activity). Each choice is previewed on the city's own
+  building at once and beside the saved version (both drawn by the city's building sprite); nothing is
+  sent until Save, and Cancel, Back, Close or another building drop the preview. No polling: the
+  page reads designs on load, after a placement and after a save.
+- **Persistence and safety.** Each save is the property's next revision (append-only; any earlier
+  design can be restored by a later save); a save made on an older revision is refused
+  (`design_stale`), one equal to the current design too (`design_unchanged`). A press id names one
+  save: a repeat returns it (`fresh: false`), the id with anything else is `action_conflict`, and a
+  save whose answer is unknown (`design_unconfirmed`, a lost answer) is kept in the browser
+  (`rare-city-design-saves`, apart from construction's presses) and checked again exactly as first sent
+  before anything else is saved. A design spends no test credit, adds no construction unit, never
+  moves a tier, a founder or a city sequence, and earns no Crown, Capital or monument.
+- **Transfer.** A design belongs to the property: when the file names another controller, the saved
+  design stays drawn, the former controller can no longer change it and the new one can. Public owner
+  media (billboards) is not a design and has no route here.
+- **`city:verify`** checks every design: a property of its world, revisions 1, 2, 3 ..., a catalog
+  choice this build has, the local fixture authority, a city sequence within the property's life.
+- **Browser tests.** `design.spec.ts` (construction Discord servers per run: 150).
+
+Not decided, on purpose: more catalogs or slots, paid, earned or unlockable designs, a design
+marketplace, uploads or custom media, billboards and public owner media's transfer rules, verified NFT
+control, and whether or how design opens outside the local rehearsal.
 
 Needs a verified Proofy Core / Play contract:
 

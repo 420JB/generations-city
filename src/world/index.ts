@@ -15,6 +15,7 @@
  *               version 3: with construction)
  *   gameplay    pure property activation on an exact plot: discover, validate, propose, replay
  *   construction  pure property construction by one recipe (local rehearsal tuning only): propose, check
+ *   design      the versioned catalog of an Architect's facade and roof choices for a property (identifiers only)
  *   assignment  the default district rotation's order and explicit-rule resolution (MCD 46B), pure
  *
  * What does not, on purpose:
@@ -35,6 +36,7 @@ export * from './assignment'
 export * from './cityState'
 export * from './construction'
 export * from './definition'
+export * from './design'
 export * from './gameplay'
 export * from './identity'
 export * from './layout'

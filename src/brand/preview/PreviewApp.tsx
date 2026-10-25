@@ -8,15 +8,18 @@ import { mayAct, previewClaimAccess, type PreviewMember } from '../core/eligibil
 import { districtPlots, loadBrandCity, type LoadedBrandCity } from '../load'
 import type { SampleBrand } from '../samples'
 import type { WorldPoint } from '../../game/world'
+import type { PropertyDesign } from '../../world/design'
+import { withPropertyDesigns } from '../core/persisted'
 import { ArchitectPanel } from './architect'
 import type { ConstructionAccess } from './construction'
+import { ArchitectDesignPanel, type DesignAccess } from './design'
 import { MyPropertiesPanel, PropertyContextCard, type HomeClaim, type PropertyHome } from './home'
 import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
 import { propertyContext } from './properties'
 import { RehearsalPlotPanel, type PlacementRehearsal, type StoredProperty } from './rehearsal'
 
-/** A building panel opened from the Architect activity goes back to it. */
-type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string; from?: 'architect' } | { kind: 'properties' } | { kind: 'architect' } | null
+/** A building panel opened from the Architect activity goes back to it; so does its design view, through the building panel. */
+type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string; from?: 'architect' } | { kind: 'design'; id: string; from?: 'architect' } | { kind: 'properties' } | { kind: 'architect' } | null
 
 /** A plot the engine offers, as the renderer's placement layer takes it. */
 export type PreviewCandidate = ScenePlotCandidate & { plotId: string }
@@ -106,7 +109,10 @@ const candidatesIn = (city: LoadedBrandCity, districtId: string): PreviewCandida
  * stored property's panel says what surrounds it in the stored city. In a local rehearsal it passes
  * `construction` too: a stored property's panel then shows its LOCAL TEST construction and the one test
  * action the server says this viewer has (`construction.tsx`), and the player's own construction record opens
- * from MY PROPERTIES and from the construction card (ARCHITECT ACTIVITY, `architect.tsx`).
+ * from MY PROPERTIES and from the construction card (ARCHITECT ACTIVITY, `architect.tsx`). With `design` (P1-C2-E4A), a stored
+ * property's panel shows its saved Architect design, and the NFT's named controller opens the ARCHITECT DESIGN view
+ * (`design.tsx`): while it is open the city draws that one building with the choice being previewed, and only with it;
+ * leaving the view drops the preview, and the city shows the saved design (as the page was given it) again.
  */
 export function BrandCityPreview({
   city,
@@ -116,6 +122,7 @@ export function BrandCityPreview({
   rehearsal,
   home,
   construction,
+  design,
 }: {
   city: LoadedBrandCity
   members: readonly (PreviewMember | null)[]
@@ -126,6 +133,8 @@ export function BrandCityPreview({
   home?: PropertyHome | null
   /** LOCAL TEST construction on stored properties' panels, when the server runs the local rehearsal (P1-C2-E3A). */
   construction?: ConstructionAccess | null
+  /** Architect design on stored properties' panels, when the server runs the local rehearsal (P1-C2-E4A). */
+  design?: DesignAccess | null
 }) {
   const { scene, state, config } = city
   const [memberIndex, setMemberIndex] = useState(1)
@@ -164,7 +173,25 @@ export function BrandCityPreview({
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
 
   const say = useCallback((text: string) => setNotice({ id: Date.now(), text }), [])
-  const selectedId = panel?.kind === 'building' ? panel.id : null
+  // The building whose design is open stays selected on the map, so its preview is the one in view.
+  const selectedId = panel?.kind === 'building' || panel?.kind === 'design' ? panel.id : null
+
+  /** The choice the design view previews, for its building. Drawn only while that building's design view is open. */
+  const [preview, setPreview] = useState<{ id: string; design: PropertyDesign } | null>(null)
+  const designing = panel?.kind === 'design' ? panel.id : null
+  const previewing = preview && preview.id === designing ? preview : null
+  /** The city as drawn: exactly the city given, but for the one building a preview redraws. */
+  const drawn = useMemo(() => (previewing ? withPropertyDesigns(state, { [previewing.id]: previewing.design }) : state), [state, previewing])
+  const previewFor = useCallback((id: string) => (d: PropertyDesign | null) => setPreview((p) => (d ? { id, design: d } : p?.id === id ? null : p)), [])
+  const onPreview = useMemo(() => (designing ? previewFor(designing) : null), [designing, previewFor])
+  /** Open a property's design view, from its panel (or the Architect activity): the camera goes to the building. */
+  const openDesign = useCallback((buildingId: string, from?: 'architect') => {
+    setPreview(null)
+    // An earlier notice (a claim, a release) would sit over the design view on a small screen: it has been read.
+    setNotice(null)
+    setPanel({ kind: 'design', id: buildingId, from })
+    setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
+  }, [])
 
   const select = useCallback((id: string | null) => {
     setPanel(id ? { kind: 'building', id } : null)
@@ -343,7 +370,28 @@ export function BrandCityPreview({
           warpFromArchitect(buildingId)
           setDrawerFocus((n) => n + 1)
         }}
+        onDesign={
+          design
+            ? (buildingId) => {
+                if (!state.buildings[buildingId] || !stored?.(buildingId)) return
+                // The design view takes the keyboard itself.
+                openDesign(buildingId, 'architect')
+              }
+            : undefined
+        }
         onBack={home ? openHome : undefined}
+        onClose={() => setPanel(null)}
+      />
+    ) : panel?.kind === 'design' && design && onPreview && state.buildings[panel.id] && stored?.(panel.id) ? (
+      <ArchitectDesignPanel
+        key={panel.id}
+        city={city}
+        buildingId={panel.id}
+        propertyId={stored(panel.id)!.propertyId}
+        access={design}
+        onPreview={onPreview}
+        onSaved={() => setPreview(null)}
+        onBack={() => setPanel({ kind: 'building', id: panel.id, from: panel.from })}
         onClose={() => setPanel(null)}
       />
     ) : panel?.kind === 'building' && state.buildings[panel.id] ? (
@@ -355,6 +403,8 @@ export function BrandCityPreview({
         stored={stored?.(panel.id) ?? null}
         context={home && <HomeContext city={city} buildingId={panel.id} onWarp={warp} onDistrict={openDistrict} />}
         construction={construction ?? null}
+        design={design ?? null}
+        onDesign={design ? () => openDesign(panel.id, panel.from) : undefined}
         onArchitect={construction ? openArchitect : undefined}
         onDistrict={openDistrict}
         onBack={panel.from === 'architect' ? openArchitect : founded.has(panel.id) ? openHome : undefined}
@@ -372,7 +422,7 @@ export function BrandCityPreview({
       </div>
       <CityView
         scene={scene}
-        game={state}
+        game={drawn}
         viewerId={null}
         selectedId={selectedId}
         onSelect={select}

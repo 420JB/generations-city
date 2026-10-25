@@ -30,6 +30,7 @@ import {
   PLAY_CITY_ENDPOINT,
   PLAY_LOGOUT_ENDPOINT,
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
+  PLAY_REHEARSAL_APPEARANCE_ENDPOINT,
   PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
@@ -38,6 +39,8 @@ import {
   PLAY_REHEARSAL_TICKET_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
+  PLAY_REHEARSAL_DESIGN_ENDPOINT,
+  PLAY_REHEARSAL_DESIGNS_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
   type PlayErrorBody,
   type RehearsalRouteErrorCode,
@@ -428,6 +431,35 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /** LOCAL REHEARSAL: the saved Architect design of every property of the session's city (P1-C2-E4A). Read only. */
+  async function serveRehearsalAppearance(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_APPEARANCE_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
+    const presented = playCookie.read(req)
+    try {
+      return send(res, 200, await service.appearance(presented), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+      log.error('rehearsal appearance read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
+  /** LOCAL REHEARSAL: a property's Architect design, as the session's player may see it (P1-C2-E4A). Read only. */
+  async function serveRehearsalDesign(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_DESIGN_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
+    const presented = playCookie.read(req)
+    const property = new URL(req.url ?? '/', 'http://localhost').searchParams.get('property')
+    try {
+      return send(res, 200, await service.design(presented, property), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+      log.error('rehearsal design read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
   /**
    * A LOCAL REHEARSAL change (local mode with the rehearsal file only, `world/rehearsal.ts`). Past the common boundary
    * (same origin, JSON only, size) it also needs an Origin header naming this service, then the per-session limit, keyed
@@ -545,6 +577,9 @@ export function createApp(deps: AppDeps): RequestListener {
           // LOCAL TEST construction: one step of the local recipe on a property, in the role the page names (checked again under the lock).
           // A failure nobody refused may have been written, so it is answered as unconfirmed: the page asks again with the same press id.
           [PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT, LIMITS.playRehearsal, (presented, body) => rehearsal.construct(presented, body), 'rehearsal construction failed', 'construction_unconfirmed'),
+          // Architect design: a facade and roof of the catalog for a property, by its current (local test) controller only.
+          // As with construction, a failure nobody refused may have been written: the page asks again with the same press id.
+          [PLAY_REHEARSAL_DESIGNS_ENDPOINT]: rehearsalRoute(PLAY_REHEARSAL_DESIGNS_ENDPOINT, LIMITS.playRehearsal, (presented, body) => rehearsal.saveDesign(presented, body), 'rehearsal design failed', 'design_unconfirmed'),
         }
       : {}),
     // Ends the play session only. A wallet session in the same browser is a different cookie and is not touched.
@@ -626,6 +661,12 @@ export function createApp(deps: AppDeps): RequestListener {
         break
       case PLAY_REHEARSAL_ARCHITECT_ENDPOINT:
         if (rehearsal) return serveRehearsalArchitect(req, res, client, rehearsal)
+        break
+      case PLAY_REHEARSAL_APPEARANCE_ENDPOINT:
+        if (rehearsal) return serveRehearsalAppearance(req, res, client, rehearsal)
+        break
+      case PLAY_REHEARSAL_DESIGN_ENDPOINT:
+        if (rehearsal) return serveRehearsalDesign(req, res, client, rehearsal)
         break
     }
     // Service paths never fall through to the client, so a wrong API path is an honest 404.
