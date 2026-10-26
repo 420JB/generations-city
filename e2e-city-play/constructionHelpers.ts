@@ -1,4 +1,4 @@
-import { expect, type Browser, type Page, type TestInfo } from '@playwright/test'
+import { expect, type Browser, type Locator, type Page, type TestInfo } from '@playwright/test'
 import pg from 'pg'
 import { BRAND_A } from './brands'
 import { install, launch, launchHref, publish } from './play'
@@ -134,4 +134,17 @@ export async function drawnHeight(page: Page, friendId: string) {
   await expect(page.getByTestId('city-svg')).toBeVisible()
   await still(page)
   return page.getByTestId(`building-${friendId}`).evaluate((g) => (g as SVGGraphicsElement).getBBox().height)
+}
+
+/** The Architect design view's tab for each category (P1-C2-E4C): a category's options are shown while its tab is chosen. */
+const DESIGN_GROUPS: Readonly<Record<string, string>> = { facade: 'building', roof: 'building', windows: 'details', lighting: 'details', entrance: 'street', landscaping: 'street' }
+
+/** One option of the design view (`design-<category>-<id>`), with its category's tab chosen first. */
+export async function designOption(panel: Locator, testId: string) {
+  const category = /^design-([a-z]+)-/.exec(testId)?.[1] ?? ''
+  if (!Object.hasOwn(DESIGN_GROUPS, category)) throw new Error(`not a design option: ${testId}`)
+  const tab = panel.getByTestId(`design-tab-${DESIGN_GROUPS[category]}`)
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click()
+  await expect(tab).toHaveAttribute('aria-selected', 'true')
+  return panel.getByTestId(testId)
 }

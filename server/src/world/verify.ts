@@ -92,7 +92,7 @@ import { verifyDistrictTickets, type TicketVerifyReport } from './verifyTickets'
  *               numbered 1, 2, 3 ... per property, each saved at a city sequence no earlier than the activation and the
  *               revision before it and no later than the city's; (0016) a v1 design names no window or lighting
  *               treatment, a v2 design one of each of v2's, and no revision is of an older catalog than the one before
- *               it. A design is never a change of the city, so the replay above is untouched by it. (Whether the designer was the NFT's controller is the trusted source's, which
+ *               it; (0017) only a v3 design names an entrance and a landscaping treatment, one of each of v3's. A design is never a change of the city, so the replay above is untouched by it. (Whether the designer was the NFT's controller is the trusted source's, which
  *               the database cannot see: the guard and the service hold that rule.)
  * Across worlds: no installation, Discord server (per game) or city belongs to two worlds.
  */
@@ -224,6 +224,9 @@ interface DesignRow {
   /** Null before 0016, and for every v1 design. */
   windows: string | null
   lighting: string | null
+  /** Null before 0017, and for every v1 and v2 design. */
+  entrance: string | null
+  landscaping: string | null
   authority: string
   at_city_sequence: string
 }
@@ -319,15 +322,18 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
         )
       ).rows
     : []
-  // Before 0015 there is no saved design; before 0016 none names a window or lighting treatment.
+  // Before 0015 there is no saved design; before 0016 none names a window or lighting treatment, before 0017 none an entrance or landscaping.
   const designsPresent = await present('world_property_designs')
-  const detailed =
+  const hasColumns = async (names: string[]) =>
     designsPresent &&
-    (await client.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_attribute WHERE attrelid = to_regclass('world_property_designs') AND attname IN ('windows', 'lighting') AND NOT attisdropped`)).rows[0].n === 2
+    (await client.query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_attribute WHERE attrelid = to_regclass('world_property_designs') AND attname = ANY($1) AND NOT attisdropped`, [names])).rows[0].n === names.length
+  const detailed = await hasColumns(['windows', 'lighting'])
+  const street = await hasColumns(['entrance', 'landscaping'])
   const designs = designsPresent
     ? (
         await client.query<DesignRow>(
-          `SELECT world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, ${detailed ? 'windows, lighting' : 'NULL AS windows, NULL AS lighting'}, authority, at_city_sequence
+          `SELECT world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, ${detailed ? 'windows, lighting' : 'NULL AS windows, NULL AS lighting'},
+                  ${street ? 'entrance, landscaping' : 'NULL AS entrance, NULL AS landscaping'}, authority, at_city_sequence
              FROM world_property_designs ORDER BY world_id, property_id, revision`,
         )
       ).rows
@@ -653,9 +659,9 @@ export async function verifyWorlds(client: PoolClient, add: AddViolation): Promi
         if (d.city_id !== w.city_id || d.city_instance_id !== w.city_instance_id) add('design', `${dLabel} names another city than its world's`)
         const catalog = Object.hasOwn(DESIGN_CATALOGS, d.catalog) ? DESIGN_CATALOGS[d.catalog] : null
         if (!catalog) add('design', `${dLabel} names catalog ${d.catalog}, which this build does not have`)
-        else if (!isCatalogChoice(catalog, { facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting }))
-          add('design', `${dLabel} is ${d.facade} / ${d.roof} / ${d.windows} / ${d.lighting}, which catalog ${d.catalog} does not offer`)
-        // Catalogs only move forward (0016: an earlier catalog takes no new save), so no revision is of an older catalog than the one before it.
+        else if (!isCatalogChoice(catalog, { facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting, entrance: d.entrance, landscaping: d.landscaping }))
+          add('design', `${dLabel} is ${d.facade} / ${d.roof} / ${d.windows} / ${d.lighting} / ${d.entrance} / ${d.landscaping}, which catalog ${d.catalog} does not offer`)
+        // Catalogs only move forward (0016, 0017: an earlier catalog takes no new save), so no revision is of an older catalog than the one before it.
         if (i > 0 && CATALOG_ORDER.indexOf(d.catalog) < CATALOG_ORDER.indexOf(list[i - 1].catalog)) add('design', `${dLabel} is of catalog ${d.catalog}, older than the revision before it`)
         if (d.authority !== 'local-fixture-controller') add('design', `${dLabel} is authorized by ${d.authority}`)
         const at = Number(d.at_city_sequence)

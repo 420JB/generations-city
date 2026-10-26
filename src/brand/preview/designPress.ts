@@ -22,10 +22,10 @@ import type { PressOwner } from './constructionPress'
  * storage, so a reload or a relaunch still checks it before anything new is saved. What is kept is only which request to
  * repeat, never a result, and never a session secret.
  *
- * CATALOG VERSIONS (P1-C2-E4B). A save kept by an earlier page (catalog v1: a facade and a roof, no windows or lighting)
- * is still a save, and is sent again exactly as it was kept, with no window or lighting treatment added: the server
- * answers it with its original receipt if it was recorded, and refuses it (`design_retired`, settling: nothing was saved)
- * if it never was. It never becomes a save of the current catalog.
+ * CATALOG VERSIONS (P1-C2-E4B, P1-C2-E4C). A save kept by an earlier page (catalog v1: a facade and a roof, no other
+ * treatment; catalog v2: no entrance or landscaping) is still a save, and is sent again exactly as it was kept, with no
+ * treatment added: the server answers it with its original receipt if it was recorded, and refuses it (`design_retired`,
+ * settling: nothing was saved) if it never was. It never becomes a save of the current catalog.
  */
 export interface DesignSave {
   actionId: string
@@ -39,6 +39,9 @@ export interface DesignSave {
   /** Absent only in a save an earlier page kept (catalog v1): both absent, or both present. */
   windows?: string
   lighting?: string
+  /** Absent only in a save an earlier page kept (catalog v1 or v2): both absent, or both present beside windows and lighting. */
+  entrance?: string
+  landscaping?: string
 }
 
 export type DesignSettlement = 'settled' | 'conflict' | 'unknown'
@@ -101,11 +104,12 @@ const isSave = (v: unknown): v is DesignSave => {
     isId(p.catalog) &&
     isId(p.facade) &&
     isId(p.roof) &&
-    // Both treatments, or (a save an earlier page kept) neither.
-    ((p.windows === undefined && p.lighting === undefined) || (isId(p.windows) && isId(p.lighting)))
+    // Each pair of treatments, or (a save an earlier page kept) neither; never an entrance or landscaping without windows and lighting.
+    ((p.windows === undefined && p.lighting === undefined && p.entrance === undefined && p.landscaping === undefined) ||
+      (isId(p.windows) && isId(p.lighting) && ((p.entrance === undefined && p.landscaping === undefined) || (isId(p.entrance) && isId(p.landscaping)))))
   )
 }
-/** A kept save exactly as it is resent, and no other field kept: a save kept without windows and lighting stays without them. */
+/** A kept save exactly as it is resent, and no other field kept: a save kept without some treatments stays without them. */
 const saveOf = (p: DesignSave): DesignSave => ({
   actionId: p.actionId,
   worldId: p.worldId,
@@ -116,6 +120,7 @@ const saveOf = (p: DesignSave): DesignSave => ({
   facade: p.facade,
   roof: p.roof,
   ...(p.windows !== undefined && p.lighting !== undefined ? { windows: p.windows, lighting: p.lighting } : {}),
+  ...(p.windows !== undefined && p.lighting !== undefined && p.entrance !== undefined && p.landscaping !== undefined ? { entrance: p.entrance, landscaping: p.landscaping } : {}),
 })
 const owns = (who: PressOwner) => (p: DesignSave) => p.worldId === who.worldId && p.discordUserId === who.discordUserId
 

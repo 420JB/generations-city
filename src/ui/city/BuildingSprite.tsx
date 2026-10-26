@@ -4,7 +4,7 @@ import { MAX_VISIBLE_PATRONS } from '../../config/economy'
 import { patronLevelIndex, rankedPatrons, stageFor, tierFor } from '../../game/economy'
 import type { DemoUser, LandscapeKind } from '../../game/types'
 import { useTween } from '../motion'
-import { CROWN_STEM, crownAnchor, crownScale, facadeBillboardWidth, landscapeSlotPos, ROOFTOP_BILLBOARD, roofHeightPx, rooftopExtent, sectionsFor } from './buildingGeometry'
+import { CROWN_STEM, crownAnchor, crownScale, facadeBillboardWidth, GROUNDS_SCALE, groundsLayout, landscapeSlotPos, porticoFit, ROOFTOP_BILLBOARD, roofHeightPx, rooftopExtent, sectionsFor } from './buildingGeometry'
 import { boxCorners, buildingHeightPx, FLOOR_PX, footprintHalf, hsl, iso, isoEllipse, leftFace, rightFace, S, TAN30, WINDOW_TILES, type Detail } from './geometry'
 import { lotHalfWithin, propertyLotHalf } from './roads'
 import { IsoBox } from './parts'
@@ -299,6 +299,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const accent = LIGHTING_COLORS[light].accent
   // Static exterior floodlights, where the scene sets them (a brand city's Architect lighting); the legacy city never does.
   const flood = b.floodlights !== undefined && Object.hasOwn(LIGHTING_COLORS, b.floodlights) ? LIGHTING_COLORS[b.floodlights].accent : null
+  // A brand city's Architect street level, where the scene sets it; the legacy city never does, and draws its architecture's entrance.
+  const entrance = b.street?.entrance ?? b.architecture.entrance
   const scene = useCityScene()
   const district = sceneDistrict(scene, b.districtId)
   const name = scene.buildingLabel(b)
@@ -347,6 +349,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       data-roof={b.architecture.roof}
       data-lighting={b.architecture.lighting}
       data-floodlights={flood && tier > 0 ? b.floodlights : undefined}
+      data-entrance={b.street && tier > 0 ? entrance : undefined}
+      data-grounds={b.street && tier > 0 ? b.street.grounds : undefined}
       data-selected={selected ? 'true' : 'false'}
       onClick={(e) => {
         e.stopPropagation()
@@ -430,7 +434,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       {/* Entrance + owner crest on the podium */}
       {tier > 0 && (
         <g transform={leftFace(podium.a, podium.z1)}>
-          <Entrance kind={b.architecture.entrance} w={cPod.faceW} h={podium.z1} accent={accent} trim={pal.trim} />
+          <Entrance kind={entrance} w={cPod.faceW} h={podium.z1} accent={accent} trim={pal.trim} />
           {detail !== 'far' &&
             patrons
               .filter((p) => patronLevelIndex(p.amount) >= 1)
@@ -525,6 +529,18 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
             </g>
           )
         })}
+
+      {/* Architect grounds (a brand city's landscaping): fixed pieces on the paved lot, dropped with distance. Never a
+          pointer target, so the building's hit area is exactly as it was. */}
+      {tier > 0 && b.street && detail !== 'far' && (
+        <g pointerEvents="none" data-grounds-pieces={b.street.grounds}>
+          {groundsLayout(b.street.grounds, a0, lot).map(({ piece, at }, i) => (
+            <g key={i} transform={`translate(${at.x.toFixed(1)} ${at.y.toFixed(1)}) scale(${GROUNDS_SCALE})`} data-grounds-piece={piece}>
+              <LandscapeItem kind={piece} accent={accent} />
+            </g>
+          ))}
+        </g>
+      )}
 
       {/* Friend markers for 500+ patrons */}
       {detail === 'near' &&
@@ -661,7 +677,7 @@ export const MassingSprite = memo(function MassingSprite({ building: b, total, o
   )
 })
 
-function Entrance({ kind, w, h, accent, trim }: { kind: string; w: number; h: number; accent: string; trim: string }) {
+export function Entrance({ kind, w, h, accent, trim }: { kind: string; w: number; h: number; accent: string; trim: string }) {
   const cx = w / 2
   switch (kind) {
     case 'awning':
@@ -679,18 +695,28 @@ function Entrance({ kind, w, h, accent, trim }: { kind: string; w: number; h: nu
         </g>
       )
     case 'portico':
-      return (
-        <g>
-          <rect x={cx - 5} y={h - 12} width={10} height={12} fill={accent} opacity={0.8} />
-          {[-11, -6, 6, 11].map((d) => (
-            <rect key={d} x={cx + d - 1} y={h - 14} width={2} height={14} fill={trim} />
-          ))}
-          <polygon points={`${cx - 14},${h - 14} ${cx},${h - 21} ${cx + 14},${h - 14}`} fill={trim} />
-        </g>
-      )
+      return porticoArt(cx, h, accent, trim)
+    case 'grand-portico': {
+      // The portico fitted to the face (a brand city's grand entrance, P1-C2-E4C): its columns and pediment close up about
+      // the door so it never overhangs the podium's corners, at its full height (see `entranceExtent`).
+      const s = porticoFit(w)
+      return <g transform={`matrix(${s.toFixed(3)} 0 0 1 ${(cx * (1 - s)).toFixed(2)} 0)`}>{porticoArt(cx, h, accent, trim)}</g>
+    }
     default:
       return <rect x={cx - 3.5} y={h - 10} width={7} height={10} fill={accent} opacity={0.8} />
   }
+}
+
+function porticoArt(cx: number, h: number, accent: string, trim: string) {
+  return (
+    <g>
+      <rect x={cx - 5} y={h - 12} width={10} height={12} fill={accent} opacity={0.8} />
+      {[-11, -6, 6, 11].map((d) => (
+        <rect key={d} x={cx + d - 1} y={h - 14} width={2} height={14} fill={trim} />
+      ))}
+      <polygon points={`${cx - 14},${h - 14} ${cx},${h - 21} ${cx + 14},${h - 14}`} fill={trim} />
+    </g>
+  )
 }
 
 /**

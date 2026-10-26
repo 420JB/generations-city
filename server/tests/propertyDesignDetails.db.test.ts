@@ -28,8 +28,10 @@ import { keeper, player, ticketWorld } from './ticketHarness'
  *
  * 0016 rewrites no row and rolls back whole when it cannot finish; v1 designs read and draw exactly as before; a v1 save
  * already recorded replays its original receipt, one never recorded is refused (`design_retired`), and the database takes
- * no new v1 row; a v2 save inherits the retained choices, the new controller may make it and the former one may not; the
- * standard treatments are no redesign; nothing else moves; installations stay apart; a restart and city:verify agree.
+ * no new v1 row; a save of the current catalog (v2 when E4B shipped; v3, after 0017, since P1-C2-E4C) inherits the
+ * retained choices, the new controller may make it and the former one may not; the standard treatments are no redesign;
+ * nothing else moves; installations stay apart; a restart and city:verify agree. The 0017 upgrade of v2 designs is in
+ * `propertyDesignStreet.db.test.ts`.
  */
 
 function testAuthority() {
@@ -59,6 +61,7 @@ async function refusalOf(work: Promise<unknown>): Promise<string> {
 
 const V1 = 'architect-design-v1'
 const V2 = 'architect-design-v2'
+const V3 = 'architect-design-v3'
 /** Every table a design must leave exactly as it was. */
 const UNTOUCHED = ['city', 'city_events', 'worlds', 'world_properties', 'world_property_constructions', 'world_property_control_eras', 'world_test_credit_entries', 'world_geometry_freezes', 'world_district_tickets', 'world_config_adoptions']
 
@@ -66,7 +69,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
   const t = useTestSchema()
   const { setup, one } = ticketWorld(t)
 
-  it('8. 0016 upgrades a populated 0015 database without changing a design: v1 history is kept, replayed and drawn as before; v2 saves build on it', async () => {
+  it('8. 0016 upgrades a populated 0015 database without changing a design: v1 history is kept, replayed and drawn as before; later saves build on it', async () => {
     // A. A database as E4A left it: everything up to 0015.
     const dir = await t.migrationsPlus([])
     const files = (await readdir(dir)).filter((f) => f.endsWith('.sql'))
@@ -164,8 +167,10 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     expect(await dump(names, 'to_jsonb(x)')).toEqual(before)
     expect((await t.db.query("SELECT 1 FROM pg_proc WHERE proname = 'world_design_details_known' AND pronamespace = current_schema()::regnamespace")).rows).toEqual([])
 
-    // B. 0016 applies, once, as checked in.
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([16])
+    // B. 0016 applies, once, as checked in (and nothing after it yet: this is the database E4B left).
+    const upTo16 = await mkdtemp(join(tmpdir(), 'rc-0016-'))
+    for (const f of files.filter((f) => Number(f.slice(0, 4)) <= 16)) await copyFile(join(dir, f), join(upTo16, f))
+    expect((await migrate(t.db, { dir: upTo16, environment: 'local' })).applied).toEqual([16])
     const shipped = (await loadMigrations(MIGRATIONS_DIR)).find((m) => m.version === 16)!
     expect(await one<{ name: string; checksum: string }>('SELECT name, checksum FROM schema_migrations WHERE version = 16')).toEqual({ name: 'architect_design_details', checksum: shipped.checksum })
     expect(await columns()).toEqual([...columns15, 'windows', 'lighting'])
@@ -184,6 +189,13 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     const name16 = (await readdir(edited)).find((f) => f.startsWith('0016'))!
     await writeFile(join(edited, name16), `${await readFile(join(edited, name16), 'utf8')}\n-- edited\n`)
     await expect(migrate(t.db, { dir: edited, environment: 'local' })).rejects.toThrow('Migration 16 (architect_design_details) was edited after it was applied')
+    // The guard 0016 installed takes no new v1 row (the v1 receipts are answered below, by this build's store).
+    await expect(legacy(ada, pC.id, 'brick', 'spire', 2)).rejects.toThrow(/architect-design-v2: architect-design-v1 is read only/)
+
+    // This build's store reads the columns 0017 adds (a deployment migrates before it serves), so the database takes 0017
+    // next, and every row is still exactly as E4A wrote it.
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([17])
+    expect(await dump(names, "to_jsonb(x) - 'windows' - 'lighting' - 'entrance' - 'landscaping'")).toEqual(before)
 
     // C. Read as v1, exactly, and drawn exactly as E4A drew them: the facade and roof over the default architecture, no floodlights.
     const designs = createWorldDesignStore(t.db, { mode: 'local', log: silentLogger })
@@ -230,13 +242,17 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     const bea = await env.open(INSTALLATION_A, BEA)
     expect(await refusalOf(legacySave(ada, pC.id, 'jade', 'dome', 0, cDesign))).toBe('action_conflict')
     expect(await refusalOf(designer.save(ada.token, env.actorOf(ada), { propertyId: pC.id, actionId: cDesign, baseRevision: 0, catalog: V2, facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard' }))).toBe('action_conflict')
+    expect(
+      await refusalOf(designer.save(ada.token, env.actorOf(ada), { propertyId: pC.id, actionId: cDesign, baseRevision: 0, catalog: V3, facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' })),
+    ).toBe('action_conflict')
     expect(await refusalOf(legacySave(bea, pD.id, 'limestone', 'spire', 1, dSecond))).toBe('action_conflict')
-    // A v1 save that was never recorded is refused, never applied as a v2 design; and the database takes no new v1 row.
+    // A v1 save that was never recorded is refused, never applied as a later catalog's design; and the database takes no new v1 row.
     expect(await refusalOf(legacySave(ada, pC.id, 'brick', 'spire', 1))).toBe('design_retired')
     await expect(legacy(ada, pC.id, 'brick', 'spire', 2)).rejects.toThrow(/architect-design-v1 is read only/)
     const v1Rows = await dump(['world_property_designs'], 'to_jsonb(x)')
 
-    // E. v2 saves. The standard treatments on a v1 design are that design: no revision, no accidental redesign.
+    // E. Saves of the current catalog (v3, since 0017). The standard treatments on a v1 design are that design: no revision,
+    // no accidental redesign.
     const snapshot = async () => {
       const out: Record<string, string[]> = {}
       for (const table of UNTOUCHED) out[table] = (await t.db.query<{ r: string }>(`SELECT to_jsonb(x)::text AS r FROM ${table} x ORDER BY 1`)).rows.map((r) => r.r)
@@ -244,19 +260,19 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     }
     const untouched = await snapshot()
     const save = (o: OpenedPlaySession, propertyId: string, design: { facade: string; roof: string; windows: string; lighting: string }, baseRevision: number) =>
-      designer.save(o.token, env.actorOf(o), { propertyId, actionId: randomUUID(), baseRevision, catalog: V2, ...design })
+      designer.save(o.token, env.actorOf(o), { propertyId, actionId: randomUUID(), baseRevision, catalog: V3, ...design, entrance: 'standard', landscaping: 'standard' })
     expect(await refusalOf(save(ada, pC.id, { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard' }, 1))).toBe('design_unchanged')
     expect(await dump(['world_property_designs'], 'to_jsonb(x)')).toEqual(v1Rows)
     const c2 = await save(ada, pC.id, { facade: 'copper', roof: 'dome', windows: 'arched', lighting: 'warm' }, 1)
-    expect(c2).toMatchObject({ fresh: true, design: { revision: 2, catalog: V2, facade: 'copper', roof: 'dome', windows: 'arched', lighting: 'warm' } })
+    expect(c2).toMatchObject({ fresh: true, design: { revision: 2, catalog: V3, facade: 'copper', roof: 'dome', windows: 'arched', lighting: 'warm' } })
     // F. The new controller inherits D's design and may change it; the former controller (and founder), and a patron, may not.
     expect(await overview(bea, pD.id)).toMatchObject({ control: 'viewer', saved: { revision: 2, catalog: V1, facade: 'limestone', roof: 'spire' } })
     expect(await refusalOf(save(ada, pD.id, { facade: 'limestone', roof: 'spire', windows: 'ribbon', lighting: 'cool' }, 2))).toBe('not_current_controller')
     const cy = await env.open(INSTALLATION_A, player(3, 'Cy'))
     expect(await refusalOf(save(cy, pD.id, { facade: 'limestone', roof: 'spire', windows: 'ribbon', lighting: 'cool' }, 2))).toBe('not_current_controller')
     const d3 = await save(bea, pD.id, { facade: 'limestone', roof: 'spire', windows: 'lattice', lighting: 'cool' }, 2)
-    expect(d3.design).toMatchObject({ revision: 3, catalog: V2, windows: 'lattice', lighting: 'cool', designer: { discordUserId: BEA.discordUserId } })
-    // B's facade-only v1 design, on a Tier 0 foundation: v2 adds windows and lighting it keeps until Tier 1.
+    expect(d3.design).toMatchObject({ revision: 3, catalog: V3, windows: 'lattice', lighting: 'cool', designer: { discordUserId: BEA.discordUserId } })
+    // B's facade-only v1 design, on a Tier 0 foundation: a later catalog adds windows and lighting it keeps until Tier 1.
     expect((await save(ada, pB.id, { facade: 'brick', roof: 'flat', windows: 'ribbon', lighting: 'standard' }, 1)).design).toMatchObject({ revision: 2 })
     // Nothing else moved: no credit, construction, tier, era, founder, ticket, sequence or event.
     expect(await snapshot()).toEqual(untouched)
@@ -264,7 +280,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     const after = (await dump(['world_property_designs'], 'to_jsonb(x)')).world_property_designs
     expect(after.filter((r) => JSON.parse(r).catalog === V1)).toEqual(v1Rows.world_property_designs)
     expect(after).toHaveLength(v1Rows.world_property_designs.length + 3)
-    // A v1 replay still answers after v2 revisions, and still writes nothing.
+    // A v1 replay still answers after later revisions, and still writes nothing.
     expect((await legacySave(ada, pD.id, 'limestone', 'spire', 1, dSecond)).design).toMatchObject({ revision: 2, catalog: V1 })
     expect((await dump(['world_property_designs'], 'to_jsonb(x)')).world_property_designs).toEqual(after)
 

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import pg from 'pg'
-import { arrive, claim, guildFor, installed, openProperty, player, records, still } from './constructionHelpers'
+import { arrive, claim, designOption, guildFor, installed, openProperty, player, records, still } from './constructionHelpers'
 import { launch, launchHref } from './play'
 import { CONSTRUCTION_CREDITS, CONSTRUCTION_KEEPER, REHEARSAL_ADA, REHEARSAL_BEA, REHEARSAL_CY } from './rehearsal'
 
@@ -11,7 +11,7 @@ import { CONSTRUCTION_CREDITS, CONSTRUCTION_KEEPER, REHEARSAL_ADA, REHEARSAL_BEA
  * ARCHITECT DETAILS (P1-C2-E4B), end to end against a REAL local Proofy Play, in the original city view: windows and
  * exterior lighting join facade and roof in the same Architect design view. Each choice is previewed on the map's own
  * building and beside the saved one; Cancel leaves the stored design as it was; Save writes all four as one revision of
- * catalog architect-design-v2, drawn for everyone, after a reload, at every tier, turned and from afar. A save an E4A page
+ * catalog architect-design-v2 (v3 since P1-C2-E4C), drawn for everyone, after a reload, at every tier, turned and from afar. A save an E4A page
  * kept (catalog v1) is checked exactly as it was kept: answered with its receipt if it was recorded, refused if not.
  * LOCAL TEST control only; free: no credit, construction, tier, sequence, Crown, Capital or monument.
  */
@@ -20,7 +20,9 @@ mkdirSync(SHOTS, { recursive: true })
 const KEEPER_ID = CONSTRUCTION_KEEPER.slice(CONSTRUCTION_KEEPER.lastIndexOf('/') + 1)
 const DESIGNS = '/v1/play/rehearsal/designs'
 const KEPT = 'rare-city-design-saves'
-const STD = ' · Standard grid · Standard lighting'
+const STD = ' · Standard grid · Standard lighting · Standard entry · Standard grounds'
+/** Catalog v3's standard street level (P1-C2-E4C): how every E4B design is drawn and named now. */
+const STREET = ' · Standard entry · Standard grounds'
 
 const databaseUrl = process.env.CITY_PLAY_DATABASE_URL ?? ''
 let db: pg.Pool
@@ -67,10 +69,10 @@ test('3-5, 9-12, 24-26. windows and lighting preview on the city, cancel, and sa
 
   // 6. Tier 0: lighting is kept for Tier 1, so the foundation draws no floodlights yet; the view says so.
   let panel = await openDesign(ada.page)
-  await panel.getByTestId('design-lighting-cool').click()
+  await (await designOption(panel, 'design-lighting-cool')).click()
   await expect(panel.getByTestId('design-thumb-preview')).toHaveAttribute('data-lighting', 'cool')
   await expect(onMap(ada.page)).not.toHaveAttribute('data-floodlights', /.*/)
-  await expect(panel.getByTestId('design-tier0-note')).toContainText('the roof, windows and lighting are drawn once the building reaches Tier 1')
+  await expect(panel.getByTestId('design-tier0-note')).toContainText('the roof, windows, lighting, entrance and landscaping are drawn once the building reaches Tier 1')
   await panel.getByTestId('design-cancel').click()
 
   // Tier 1, by the controller's own construction.
@@ -89,7 +91,7 @@ test('3-5, 9-12, 24-26. windows and lighting preview on the city, cancel, and sa
   // 3-4. Preview each window and lighting treatment on the map's building; nothing is sent or stored.
   panel = await openDesign(ada.page)
   for (const windows of ['arched', 'ribbon', 'lattice', 'grid']) {
-    await panel.getByTestId(`design-windows-${windows}`).click()
+    await (await designOption(panel, `design-windows-${windows}`)).click()
     await expect.poll(() => windowsOn(onMap(ada.page))).toBe(`url(#win-${windows}-warm)`)
     await expect(panel.getByTestId('design-thumb-preview')).toHaveAttribute('data-windows', windows)
   }
@@ -97,23 +99,23 @@ test('3-5, 9-12, 24-26. windows and lighting preview on the city, cancel, and sa
     ['warm', 'warm'],
     ['cool', 'cool'],
   ] as const) {
-    await panel.getByTestId(`design-lighting-${lighting}`).click()
+    await (await designOption(panel, `design-lighting-${lighting}`)).click()
     await expect(onMap(ada.page)).toHaveAttribute('data-floodlights', lighting)
     await expect(onMap(ada.page)).toHaveAttribute('data-lighting', glow)
     await expect(onMap(ada.page).locator('[data-floodlight-face]')).not.toHaveCount(0)
   }
-  await panel.getByTestId('design-windows-ribbon').click()
+  await (await designOption(panel, 'design-windows-ribbon')).click()
   await expect(panel.getByTestId('design-changes')).toHaveText('Preview changes windows (Standard grid → Ribbon glass), lighting (Standard lighting → Cool floodlights). Not saved yet.')
   await expect(panel.getByTestId('design-thumb-saved')).toHaveAttribute('data-lighting', 'standard')
   await still(ada.page)
   await ada.page.screenshot({ path: `${SHOTS}/details-1-preview-tier1-ribbon-cool.png` })
-  await panel.getByTestId('design-lighting-standard').click()
+  await (await designOption(panel, 'design-lighting-standard')).click()
   await expect(onMap(ada.page)).not.toHaveAttribute('data-floodlights', /.*/)
   expect(sent).toHaveLength(0)
   expect(await revisionsOf(placed.propertyId)).toEqual([])
 
   // 10. Cancel: the map draws the stored design again.
-  await panel.getByTestId('design-lighting-cool').click()
+  await (await designOption(panel, 'design-lighting-cool')).click()
   await panel.getByTestId('design-cancel').click()
   await expect(ada.page.getByTestId('building-panel')).toHaveAttribute('data-building', placed.buildingId)
   await expect(onMap(ada.page)).not.toHaveAttribute('data-floodlights', /.*/)
@@ -123,20 +125,20 @@ test('3-5, 9-12, 24-26. windows and lighting preview on the city, cancel, and sa
   // 5, 11. All four categories, one save, one revision.
   const before = await sequenceOf(worldId)
   panel = await openDesign(ada.page)
-  await panel.getByTestId('design-facade-brick').click()
-  await panel.getByTestId('design-roof-dome').click()
-  await panel.getByTestId('design-windows-lattice').click()
-  await panel.getByTestId('design-lighting-warm').click()
+  await (await designOption(panel, 'design-facade-brick')).click()
+  await (await designOption(panel, 'design-roof-dome')).click()
+  await (await designOption(panel, 'design-windows-lattice')).click()
+  await (await designOption(panel, 'design-lighting-warm')).click()
   await expect(panel.getByTestId('design-changes')).toHaveText(
     'Preview changes facade (Slate → Brick), roof (Flat deck → Dome), windows (Standard grid → Industrial lattice), lighting (Standard lighting → Warm floodlights). Not saved yet.',
   )
   await panel.getByTestId('design-save').click()
-  await expect(panel.getByTestId('design-feedback')).toHaveText('Saved: Brick · Dome · Industrial lattice · Warm floodlights, revision 1. The city shows it now, for everyone.')
+  await expect(panel.getByTestId('design-feedback')).toHaveText(`Saved: Brick · Dome · Industrial lattice · Warm floodlights${STREET}, revision 1. The city shows it now, for everyone.`)
   await expect(panel.getByTestId('design-changes')).toHaveText('Preview matches the saved design.')
   expect(sent).toHaveLength(1)
-  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
-  expect(sent[0]).toMatchObject({ catalog: 'architect-design-v2', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm', baseRevision: 0 })
-  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v2', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm' }])
+  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
+  expect(sent[0]).toMatchObject({ catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm', entrance: 'standard', landscaping: 'standard', baseRevision: 0 })
+  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm' }])
   // 24-26. Free, and no city change: credits, constructions and the city's sequence as they were.
   expect(await records(db).constructionsOf(placed.propertyId)).toHaveLength(built)
   expect(await sequenceOf(worldId)).toBe(before)
@@ -154,8 +156,8 @@ test('3-5, 9-12, 24-26. windows and lighting preview on the city, cancel, and sa
   expect(await windowsOn(onMap(ada.page))).toBe('url(#win-lattice-warm)')
   await openProperty(ada.page, placed.plotId, placed.buildingId)
   panel = await openDesign(ada.page)
-  await expect(panel.getByTestId('design-windows-lattice').getByRole('radio')).toBeChecked()
-  await expect(panel.getByTestId('design-lighting-warm').getByRole('radio')).toBeChecked()
+  await expect((await designOption(panel, 'design-windows-lattice')).getByRole('radio')).toBeChecked()
+  await expect((await designOption(panel, 'design-lighting-warm')).getByRole('radio')).toBeChecked()
   await expect(panel.getByTestId('design-history-entry')).toHaveAttribute('data-windows', 'lattice')
   await panel.getByRole('button', { name: 'Close panel' }).click()
 
@@ -240,14 +242,14 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   await openProperty(ada.page, placed.plotId, placed.buildingId)
   const card = ada.page.getByTestId('design-card')
   await expect(card).toHaveAttribute('data-catalog', 'architect-design-v1')
-  await expect(card.getByTestId('design-saved')).toHaveText(`Brick · Dome${STD} · saved design, revision 1 (chosen before windows and lighting could be chosen: standard windows and lighting)`)
+  await expect(card.getByTestId('design-saved')).toHaveText(`Brick · Dome${STD} · saved design, revision 1 (chosen before windows and lighting could be chosen: standard windows, lighting, entrance and grounds)`)
   await expect(onMap(ada.page)).toHaveAttribute('data-facade', 'brick')
   await expect(onMap(ada.page)).not.toHaveAttribute('data-floodlights', /.*/)
 
   // Checked exactly as kept: the same nine keys, no treatment added; answered with its receipt; nothing written.
   let panel = await openDesign(ada.page)
   await expect(panel.getByTestId('design-save')).toHaveText('Check this save · same request')
-  await panel.getByTestId('design-lighting-cool').click()
+  await (await designOption(panel, 'design-lighting-cool')).click()
   await panel.getByTestId('design-save').click()
   await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'repeat')
   await expect(panel.getByTestId('design-feedback')).toHaveText(`Already saved by this save: Brick · Dome${STD}, revision 1. Nothing more was saved.`)
@@ -258,7 +260,7 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v1', facade: 'brick', roof: 'dome', windows: null, lighting: null }])
   await panel.getByRole('button', { name: 'Close panel' }).click()
 
-  // A kept v1 save that never reached the server: refused (settled), never applied as a v2 design.
+  // A kept v1 save that never reached the server: refused (settled), never applied as a design of a later catalog.
   const lost = { ...legacy, actionId: randomUUID(), baseRevision: 1, facade: 'jade', roof: 'spire' }
   await ada.page.evaluate(([key, kept]) => localStorage.setItem(key, JSON.stringify([kept])), [KEPT, lost] as const)
   await ada.page.reload()
@@ -273,11 +275,12 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   expect(Object.keys(sent[1])).not.toContain('windows')
   expect(await ada.page.evaluate((key) => localStorage.getItem(key), KEPT)).toBe('[]')
   expect(await revisionsOf(placed.propertyId)).toHaveLength(1)
-  await expect(panel.getByTestId('design-facade-brick').getByRole('radio')).toBeChecked()
-  await expect(panel.getByTestId('design-windows-grid').getByRole('radio')).toBeChecked()
+  await expect((await designOption(panel, 'design-facade-brick')).getByRole('radio')).toBeChecked()
+  await expect((await designOption(panel, 'design-windows-grid')).getByRole('radio')).toBeChecked()
 
-  // 27. On a phone, by keyboard: windows and lighting are radio groups too; v2 keeps the v1 facade and roof it builds on.
+  // 27. On a phone, by keyboard: windows and lighting are radio groups too; the current catalog keeps the v1 facade and roof it builds on.
   await ada.page.setViewportSize({ width: 390, height: 844 })
+  await panel.getByRole('tab', { name: /^Details/ }).click()
   await expect(panel.getByRole('group', { name: 'Windows' })).toBeVisible()
   await panel.getByRole('radio', { name: /^Standard grid/ }).focus()
   await ada.page.keyboard.press('ArrowDown')
@@ -288,9 +291,9 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   await expect(panel.getByRole('radio', { name: /^Cool floodlights/ })).toBeChecked()
   await panel.getByRole('button', { name: 'Save design' }).focus()
   await ada.page.keyboard.press('Enter')
-  await expect(panel.getByRole('status').filter({ hasText: 'Saved:' })).toHaveText('Saved: Brick · Dome · Classic arched · Cool floodlights, revision 2. The city shows it now, for everyone.')
+  await expect(panel.getByRole('status').filter({ hasText: 'Saved:' })).toHaveText(`Saved: Brick · Dome · Classic arched · Cool floodlights${STREET}, revision 2. The city shows it now, for everyone.`)
   await expect(panel.getByTestId('design-history-entry')).toHaveCount(2)
-  await expect(panel.getByTestId('design-history-entry').nth(0)).toHaveAttribute('data-catalog', 'architect-design-v2')
+  await expect(panel.getByTestId('design-history-entry').nth(0)).toHaveAttribute('data-catalog', 'architect-design-v3')
   await expect(panel.getByTestId('design-history-entry').nth(1)).toHaveAttribute('data-catalog', 'architect-design-v1')
   await expect(panel.getByTestId('design-history-entry').nth(1)).toContainText('chosen before windows and lighting could be chosen')
   const overflow = await ada.page.evaluate(() => ({ page: document.documentElement.scrollWidth - window.innerWidth, drawer: (document.querySelector('[data-testid="drawer"]') as HTMLElement).getBoundingClientRect().right - window.innerWidth }))
@@ -300,7 +303,7 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   await ada.page.screenshot({ path: `${SHOTS}/details-4-mobile-options.png` })
   expect(await revisionsOf(placed.propertyId)).toEqual([
     { revision: 1, catalog: 'architect-design-v1', facade: 'brick', roof: 'dome', windows: null, lighting: null },
-    { revision: 2, catalog: 'architect-design-v2', facade: 'brick', roof: 'dome', windows: 'arched', lighting: 'cool' },
+    { revision: 2, catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'arched', lighting: 'cool' },
   ])
   // A relaunch reads it all back.
   await arrive(ada.page, launchHref(await launch(guild, 'rare-city', 'Ada', REHEARSAL_ADA)))

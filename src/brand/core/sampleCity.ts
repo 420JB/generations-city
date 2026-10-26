@@ -24,8 +24,8 @@ import type { BrandCityConfig } from './config'
  * Building ids are the engine's V2 property ids. Monument holders, the Capital and the Crown
  * come from the standard competition rules.
  */
-/** `floodlights`: the building's Architect exterior lighting, where a saved design has one (see `SceneBuilding`). */
-export type BrandBuilding = Omit<Building, 'districtId'> & { districtId: string; floodlights?: string }
+/** `floodlights`, `street`: the building's Architect exterior lighting and street level, where a saved design has them (see `SceneBuilding`). */
+export type BrandBuilding = Omit<Building, 'districtId'> & { districtId: string; floodlights?: string; street?: Readonly<{ entrance: string; grounds: string }> }
 
 export interface SampleDistrictSpec {
   /** Build progress of the district's first residents, in the order they joined. */

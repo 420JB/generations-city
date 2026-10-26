@@ -45,6 +45,7 @@ describe('shared engine under Node', () => {
       'CONSTRUCTION_RECIPES',
       'CURRENT_DESIGN_CATALOG',
       'DESIGN_CATALOGS',
+      'DESIGN_SLOTS',
       'DISTRICT_TICKET_LEASE_SECONDS',
       'FAMILY_DISTRICTS',
       'FRIENDS_ENDPOINT',

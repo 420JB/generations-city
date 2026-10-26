@@ -604,9 +604,10 @@ export function PlayCityApp() {
    * with the city's saved designs as the server has them now.
    */
   async function saveDesign(drawn: PlayCityResponse, save: DesignSave): Promise<DesignOutcome> {
-    // Exactly the save as kept: one an earlier page kept (no windows or lighting) is sent without them.
+    // Exactly the save as kept: one an earlier page kept (without windows and lighting, or without an entrance and landscaping) is sent without them.
     const details = save.windows !== undefined && save.lighting !== undefined ? { windows: save.windows, lighting: save.lighting } : {}
-    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof, ...details }
+    const street = save.windows !== undefined && save.lighting !== undefined && save.entrance !== undefined && save.landscaping !== undefined ? { entrance: save.entrance, landscaping: save.landscaping } : {}
+    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof, ...details, ...street }
     const answer = await post(PLAY_REHEARSAL_DESIGNS_ENDPOINT, request)
     if (!answer) return { ok: false, problem: { message: REHEARSAL_REFUSALS.design_unconfirmed, kind: 'retry', code: null } }
     const refused = (answer.body as { error?: unknown } | null)?.error
@@ -620,10 +621,33 @@ export function PlayCityApp() {
     }
     const saved = answer.response.ok ? parseRehearsalDesignResponse(answer.body) : null
     const d = saved?.design
-    if (!saved || d!.actionId !== save.actionId || d!.propertyId !== save.propertyId || d!.revision !== save.baseRevision + 1 || d!.catalog !== save.catalog || d!.facade !== save.facade || d!.roof !== save.roof || d!.windows !== (save.windows ?? null) || d!.lighting !== (save.lighting ?? null))
+    if (
+      !saved ||
+      d!.actionId !== save.actionId ||
+      d!.propertyId !== save.propertyId ||
+      d!.revision !== save.baseRevision + 1 ||
+      d!.catalog !== save.catalog ||
+      d!.facade !== save.facade ||
+      d!.roof !== save.roof ||
+      d!.windows !== (save.windows ?? null) ||
+      d!.lighting !== (save.lighting ?? null) ||
+      d!.entrance !== (save.entrance ?? null) ||
+      d!.landscaping !== (save.landscaping ?? null)
+    )
       return { ok: false, problem: designProblemOf(answer.response.ok ? null : refused) }
     // Drawn at once, unless the page already has a later revision of it; then as the server has every design now.
-    const mine: RehearsalCityDesign = { propertyId: d!.propertyId, buildingId: d!.buildingId, revision: d!.revision, catalog: d!.catalog, facade: d!.facade, roof: d!.roof, windows: d!.windows, lighting: d!.lighting }
+    const mine: RehearsalCityDesign = {
+      propertyId: d!.propertyId,
+      buildingId: d!.buildingId,
+      revision: d!.revision,
+      catalog: d!.catalog,
+      facade: d!.facade,
+      roof: d!.roof,
+      windows: d!.windows,
+      lighting: d!.lighting,
+      entrance: d!.entrance,
+      landscaping: d!.landscaping,
+    }
     setPhase((p) => (p.kind === 'ready' && p.designs && (p.designs.byBuilding[mine.buildingId]?.revision ?? 0) < mine.revision ? { ...p, designs: { ...p.designs, byBuilding: { ...p.designs.byBuilding, [mine.buildingId]: mine } } } : p))
     const now = await readDesigns()
     if (!now.unread) setPhase((p) => (p.kind === 'ready' && p.city.world.id === drawn.world.id ? { ...p, designs: now } : p))

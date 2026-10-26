@@ -1,13 +1,14 @@
 /**
- * ARCHITECT PROPERTY DESIGN, PURE (P1-C2-E4A, P1-C2-E4B): the small, versioned set of visual choices a property's current
+ * ARCHITECT PROPERTY DESIGN, PURE (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C): the small, versioned set of visual choices a property's current
  * NFT controller may make for its building, and nothing else. Portable and deterministic: no clock, database or renderer.
  *
- * A design is how one building is drawn: a facade finish, a roof silhouette, a window treatment and an exterior lighting
- * treatment (`PropertyDesign`), each an identifier from a CATALOG. Every identifier is one the standard renderer already
- * draws (`FACADE_PALETTES`, `Roof`, the window patterns and the lighting colors of the city art), so a design never
- * carries colors, markup, URLs or anything a browser authored: the server stores only identifiers a catalog lists, and
- * the page draws them through the city's own art. A property with no saved design is drawn as every new building is,
- * with the current catalog's default (`slate`, `flat`, `grid`, `standard`).
+ * A design is how one building is drawn: a facade finish, a roof silhouette, a window treatment, an exterior lighting
+ * treatment, an entrance treatment and a landscaping treatment (`PropertyDesign`), each an identifier from a CATALOG.
+ * Every identifier is one the standard renderer already draws (`FACADE_PALETTES`, `Roof`, the window patterns, the
+ * lighting colors, the entrances and the landscape pieces of the city art), so a design never carries colors, markup,
+ * URLs, positions or anything a browser authored: the server stores only identifiers a catalog lists, and the page draws
+ * them through the city's own art. A property with no saved design is drawn as every new building is, with the current
+ * catalog's default (`slate`, `flat`, `grid`, `standard`, `standard`, `standard`).
  *
  * Catalogs are versioned, and a catalog's key and meaning are permanent: every saved design names the catalog it was
  * chosen from, and is read by that catalog forever.
@@ -16,15 +17,19 @@
  *     no window or lighting treatment (`null` in a stored choice), and are drawn with the treatments every building had
  *     when they were saved (`LEGACY_DETAILS`, the renderer's standard grid windows and warm glow, no floodlights).
  *     It is READ ONLY now: no new design is saved from it.
- *   - `architect-design-v2` (P1-C2-E4B) is the current one: the same facades and roofs, plus a window treatment and an
- *     exterior lighting treatment. Its default draws exactly what v1's default did, so no building looks different
- *     until its controller saves a v2 design.
+ *   - `architect-design-v2` (P1-C2-E4B) added a window treatment and an exterior lighting treatment. Its designs keep
+ *     exactly that meaning: they name no entrance or landscaping treatment (`null`), and are drawn with the standard
+ *     entrance and grounds every building had when they were saved (`LEGACY_DETAILS`). It is READ ONLY now.
+ *   - `architect-design-v3` (P1-C2-E4C) is the current one: v2's four slots, plus an entrance treatment and a
+ *     landscaping treatment. Its default draws exactly what v2's default did, so no building looks different until its
+ *     controller saves a v3 design.
  *
  * Every choice is LOCAL TEST content: free, none unlocked, earned, ranked or paid for, and what a later catalog offers is
  * not decided here.
  *
  * What a design is NOT: the building's tier or growth (construction's), its district identity (the administrator's
- * configuration), its NFT identity (drawn on its label whatever the design), landscaping, or public owner media
+ * configuration), its NFT identity (drawn on its label whatever the design), its plot or any land beyond its own paved
+ * lot (landscaping is a fixed arrangement drawn inside it, never placed, moved or collected), or public owner media
  * (billboards, which have their own, separate transfer rules). A design belongs to the PROPERTY: it stays when the NFT's
  * controller changes.
  */
@@ -33,22 +38,27 @@ export interface PropertyDesign {
   roof: string
   windows: string
   lighting: string
+  entrance: string
+  landscaping: string
 }
 
 export type DesignSlot = keyof PropertyDesign
 
 /** Every slot a design draws, in the order a catalog lists them. */
-export const DESIGN_SLOTS: readonly DesignSlot[] = Object.freeze(['facade', 'roof', 'windows', 'lighting'])
+export const DESIGN_SLOTS: readonly DesignSlot[] = Object.freeze(['facade', 'roof', 'windows', 'lighting', 'entrance', 'landscaping'])
 
 /**
  * A design as a save records it: one identifier per slot its catalog chooses, and `null` for a slot its catalog does not
- * have (a v1 design's windows and lighting). Exactly these four keys.
+ * have (a v1 design's windows, lighting, entrance and landscaping; a v2 design's entrance and landscaping). Exactly these
+ * six keys.
  */
 export interface DesignChoice {
   facade: string
   roof: string
   windows: string | null
   lighting: string | null
+  entrance: string | null
+  landscaping: string | null
 }
 
 export interface DesignCatalog {
@@ -62,15 +72,20 @@ export interface DesignCatalog {
   windows: readonly string[]
   /** Empty where `lighting` is not one of the catalog's slots. */
   lighting: readonly string[]
+  /** Empty where `entrance` is not one of the catalog's slots. */
+  entrances: readonly string[]
+  /** Empty where `landscaping` is not one of the catalog's slots. */
+  landscaping: readonly string[]
   /** What a property with no saved design is drawn with. Always the catalog's choice, with `LEGACY_DETAILS` for slots it does not have. */
   default: Readonly<PropertyDesign>
 }
 
 /**
- * The window and lighting treatments every building was drawn with before catalog v2: the standard renderer's grid windows
- * and warm window glow, with no exterior floodlights. A design that names none (v1, or no design at all) is drawn so.
+ * The treatments every building was drawn with before the catalog that added them: the standard renderer's grid windows
+ * and warm window glow with no exterior floodlights (before v2), and its standard door with no landscaping (before v3). A
+ * design that names none of them (v1, v2 for the last two, or no design at all) is drawn so.
  */
-export const LEGACY_DETAILS: Readonly<Pick<PropertyDesign, 'windows' | 'lighting'>> = Object.freeze({ windows: 'grid', lighting: 'standard' })
+export const LEGACY_DETAILS: Readonly<Pick<PropertyDesign, 'windows' | 'lighting' | 'entrance' | 'landscaping'>> = Object.freeze({ windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' })
 
 /** The first catalog (P1-C2-E4A): five facade finishes and four roof silhouettes the standard renderer draws at every tier. Mirrored by migration 0015. */
 export const ARCHITECT_DESIGN_V1: DesignCatalog = Object.freeze({
@@ -80,6 +95,8 @@ export const ARCHITECT_DESIGN_V1: DesignCatalog = Object.freeze({
   roofs: Object.freeze(['flat', 'terrace', 'dome', 'spire']),
   windows: Object.freeze([]),
   lighting: Object.freeze([]),
+  entrances: Object.freeze([]),
+  landscaping: Object.freeze([]),
   default: Object.freeze({ facade: 'slate', roof: 'flat', ...LEGACY_DETAILS }),
 })
 
@@ -91,21 +108,47 @@ export const ARCHITECT_DESIGN_V1: DesignCatalog = Object.freeze({
  */
 export const ARCHITECT_DESIGN_V2: DesignCatalog = Object.freeze({
   key: 'architect-design-v2',
-  slots: DESIGN_SLOTS,
+  slots: Object.freeze(['facade', 'roof', 'windows', 'lighting'] as DesignSlot[]),
   facades: ARCHITECT_DESIGN_V1.facades,
   roofs: ARCHITECT_DESIGN_V1.roofs,
   windows: Object.freeze(['grid', 'arched', 'ribbon', 'lattice']),
   lighting: Object.freeze(['standard', 'warm', 'cool']),
+  entrances: Object.freeze([]),
+  landscaping: Object.freeze([]),
+  default: ARCHITECT_DESIGN_V1.default,
+})
+
+/**
+ * The third catalog (P1-C2-E4C): v2's facades, roofs, windows and lighting, four entrance treatments the renderer's
+ * entrance art draws on the podium (`standard`, the city's usual lit door; `canopy`, a glass door under a flat canopy;
+ * `arched`, an arched doorway in a trim surround; `portico`, a columned portico and pediment fitted to the podium face)
+ * and three landscaping treatments, fixed arrangements of the renderer's landscape pieces inside the property's own paved
+ * lot (`standard`, bare paving as every building has had; `garden`, trees, shrubs and flower planters; `courtyard`, stone
+ * planters, clipped shrubs, lamp posts and a bench). Mirrored by migration 0017.
+ */
+export const ARCHITECT_DESIGN_V3: DesignCatalog = Object.freeze({
+  key: 'architect-design-v3',
+  slots: DESIGN_SLOTS,
+  facades: ARCHITECT_DESIGN_V2.facades,
+  roofs: ARCHITECT_DESIGN_V2.roofs,
+  windows: ARCHITECT_DESIGN_V2.windows,
+  lighting: ARCHITECT_DESIGN_V2.lighting,
+  entrances: Object.freeze(['standard', 'canopy', 'arched', 'portico']),
+  landscaping: Object.freeze(['standard', 'garden', 'courtyard']),
   default: ARCHITECT_DESIGN_V1.default,
 })
 
 /** The catalog every new design is chosen from. */
-export const CURRENT_DESIGN_CATALOG: DesignCatalog = ARCHITECT_DESIGN_V2
+export const CURRENT_DESIGN_CATALOG: DesignCatalog = ARCHITECT_DESIGN_V3
 
-/** The catalogs this build can read, by key: every saved design names one of them. */
-export const DESIGN_CATALOGS: Readonly<Record<string, DesignCatalog>> = Object.freeze({ [ARCHITECT_DESIGN_V1.key]: ARCHITECT_DESIGN_V1, [ARCHITECT_DESIGN_V2.key]: ARCHITECT_DESIGN_V2 })
+/** The catalogs this build can read, by key, in the order they were introduced: every saved design names one of them. */
+export const DESIGN_CATALOGS: Readonly<Record<string, DesignCatalog>> = Object.freeze({
+  [ARCHITECT_DESIGN_V1.key]: ARCHITECT_DESIGN_V1,
+  [ARCHITECT_DESIGN_V2.key]: ARCHITECT_DESIGN_V2,
+  [ARCHITECT_DESIGN_V3.key]: ARCHITECT_DESIGN_V3,
+})
 
-const LISTS = { facade: 'facades', roof: 'roofs', windows: 'windows', lighting: 'lighting' } as const satisfies Record<DesignSlot, keyof DesignCatalog>
+const LISTS = { facade: 'facades', roof: 'roofs', windows: 'windows', lighting: 'lighting', entrance: 'entrances', landscaping: 'landscaping' } as const satisfies Record<DesignSlot, keyof DesignCatalog>
 
 /** The identifiers `catalog` offers for `slot` (none where it is not one of its slots). */
 export const optionsOf = (catalog: DesignCatalog, slot: DesignSlot): readonly string[] => catalog[LISTS[slot]]
@@ -130,7 +173,14 @@ export function isCatalogChoice(catalog: DesignCatalog, choice: unknown): choice
 
 /** How a recorded choice is drawn: its own identifiers, and `LEGACY_DETAILS` for any slot its catalog does not have. */
 export function appearanceOf(choice: DesignChoice): PropertyDesign {
-  return { facade: choice.facade, roof: choice.roof, windows: choice.windows ?? LEGACY_DETAILS.windows, lighting: choice.lighting ?? LEGACY_DETAILS.lighting }
+  return {
+    facade: choice.facade,
+    roof: choice.roof,
+    windows: choice.windows ?? LEGACY_DETAILS.windows,
+    lighting: choice.lighting ?? LEGACY_DETAILS.lighting,
+    entrance: choice.entrance ?? LEGACY_DETAILS.entrance,
+    landscaping: choice.landscaping ?? LEGACY_DETAILS.landscaping,
+  }
 }
 
 /** Whether `design` is exactly an appearance some catalog this build has draws (any of its saved choices, or its default). */

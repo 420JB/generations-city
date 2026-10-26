@@ -1,3 +1,4 @@
+import type { LandscapeKind } from '../../config/fixtures'
 import { FLOOR_PX, iso, S, TAN30 } from './geometry'
 
 export interface Section {
@@ -47,6 +48,108 @@ export function landscapeSlotPos(a0: number, i: number, lot: number = a0 + 0.7) 
   return iso(p.x, p.y)
 }
 
+/**
+ * STREET-LEVEL GROUNDS (P1-C2-E4C): a brand city's Architect landscaping, as fixed arrangements of the standard landscape
+ * pieces (`LandscapeItem`). Never placed by a player: each arrangement is a list of pieces at fixed places along the two
+ * visible edges of the paved lot, and the layout below is where they stand on a lot of a given size.
+ *
+ * Every piece stands on the property's own paving: its ground footprint (a circle as wide as its art) lies inside the
+ * paved lot the sprite draws (itself the plot's road-safe envelope) and clear of the podium. Pieces stand only in front of
+ * the two podium faces or at the lot's front corner, so their art rises against the property's own building; in front of
+ * the entrance face (the left one) and at the corner only low pieces stand, short enough to stay below the face, so no
+ * piece hides the entrance, a window or the building's label. A piece that does not fit a lot (a lot trimmed tighter
+ * than any of the sample cities' first five wards has) is left out rather than moved, so the arrangement can only lose pieces, never spill.
+ */
+export type GroundsPiece = LandscapeKind
+
+/** Pieces are drawn at this scale of their standard art. */
+export const GROUNDS_SCALE = 0.6
+
+/** Each piece's art at scale 1 (px): half its width, and how high it rises above its foot. */
+export const GROUNDS_ART: Readonly<Record<GroundsPiece, { half: number; rise: number }>> = {
+  tree: { half: 6.5, rise: 18.5 },
+  shrub: { half: 5.9, rise: 4.6 },
+  planter: { half: 4, rise: 8.1 },
+  bench: { half: 5, rise: 6.6 },
+  lamp: { half: 7, rise: 22 },
+}
+
+/**
+ * Where a piece stands: `right` in front of the right podium face, `left` in front of the left (entrance) face, at `t`
+ * along it (-1 its back end, 1 its front end); `corner` at the lot's front corner.
+ */
+type GroundsSpot = { piece: GroundsPiece; edge: 'right' | 'left' | 'corner'; t: number }
+
+/** The arrangements, by grounds key. `none` is bare paving. */
+export const GROUNDS: Readonly<Record<string, readonly GroundsSpot[]>> = {
+  none: [],
+  garden: [
+    { piece: 'tree', edge: 'right', t: -0.55 },
+    { piece: 'shrub', edge: 'right', t: 0.05 },
+    { piece: 'tree', edge: 'right', t: 0.6 },
+    { piece: 'planter', edge: 'left', t: -0.55 },
+    { piece: 'shrub', edge: 'left', t: 0.55 },
+    { piece: 'planter', edge: 'corner', t: 0 },
+  ],
+  courtyard: [
+    { piece: 'lamp', edge: 'right', t: -0.45 },
+    { piece: 'shrub', edge: 'right', t: 0.15 },
+    { piece: 'lamp', edge: 'right', t: 0.75 },
+    { piece: 'planter', edge: 'left', t: -0.6 },
+    { piece: 'planter', edge: 'left', t: 0.6 },
+    { piece: 'bench', edge: 'corner', t: 0 },
+  ],
+}
+
+/** World units of clear paving kept between a piece's footprint and the podium, and between it and the lot's edge. */
+export const GROUNDS_GAP = 0.06
+const ISO_RX = Math.SQRT2 * 0.8660254 * S
+
+/** A piece's ground footprint radius (world units): its art's half width, as a circle on the ground. */
+export const groundsRadius = (piece: GroundsPiece) => (GROUNDS_ART[piece].half * GROUNDS_SCALE) / ISO_RX
+
+/**
+ * The pieces of arrangement `key` on a lot of half-size `lot` around a podium of half-size `a0` (world units), with where
+ * each stands: `world` its foot (offsets from the plot centre), `at` the same on screen. Unknown keys draw nothing.
+ */
+export function groundsLayout(key: string, a0: number, lot: number): { piece: GroundsPiece; world: { x: number; y: number }; at: { x: number; y: number } }[] {
+  const spots = Object.hasOwn(GROUNDS, key) ? GROUNDS[key] : []
+  const out: { piece: GroundsPiece; world: { x: number; y: number }; at: { x: number; y: number } }[] = []
+  for (const { piece, edge, t } of spots) {
+    const r = groundsRadius(piece)
+    // As far out on the paving as the piece fits, so low pieces stay well below the face behind them.
+    const d = lot - GROUNDS_GAP - r
+    if (d - r < a0 + GROUNDS_GAP) continue
+    const along = t * a0
+    const w = edge === 'right' ? { x: d, y: along } : edge === 'left' ? { x: along, y: d } : { x: d, y: d }
+    out.push({ piece, world: w, at: iso(w.x, w.y) })
+  }
+  return out
+}
+
+/**
+ * How far each `Entrance` art reaches on its podium face (face-local px): half its width about the face's centre, and how
+ * high it rises above the face's foot, mirroring exactly what BuildingSprite draws (strokes included). `grand-portico`
+ * (P1-C2-E4C) is the portico fitted to a face of width `w`: its columns and pediment close up so it never overhangs the
+ * podium, and keep their full height. Any other kind is the standard door.
+ */
+export function entranceExtent(kind: string, w: number): { half: number; rise: number } {
+  switch (kind) {
+    case 'awning':
+      return { half: 8, rise: 13 }
+    case 'arch':
+      return { half: 7.1, rise: 16.1 }
+    case 'portico':
+      return { half: 14, rise: 21 }
+    case 'grand-portico':
+      return { half: 14 * porticoFit(w), rise: 21 }
+    default:
+      return { half: 3.5, rise: 10 }
+  }
+}
+
+/** The horizontal scale that fits the 28 px portico on a face of width `w`, 1 px in from each corner (never wider than drawn). */
+export const porticoFit = (w: number) => Math.min(1, Math.max(0, (w - 2) / 28))
 
 /** T4 facade billboard sizing (px): follows the facade width with a small overhang. */
 export const BILLBOARD_FACADE = { min: 28, max: 40, overhang: 4 } as const

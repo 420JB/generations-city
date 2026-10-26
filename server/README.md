@@ -63,7 +63,7 @@ server/
     world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011; held by the database too, 0012)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
     world/construction.ts  LOCAL ONLY: test construction of a property (migrations 0013, 0014: Tier 2) and each player's Architect activity, paid in valueless test credits; only the local rehearsal uses it
-    world/designs.ts     LOCAL ONLY: Architect property design (migrations 0015, 0016), a catalog facade, roof, windows and lighting saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
+    world/designs.ts     LOCAL ONLY: Architect property design (migrations 0015 to 0017), a catalog facade, roof, windows, lighting, entrance and landscaping saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011, leases and governing configuration 0012)
@@ -1276,6 +1276,15 @@ configuration and is not affected by anything here.
   rewrites no row. An E4A build cannot save on a 0016 database (its v1 rows are refused) but reads it;
   it refuses to draw a v2 row (the appearance read fails closed, every building drawn with the
   default), so roll the service back only together with its client.
+  And `0017` (Architect entrances and landscaping): two more nullable columns on
+  `world_property_designs` (`entrance`, `landscaping`, NULL for every 0015 and 0016 row, which keep
+  their catalogs and meaning), a shape constraint (both or neither, and only beside windows and
+  lighting), the catalog function `world_design_known` and a replaced guard: new designs are
+  `architect-design-v3` only, v1 and v2 are read only. Landscaping is an identifier only: no position
+  or piece is stored. Adding nullable columns rewrites no row (the same tuples and storage). An E4B
+  build cannot save on a 0017 database (its v2 rows are refused; nothing is written) but reads it; it
+  refuses to draw a v3 row (the appearance read fails closed), so, as for 0016, roll the service back
+  only together with its client.
 
 ## Tests
 

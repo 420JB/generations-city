@@ -75,6 +75,12 @@ export interface SceneBuilding extends Omit<Building, 'districtId'> {
    * Architect lighting (P1-C2-E4B). The legacy city never sets it, and draws exactly as before.
    */
   floodlights?: string
+  /**
+   * A brand city's Architect street level (P1-C2-E4C), or none when absent: `entrance` is the `Entrance` art drawn on the
+   * podium in place of the architecture's, `grounds` a `GROUNDS` arrangement of landscape pieces drawn inside the paved
+   * lot (`none` draws none). The legacy city never sets it, and draws exactly as before.
+   */
+  street?: Readonly<{ entrance: string; grounds: string }>
 }
 
 /** The parts of a city's state the renderer draws. A legacy `GameState` is one. */

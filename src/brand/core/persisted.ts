@@ -30,10 +30,10 @@ import type { BrandBuilding, BrandCityState, SampleNft } from './sampleCity'
  *     they are all vacant, as with nothing built. Whether real construction will ever count is not
  *     decided here.
  *
- *   - A property's saved Architect design (P1-C2-E4A, P1-C2-E4B, `designs`, by building id) is drawn through the same
- *     architecture the renderer always reads: its facade finish, roof silhouette, windows and lighting replace the
- *     default's, and nothing else does (`withPropertyDesigns`). Tier, height, district and the NFT's label stay the
- *     stored city's.
+ *   - A property's saved Architect design (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, `designs`, by building id) is drawn through
+ *     the same art the renderer always reads: its facade finish, roof silhouette, windows and lighting replace the
+ *     default architecture's, and its entrance and landscaping are drawn on its podium and paved lot; nothing else is
+ *     (`withPropertyDesigns`). Tier, height, plot, district and the NFT's label stay the stored city's.
  *
  * The civic world (plaza, squares, monument pads, roads) is drawn from the configuration, so an
  * empty city is still a whole city.
@@ -112,18 +112,30 @@ const LIGHTING_DRAWN: Readonly<Record<string, { glow: string; floodlights?: stri
 })
 
 /**
+ * How the renderer draws each Architect entrance treatment (P1-C2-E4C): the `Entrance` art it already has. `standard` is
+ * the city's usual door, exactly as every building was drawn before; `portico` is the portico fitted to the podium face.
+ */
+const ENTRANCE_DRAWN: Readonly<Record<string, string>> = Object.freeze({ standard: DEFAULT_ARCHITECTURE.entrance, canopy: 'awning', arched: 'arch', portico: 'grand-portico' })
+
+/** How the renderer draws each Architect landscaping treatment (P1-C2-E4C): a `GROUNDS` arrangement. `standard` is bare paving, as before. */
+const LANDSCAPING_DRAWN: Readonly<Record<string, string>> = Object.freeze({ standard: 'none', garden: 'garden', courtyard: 'courtyard' })
+
+/**
  * A city's buildings with Architect designs applied (by building id): each designed building is a NEW object with that
- * facade, roof, windows and lighting, every other building is the very object it was, so the renderer redraws only what
- * changed (a preview of one choice redraws one building). A design is applied only when it is exactly an appearance a
- * catalog this build has draws (`isDrawableDesign`), and only to a building of the city; anything else leaves the building
- * as it was drawn. A building drawn with the standard treatments carries no floodlights at all, exactly as before.
+ * facade, roof, windows, lighting, entrance and landscaping, every other building is the very object it was, so the
+ * renderer redraws only what changed (a preview of one choice redraws one building). A design is applied only when it is
+ * exactly an appearance a catalog this build has draws (`isDrawableDesign`), and only to a building of the city; anything
+ * else leaves the building as it was drawn. A building drawn with the standard treatments carries no floodlights and no
+ * street level at all, exactly as before.
  *
  * A Tier 0 foundation has no roof to draw, so its saved roof is drawn from Tier 1: until then the building keeps the
  * default's (the renderer places a building's label and hit area by its roof's height, even where it draws none). Its
- * windows and lighting are applied, and drawn once it has storeys (Tier 1).
+ * windows, lighting, entrance and landscaping are applied, and drawn once it has storeys (Tier 1): a foundation has no
+ * door and no finished grounds to show.
  */
 export function withPropertyDesigns<T extends Pick<BrandCityState, 'buildings'>>(state: T, designs: Readonly<Record<string, PropertyDesign>>): T {
-  const ids = Object.keys(designs).filter((id) => Object.hasOwn(state.buildings, id) && isDrawableDesign(designs[id]) && Object.hasOwn(LIGHTING_DRAWN, designs[id].lighting))
+  const drawable = (d: PropertyDesign) => isDrawableDesign(d) && Object.hasOwn(LIGHTING_DRAWN, d.lighting) && Object.hasOwn(ENTRANCE_DRAWN, d.entrance) && Object.hasOwn(LANDSCAPING_DRAWN, d.landscaping)
+  const ids = Object.keys(designs).filter((id) => Object.hasOwn(state.buildings, id) && drawable(designs[id]))
   if (ids.length === 0) return state
   const buildings = { ...state.buildings }
   for (const id of ids) {
@@ -131,12 +143,18 @@ export function withPropertyDesigns<T extends Pick<BrandCityState, 'buildings'>>
     const { facade, windows } = designs[id]
     const roof = tierFor(totalBuilt(b)) === 0 ? b.architecture.roof : designs[id].roof
     const { glow: lighting, floodlights } = LIGHTING_DRAWN[designs[id].lighting]
+    const entrance = ENTRANCE_DRAWN[designs[id].entrance]
+    const grounds = LANDSCAPING_DRAWN[designs[id].landscaping]
+    // Only a street level other than the standard one is drawn as one: the standard door and bare paving are the building as it was.
+    const street = entrance === DEFAULT_ARCHITECTURE.entrance && grounds === 'none' ? undefined : { entrance, grounds }
     const a = b.architecture
-    if (a.facade === facade && a.roof === roof && a.windows === windows && a.lighting === lighting && b.floodlights === floodlights) continue
+    if (a.facade === facade && a.roof === roof && a.windows === windows && a.lighting === lighting && b.floodlights === floodlights && b.street?.entrance === street?.entrance && b.street?.grounds === street?.grounds) continue
     const next: BrandBuilding = { ...b, architecture: { ...a, facade, roof, windows, lighting } }
-    // A building drawn with the standard lighting carries no floodlights key at all, exactly as before.
+    // A building drawn with the standard lighting carries no floodlights key at all, exactly as before; so too the street level.
     if (floodlights) next.floodlights = floodlights
     else delete next.floodlights
+    if (street) next.street = street
+    else delete next.street
     buildings[id] = next
   }
   return { ...state, buildings }
