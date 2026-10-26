@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { isFoundingWard } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader, ProgressBar, SceneDistrictEmblem } from '../../ui/common'
-import type { RehearsalArchitectProperty, RehearsalArchitectView } from '../../protocol/playRehearsal'
+import { appearanceOf } from '../../world/design'
+import type { RehearsalArchitectProperty, RehearsalArchitectView, RehearsalCityDesign } from '../../protocol/playRehearsal'
 import type { LoadedBrandCity } from '../load'
 import type { ClaimProblem } from './claim'
+import { designName } from './designNames'
+import { emptyRelation, RELATIONS, type Relation } from './portfolio'
 import { plotAddress } from './properties'
 
 /**
@@ -15,13 +18,22 @@ import { plotAddress } from './properties'
  *
  * What it says, and what it does not:
  *   - owner units are what the player built while this local server's TEST file named them the NFT's controller: their
- *     own builder progression, split into control they hold now and control that has since ended (still theirs);
+ *     own builder progression, split into each property's latest recorded building era while the test file still names
+ *     them its controller, and earlier control (still theirs). Eras are recorded only when someone builds, so neither is
+ *     a claim of continuous control or of every NFT transfer;
  *   - patron units develop other players' properties and are never counted as the player's own progression;
  *   - founding a property is a permanent record of who activated it first, never ownership, and the TEST file's
  *     controller is never verified NFT control;
  *   - descriptive statistics only: no rank, level, XP, badge or reward exists, so none is shown.
  *
  * A property the TEST file names the player the controller of also offers its ARCHITECT DESIGN view (P1-C2-E4A, `design.tsx`).
+ *
+ * ARCHITECT PORTFOLIO (P1-C2-E5A). The same answer, told as a portfolio: the totals grouped as the player's own building (as
+ * the NFT's controller) and their patronage, and the properties shown by RELATIONSHIP, which are different things and never
+ * merged: controlled now (the TEST file names the player), founded (the permanent record), supported as a patron, and built
+ * under earlier control (owner units of a control that has since ended). A property may be in several; each is listed once,
+ * and the filter only narrows the list. Each shows its saved design as the city draws it (the city's own appearance answer,
+ * already on the page) and opens its PROPERTY LEGACY (`legacy.tsx`). Nothing new is counted: every number is the server's.
  */
 
 export type ArchitectLoad = { ok: true; view: RehearsalArchitectView } | { ok: false; problem: ClaimProblem }
@@ -30,19 +42,28 @@ const collectionName = (city: LoadedBrandCity, key: string) => city.config.colle
 const tokenOf = (asset: string) => asset.slice(asset.lastIndexOf('/') + 1)
 const CONTROL: Record<RehearsalArchitectProperty['control'], string> = { viewer: 'Test controller: you', other: 'Test controller: another player', unknown: 'No test controller named' }
 
+/** The city's saved designs, by building id, as the page draws them (null where the page has none to give). */
+export type SavedDesigns = Readonly<Record<string, RehearsalCityDesign>>
+
 export function ArchitectPanel({
   city,
   load,
+  designs,
   onView,
   onDesign,
+  onLegacy,
   onBack,
   onClose,
 }: {
   city: LoadedBrandCity
   load: () => Promise<ArchitectLoad>
+  /** The city's saved designs, as the page draws them: each property's design summary. Absent: no summary is shown. */
+  designs?: SavedDesigns | null
   onView: (buildingId: string) => void
   /** Opens a property's Architect design view (where the server runs it): offered for properties the player is named the controller of. */
   onDesign?: (buildingId: string) => void
+  /** Opens a property's legacy (P1-C2-E5A). */
+  onLegacy?: (buildingId: string) => void
   onBack?: () => void
   onClose: () => void
 }) {
@@ -60,7 +81,7 @@ export function ArchitectPanel({
   const view = answer?.ok ? answer.view : null
   return (
     <section ref={heading} tabIndex={-1} className="panel my-properties architect-activity" aria-label="Architect activity" data-testid="architect-activity" data-state={view ? 'ready' : answer ? 'unavailable' : 'loading'}>
-      <PanelHeader kicker="ARCHITECT ACTIVITY" title="Your construction record" onBack={onBack} onClose={onClose} />
+      <PanelHeader kicker="ARCHITECT PORTFOLIO" title="Your construction record" onBack={onBack} onClose={onClose} />
       <div className="row-between architect-tagline">
         <p className="small home-lede">What you have built in {city.config.cityName}, from the city’s construction records.</p>
         <span className="sim-tag" data-testid="architect-test-tag">
@@ -72,7 +93,7 @@ export function ArchitectPanel({
           {answer && !answer.ok ? answer.problem.message : 'Reading your construction record…'}
         </p>
       ) : (
-        <ArchitectRecord city={city} view={view} onView={onView} onDesign={onDesign} />
+        <ArchitectRecord city={city} view={view} designs={designs ?? null} onView={onView} onDesign={onDesign} onLegacy={onLegacy} />
       )}
       <p className="muted small" data-testid="architect-basis">
         Owner units count only while this local server’s TEST file named you the NFT’s controller: test data, not verified NFT control. Founding a property is not owning it. Patron
@@ -82,12 +103,31 @@ export function ArchitectPanel({
   )
 }
 
-function ArchitectRecord({ city, view, onView, onDesign }: { city: LoadedBrandCity; view: RehearsalArchitectView; onView: (buildingId: string) => void; onDesign?: (buildingId: string) => void }) {
+export function ArchitectRecord({
+  city,
+  view,
+  designs,
+  onView,
+  onDesign,
+  onLegacy,
+}: {
+  city: LoadedBrandCity
+  view: RehearsalArchitectView
+  designs: SavedDesigns | null
+  onView: (buildingId: string) => void
+  onDesign?: (buildingId: string) => void
+  onLegacy?: (buildingId: string) => void
+}) {
   const { totals: t, credits } = view
+  const [relation, setRelation] = useState<Relation>('all')
+  const counts = Object.fromEntries(RELATIONS.map((r) => [r.key, view.properties.filter(r.test).length])) as Record<Relation, number>
+  const test = RELATIONS.find((r) => r.key === relation)!.test
+  const listed = view.properties.filter(test)
+  const partial = view.propertyCount > view.properties.length
   return (
     <>
-      <dl
-        className="stat-grid architect-totals"
+      <div
+        className="architect-totals"
         data-testid="architect-totals"
         data-owner-units={t.ownerUnits}
         data-current-era-owner-units={t.currentEraOwnerUnits}
@@ -96,34 +136,62 @@ function ArchitectRecord({ city, view, onView, onDesign }: { city: LoadedBrandCi
         data-tiers-completed={t.tiersCompleted}
         data-properties-developed={t.propertiesDeveloped}
       >
-        <div>
-          <dt>As owner</dt>
-          <dd data-testid="architect-owner-units">{t.ownerUnits} units</dd>
-        </div>
-        <div>
-          <dt>As patron</dt>
-          <dd data-testid="architect-patron-units">{t.patronUnits} units</dd>
-        </div>
-        <div>
-          <dt>Under control you hold now</dt>
-          <dd data-testid="architect-current-era">{t.currentEraOwnerUnits}</dd>
-        </div>
-        <div>
-          <dt>Under earlier control</dt>
-          <dd data-testid="architect-earlier-eras">{t.earlierEraOwnerUnits}</dd>
-        </div>
-        <div>
-          <dt>Tier changes you completed</dt>
-          <dd data-testid="architect-tiers-completed">{t.tiersCompleted}</dd>
-        </div>
-        <div>
-          <dt>Properties you built on</dt>
-          <dd data-testid="architect-properties-developed">
-            {t.propertiesDeveloped}
-            {t.propertiesDevelopedAsOwner > 0 && <span className="muted small"> · {t.propertiesDevelopedAsOwner} as owner</span>}
-          </dd>
-        </div>
-      </dl>
+        <h3 className="portfolio-group-title" id="portfolio-own">
+          Your own building <span className="muted small">· as the NFT’s test controller</span>
+        </h3>
+        <dl className="stat-grid" aria-labelledby="portfolio-own">
+          <div>
+            <dt>As owner</dt>
+            <dd data-testid="architect-owner-units">{t.ownerUnits} units</dd>
+          </div>
+          <div>
+            <dt>Properties as owner</dt>
+            <dd data-testid="architect-properties-as-owner">{t.propertiesDevelopedAsOwner}</dd>
+          </div>
+          <div>
+            <dt>Latest recorded building era</dt>
+            <dd data-testid="architect-current-era">{t.currentEraOwnerUnits}</dd>
+          </div>
+          <div>
+            <dt>Under earlier control</dt>
+            <dd data-testid="architect-earlier-eras">{t.earlierEraOwnerUnits}</dd>
+          </div>
+        </dl>
+        <p className="muted small" data-testid="architect-era-note">
+          Latest recorded building era: your owner units in each property’s newest recorded era, while this local server’s test file still names you its
+          controller. Eras are recorded only when building happens under a named test controller, so changes of control without building may not appear:
+          this is not a record of continuous ownership or of every NFT transfer.
+        </p>
+        <h3 className="portfolio-group-title" id="portfolio-patron">
+          Your patronage <span className="muted small">· others’ properties, never your own building</span>
+        </h3>
+        <dl className="stat-grid" aria-labelledby="portfolio-patron">
+          <div>
+            <dt>As patron</dt>
+            <dd data-testid="architect-patron-units">{t.patronUnits} units</dd>
+          </div>
+          <div>
+            <dt>Patron steps</dt>
+            <dd data-testid="architect-patron-steps">{t.patronActions}</dd>
+          </div>
+        </dl>
+        <h3 className="portfolio-group-title" id="portfolio-both">
+          Both roles
+        </h3>
+        <dl className="stat-grid" aria-labelledby="portfolio-both">
+          <div>
+            <dt>Properties you built on</dt>
+            <dd data-testid="architect-properties-developed">
+              {t.propertiesDeveloped}
+              {t.propertiesDevelopedAsOwner > 0 && <span className="muted small"> · {t.propertiesDevelopedAsOwner} as owner</span>}
+            </dd>
+          </div>
+          <div>
+            <dt>Tier changes you completed</dt>
+            <dd data-testid="architect-tiers-completed">{t.tiersCompleted}</dd>
+          </div>
+        </dl>
+      </div>
       <p className="muted small" data-testid="architect-actions">
         {t.ownerActions} {t.ownerActions === 1 ? 'step' : 'steps'} as owner · {t.patronActions} as patron · {credits.available} test credits to spend here.
       </p>
@@ -132,18 +200,72 @@ function ArchitectRecord({ city, view, onView, onDesign }: { city: LoadedBrandCi
           Nothing to show yet: you have not founded, been named the test controller of, or built on a property in this city.
         </p>
       ) : (
-        <ul className="home-list" aria-label={`Your construction activity in ${city.config.cityName}`} data-testid="architect-properties" data-count={view.propertyCount}>
-          {view.properties.map((a) => (
-            <ArchitectItem key={a.buildingId} city={city} a={a} thresholds={view.recipe.tierThresholds} onView={onView} onDesign={a.control === 'viewer' ? onDesign : undefined} />
-          ))}
-        </ul>
+        <>
+          <div className="portfolio-filter" role="group" aria-label="Show properties by your relationship to them" data-testid="portfolio-filter">
+            {RELATIONS.map((r) => (
+              <button
+                key={r.key}
+                type="button"
+                className={`portfolio-chip${relation === r.key ? ' on' : ''}`}
+                aria-pressed={relation === r.key}
+                onClick={() => setRelation(r.key)}
+                data-testid={`portfolio-filter-${r.key}`}
+                data-count={counts[r.key]}
+              >
+                {r.name} <span className="portfolio-count">{counts[r.key]}</span>
+              </button>
+            ))}
+          </div>
+          {partial && (
+            <p className="muted small" data-testid="portfolio-partial">
+              Counts are of the {view.properties.length} properties with your most recent activity, of {view.propertyCount}.
+            </p>
+          )}
+          {listed.length === 0 ? (
+            <p className="small" role="status" data-testid="portfolio-filter-empty" data-scope={partial ? 'listed' : 'all'}>
+              {emptyRelation(relation, view.properties.length, view.propertyCount)}
+            </p>
+          ) : (
+            <ul className="home-list" aria-label={`Your construction activity in ${city.config.cityName}`} data-testid="architect-properties" data-count={view.propertyCount} data-relation={relation}>
+              {listed.map((a) => (
+                <ArchitectItem
+                  key={a.buildingId}
+                  city={city}
+                  a={a}
+                  design={designs ? (designs[a.buildingId] ?? null) : undefined}
+                  thresholds={view.recipe.tierThresholds}
+                  onView={onView}
+                  onDesign={a.control === 'viewer' ? onDesign : undefined}
+                  onLegacy={onLegacy}
+                />
+              ))}
+            </ul>
+          )}
+        </>
       )}
-      {view.propertyCount > view.properties.length && <p className="muted small">and {view.propertyCount - view.properties.length} more.</p>}
+      {partial && <p className="muted small">and {view.propertyCount - view.properties.length} more.</p>}
     </>
   )
 }
 
-function ArchitectItem({ city, a, thresholds, onView, onDesign }: { city: LoadedBrandCity; a: RehearsalArchitectProperty; thresholds: readonly number[]; onView: (buildingId: string) => void; onDesign?: (buildingId: string) => void }) {
+function ArchitectItem({
+  city,
+  a,
+  design,
+  thresholds,
+  onView,
+  onDesign,
+  onLegacy,
+}: {
+  city: LoadedBrandCity
+  a: RehearsalArchitectProperty
+  /** Its saved design as the page draws it; null: never designed; undefined: the page has no designs to say. */
+  design?: RehearsalCityDesign | null
+  thresholds: readonly number[]
+  onView: (buildingId: string) => void
+  onDesign?: (buildingId: string) => void
+  onLegacy?: (buildingId: string) => void
+}) {
   const d = sceneDistrict(city.scene, a.districtKey)
   const name = `${collectionName(city, a.collection)} #${tokenOf(a.asset)}`
   const floor = a.tier === 0 ? 0 : thresholds[a.tier - 1]
@@ -191,6 +313,11 @@ function ArchitectItem({ city, a, thresholds, onView, onDesign }: { city: Loaded
         <div className="small" data-testid="architect-property-next">
           {next}
         </div>
+        {design !== undefined && (
+          <div className="muted small" data-testid="architect-property-design-summary" data-revision={design?.revision ?? 0} data-catalog={design?.catalog ?? ''}>
+            {design ? `Design: ${designName(appearanceOf(design))} · revision ${design.revision}` : 'Design: the standard design every new building starts with'}
+          </div>
+        )}
       </div>
       <div className="architect-item-actions">
         <button type="button" className="warp-btn sm" onClick={() => onView(a.buildingId)} aria-label={`Open ${name}, ${d.title}, ${plotAddress(a.ward, a.plot)}`} data-testid="architect-property-view">
@@ -199,6 +326,11 @@ function ArchitectItem({ city, a, thresholds, onView, onDesign }: { city: Loaded
         {onDesign && (
           <button type="button" className="warp-btn sm" onClick={() => onDesign(a.buildingId)} aria-label={`Architect design of ${name}`} data-testid="architect-property-design">
             DESIGN
+          </button>
+        )}
+        {onLegacy && (
+          <button type="button" className="warp-btn sm" onClick={() => onLegacy(a.buildingId)} aria-label={`Property legacy of ${name}`} data-testid="architect-property-legacy">
+            LEGACY
           </button>
         )}
       </div>

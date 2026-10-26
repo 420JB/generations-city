@@ -185,7 +185,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** Revisions a save can name: far beyond any property's, well inside Postgres `integer`. */
 const MAX_REVISION = 1_000_000
 
-interface DesignRow {
+export interface DesignRow {
   property_id: string
   building_id: string
   revision: number
@@ -207,7 +207,7 @@ const DESIGN_COLUMNS =
   'd.property_id, p.building_id, d.revision, d.action_id, d.catalog, d.facade, d.roof, d.windows, d.lighting, d.entrance, d.landscaping, d.designer_core_user_id, d.designer_discord_user_id, d.at_city_sequence, d.designed_at'
 
 /** A stored row's choice, exactly: its six identifiers (null for a slot its catalog does not have). */
-const choiceOf = (r: Pick<DesignRow, 'facade' | 'roof' | 'windows' | 'lighting' | 'entrance' | 'landscaping'>): DesignChoice => ({
+export const choiceOf = (r: Pick<DesignRow, 'facade' | 'roof' | 'windows' | 'lighting' | 'entrance' | 'landscaping'>): DesignChoice => ({
   facade: r.facade,
   roof: r.roof,
   windows: r.windows,
@@ -260,8 +260,8 @@ async function propertyIn(client: Pick<PoolClient, 'query'>, scope: WorldScope, 
 
 const assetOf = (p: PropertyRef) => parseAssetKey(`${p.chain}/${p.standard}:${p.contract}/${p.token_id}`)
 
-/** A property's saved revisions, newest first. */
-const revisionsOf = async (client: Pick<PoolClient, 'query'>, propertyId: string) =>
+/** A property's saved revisions, newest first, each one this build can read (else `WorldRefusal`). Also read by the property legacy (`legacy.ts`). */
+export const revisionsOf = async (client: Pick<PoolClient, 'query'>, propertyId: string) =>
   (await client.query<DesignRow>(`SELECT ${DESIGN_COLUMNS} FROM world_property_designs d JOIN world_properties p ON p.id = d.property_id WHERE d.property_id = $1 ORDER BY d.revision DESC`, [propertyId])).rows.map(readable)
 
 export function createWorldDesignStore(db: Database, { mode, log, onStep }: WorldDesignStoreOptions): WorldDesignStore {

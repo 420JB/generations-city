@@ -11,6 +11,7 @@ import { foundedProperties, foundingOrder } from '../preview/properties'
 import type { ConstructionAccess, ConstructionLoad, ConstructionOutcome } from '../preview/construction'
 import { pressBook } from '../preview/constructionPress'
 import type { ArchitectLoad } from '../preview/architect'
+import type { LegacyLoad } from '../preview/legacy'
 import type { DesignAccess, DesignLoad, DesignOutcome } from '../preview/design'
 import { DESIGN_REFUSALS, designBook, type DesignSave } from '../preview/designPress'
 import { withPropertyDesigns } from '../core/persisted'
@@ -25,6 +26,7 @@ import {
   parseRehearsalActivationResponse,
   parseRehearsalAppearanceResponse,
   parseRehearsalArchitectView,
+  parseRehearsalPropertyLegacy,
   parseRehearsalAssetsResponse,
   parseRehearsalConstructionResponse,
   parseRehearsalConstructionView,
@@ -34,6 +36,7 @@ import {
   PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT,
   PLAY_REHEARSAL_APPEARANCE_ENDPOINT,
   PLAY_REHEARSAL_ARCHITECT_ENDPOINT,
+  PLAY_REHEARSAL_LEGACY_ENDPOINT,
   PLAY_REHEARSAL_ASSETS_ENDPOINT,
   PLAY_REHEARSAL_ASSIGNMENT_ENDPOINT,
   PLAY_REHEARSAL_CONSTRUCTION_ENDPOINT,
@@ -395,6 +398,7 @@ export function PlayCityApp() {
       build: (id, role, action) => handlers.current!.build(id, role, action),
       presses: () => handlers.current!.presses(),
       activity: () => handlers.current!.activity(),
+      legacy: (id) => handlers.current!.legacy(id),
     }),
     [],
   )
@@ -555,6 +559,14 @@ export function PlayCityApp() {
     return view ? { ok: true, view } : { ok: false, problem: constructionProblemOf(answer.response.ok ? null : (answer.body as { error?: unknown } | null)?.error) }
   }
 
+  /** A property's legacy (P1-C2-E5A), as the server reads it for the cookie's session's player. Read only. */
+  async function loadLegacy(propertyId: string): Promise<LegacyLoad> {
+    const answer = await ask(`${PLAY_REHEARSAL_LEGACY_ENDPOINT}?property=${encodeURIComponent(propertyId)}`)
+    if (!answer) return { ok: false, problem: UNREACHABLE }
+    const legacy = answer.response.ok ? parseRehearsalPropertyLegacy(answer.body) : null
+    return legacy ? { ok: true, legacy } : { ok: false, problem: constructionProblemOf(answer.response.ok ? null : (answer.body as { error?: unknown } | null)?.error) }
+  }
+
   /** The session's player's own construction record in this city, as the server reads it for the cookie's session. */
   async function loadActivity(): Promise<ArchitectLoad> {
     const answer = await ask(PLAY_REHEARSAL_ARCHITECT_ENDPOINT)
@@ -664,6 +676,7 @@ export function PlayCityApp() {
     handlers.current = {
       load: loadConstruction,
       activity: loadActivity,
+      legacy: loadLegacy,
       build: (id, role, action) => (phase.kind === 'ready' ? construct(phase.city, id, role, action) : Promise.resolve({ ok: false, problem: UNREACHABLE })),
       // The presses of exactly the player and world drawn now: never sent for another.
       presses: () => pressBook(phase.kind === 'ready' ? { worldId: phase.city.world.id, discordUserId: phase.city.viewer.player.discordUserId } : { worldId: '', discordUserId: '' }),
@@ -938,6 +951,7 @@ function PlayCity({
         home={home}
         construction={construction}
         design={design}
+        savedDesigns={designs?.byBuilding ?? null}
         bar={(controls) => (
           <div className={`preview-bar play-bar${controls.claiming ? ' claiming' : ''}`} role="region" aria-label="Proofy Play installation" data-testid="preview-bar">
             <span className="preview-flag play-flag">PROOFY PLAY · {play.environment.toUpperCase()}</span>

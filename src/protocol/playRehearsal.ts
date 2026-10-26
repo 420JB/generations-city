@@ -92,6 +92,19 @@ import type { PlayErrorCode } from './play'
  * answers the design it saved (`fresh: false`), and the id can never save a different design. A design
  * stays with the property when its controller changes, costs nothing, builds nothing and advances no
  * city sequence.
+ *
+ * PROPERTY LEGACY (P1-C2-E5A). READ ONLY, from the records above and nothing else:
+ *
+ *   `GET  /v1/play/rehearsal/legacy?property=<id>`  one property's history as this session's player may see
+ *                                          it: its founding (the player, someone else, or never recorded),
+ *                                          whom the local file names as its controller now, every control
+ *                                          era the construction records saw (owner and patron units in each;
+ *                                          current or earlier; the player's own or not), lifetime investment
+ *                                          by the current controller, previous controllers and patrons, the
+ *                                          player's own part in it, and its design revisions attributed only
+ *                                          by relation (the player or not; the controller named now, or
+ *                                          earlier control). No other player is named. A design is never a
+ *                                          construction unit, and no rank, level, XP or reward exists.
  */
 export const PLAY_REHEARSAL_ASSETS_ENDPOINT = '/v1/play/rehearsal/assets'
 export const PLAY_REHEARSAL_ACTIVATIONS_ENDPOINT = '/v1/play/rehearsal/activations'
@@ -105,6 +118,7 @@ export const PLAY_REHEARSAL_ARCHITECT_ENDPOINT = '/v1/play/rehearsal/architect'
 export const PLAY_REHEARSAL_APPEARANCE_ENDPOINT = '/v1/play/rehearsal/appearance'
 export const PLAY_REHEARSAL_DESIGN_ENDPOINT = '/v1/play/rehearsal/design'
 export const PLAY_REHEARSAL_DESIGNS_ENDPOINT = '/v1/play/rehearsal/designs'
+export const PLAY_REHEARSAL_LEGACY_ENDPOINT = '/v1/play/rehearsal/legacy'
 
 /** How every rehearsal answer marks itself: test data, never verified holdings. */
 export interface RehearsalMark {
@@ -417,6 +431,59 @@ export interface RehearsalDesignResponse {
   design: RehearsalDesign
   /** The property's design as read after this call, or null when that read failed after the save was written. */
   view: RehearsalDesignView | null
+}
+
+/** One control era of a property, as its legacy says it: nobody is named, only whether it is current and the viewer's. */
+export interface RehearsalLegacyEra {
+  era: number
+  /** Its controller is the one the local file names now. */
+  current: boolean
+  /** Its controller is this player. */
+  yours: boolean
+  ownerUnits: number
+  patronUnits: number
+  actions: number
+  tierBefore: number
+  tierAfter: number
+  firstSequence: number
+  lastSequence: number
+}
+
+/** One saved design revision, as a property's legacy says it. */
+export interface RehearsalLegacyRevision extends DesignChoice {
+  revision: number
+  catalog: string
+  by: 'viewer' | 'other'
+  /** Saved by the controller the local file names now, or under earlier control. */
+  savedBy: 'current-controller' | 'earlier-controller'
+  atCitySequence: number
+  at: string
+}
+
+/** `GET /v1/play/rehearsal/legacy`: one property's legacy as this session's player may see it. Every amount is local test units. */
+export interface RehearsalPropertyLegacy {
+  rehearsal: RehearsalMark
+  resource: 'local-test-credit'
+  recipe: { key: string; unitsPerAction: number; tierThresholds: number[]; provisional: true }
+  property: { propertyId: string; buildingId: string; tier: number; built: number; nextTierAt: number | null; maxTier: number; activatedSequence: number; foundingOrder: number }
+  /** Its original activator: this player, someone else (never named), or never recorded. Permanent; never control. */
+  founding: 'viewer' | 'other' | 'unrecorded'
+  /** Whether this local server's file has any data for this city. */
+  open: boolean
+  /** Whom the local file names as the NFT's current controller. Never verified. */
+  control: 'viewer' | 'other' | 'unknown'
+  investment: { currentController: number; previousControllers: number; community: number; total: number }
+  /** What this player built on this property: their own record, apart from the property's total. */
+  yours: { ownerUnits: number; currentEraOwnerUnits: number; earlierEraOwnerUnits: number; patronUnits: number; actions: number }
+  /** Newest first. */
+  eras: RehearsalLegacyEra[]
+  eraCount: number
+  /** Patron units built while no controller was named. */
+  unattributed: { patronUnits: number; actions: number }
+  contributors: { owners: number; patrons: number }
+  /** Newest first. */
+  designs: RehearsalLegacyRevision[]
+  designCount: number
 }
 
 /** Refusals of the rehearsal routes, besides the play session's own (`PlayErrorCode`). */
@@ -811,5 +878,77 @@ export function parseRehearsalDesignResponse(body: unknown): RehearsalDesignResp
     fresh: body.fresh,
     design: { propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, actionId: d.actionId, catalog: d.catalog as string, ...choiceIn(d), atCitySequence: d.atCitySequence, designedAt: d.designedAt },
     view,
+  }
+}
+
+/**
+ * A property legacy, exactly, or null. Its sums must agree: the lifetime units are the current controller's, previous
+ * controllers' and patrons' together, and exactly the eras' and the unattributed patron units together; the current
+ * controller's are the current era's owner units; the player's own are within the property's; the newest revision is the
+ * revision count.
+ */
+export function parseRehearsalPropertyLegacy(body: unknown): RehearsalPropertyLegacy | null {
+  if (!isRecord(body) || !parseMark(body.rehearsal) || body.resource !== 'local-test-credit') return null
+  if (!exact(body, 'contributors,control,designCount,designs,eraCount,eras,founding,investment,open,property,recipe,rehearsal,resource,unattributed,yours')) return null
+  const recipe = parseRecipe(body.recipe)
+  const { property: p, investment: i, yours: y, unattributed: u, contributors: who } = body
+  if (!recipe || !isRecord(p) || !exact(p, 'activatedSequence,buildingId,built,foundingOrder,maxTier,nextTierAt,propertyId,tier')) return null
+  if (typeof p.propertyId !== 'string' || !UUID.test(p.propertyId) || p.buildingId !== `b-${p.propertyId}` || !count(p.tier, 64) || !count(p.built) || !count(p.maxTier, 64) || p.tier > p.maxTier) return null
+  if (!(p.nextTierAt === null || (count(p.nextTierAt) && p.nextTierAt > p.built)) || !count(p.activatedSequence) || p.activatedSequence < 2 || !count(p.foundingOrder) || p.foundingOrder < 1) return null
+  if (body.founding !== 'viewer' && body.founding !== 'other' && body.founding !== 'unrecorded') return null
+  if (typeof body.open !== 'boolean' || !isControl(body.control)) return null
+  if (!isRecord(i) || !exact(i, 'community,currentController,previousControllers,total') || !count(i.currentController) || !count(i.previousControllers) || !count(i.community) || !count(i.total)) return null
+  if (i.currentController + i.previousControllers + i.community !== i.total || i.total !== p.built) return null
+  if (!isRecord(y) || !exact(y, 'actions,currentEraOwnerUnits,earlierEraOwnerUnits,ownerUnits,patronUnits') || ![y.ownerUnits, y.currentEraOwnerUnits, y.earlierEraOwnerUnits, y.patronUnits, y.actions].every((v) => count(v))) return null
+  const yours = { ownerUnits: y.ownerUnits as number, currentEraOwnerUnits: y.currentEraOwnerUnits as number, earlierEraOwnerUnits: y.earlierEraOwnerUnits as number, patronUnits: y.patronUnits as number, actions: y.actions as number }
+  if (yours.currentEraOwnerUnits + yours.earlierEraOwnerUnits !== yours.ownerUnits || yours.currentEraOwnerUnits > i.currentController || yours.ownerUnits > i.currentController + i.previousControllers || yours.patronUnits > i.community) return null
+  if ((yours.actions === 0) !== (yours.ownerUnits + yours.patronUnits === 0)) return null
+  if (!isRecord(u) || !exact(u, 'actions,patronUnits') || !count(u.patronUnits) || !count(u.actions) || (u.actions === 0) !== (u.patronUnits === 0)) return null
+  if (!isRecord(who) || !exact(who, 'owners,patrons') || !count(who.owners) || !count(who.patrons)) return null
+  if (!Array.isArray(body.eras) || body.eras.length > 100 || !count(body.eraCount) || body.eraCount < body.eras.length) return null
+  const eras: RehearsalLegacyEra[] = []
+  for (const e of body.eras) {
+    if (!isRecord(e) || !exact(e, 'actions,current,era,firstSequence,lastSequence,ownerUnits,patronUnits,tierAfter,tierBefore,yours')) return null
+    if (!count(e.era) || e.era < 1 || typeof e.current !== 'boolean' || typeof e.yours !== 'boolean' || !count(e.ownerUnits) || !count(e.patronUnits) || !count(e.actions) || e.actions < 1) return null
+    if (!count(e.tierBefore, 64) || !count(e.tierAfter, 64) || e.tierAfter < e.tierBefore || !count(e.firstSequence) || e.firstSequence < 3 || !count(e.lastSequence) || e.lastSequence < e.firstSequence) return null
+    // Newest first, one each.
+    if (eras.length > 0 && e.era >= eras[eras.length - 1].era) return null
+    eras.push({ era: e.era, current: e.current, yours: e.yours, ownerUnits: e.ownerUnits, patronUnits: e.patronUnits, actions: e.actions, tierBefore: e.tierBefore, tierAfter: e.tierAfter, firstSequence: e.firstSequence, lastSequence: e.lastSequence })
+  }
+  // At most one current era, and only the newest; the current controller's units are exactly its owner units.
+  const current = eras.filter((e) => e.current)
+  if (current.length > 1 || (current.length === 1 && eras[0] !== current[0]) || i.currentController !== (current[0]?.ownerUnits ?? 0)) return null
+  // With every era listed, the eras and the unattributed patron units are exactly the lifetime units.
+  if (body.eraCount === eras.length) {
+    const owner = eras.reduce((n, e) => n + e.ownerUnits, 0)
+    const patron = eras.reduce((n, e) => n + e.patronUnits, 0) + u.patronUnits
+    if (owner !== i.currentController + i.previousControllers || patron !== i.community) return null
+  }
+  if (!Array.isArray(body.designs) || body.designs.length > 100 || !count(body.designCount) || body.designCount < body.designs.length) return null
+  const designs: RehearsalLegacyRevision[] = []
+  for (const h of body.designs) {
+    if (!isRecord(h) || !exact(h, 'at,atCitySequence,by,catalog,entrance,facade,landscaping,lighting,revision,roof,savedBy,windows') || !revision(h.revision) || !knownChoice(h)) return null
+    if ((h.by !== 'viewer' && h.by !== 'other') || (h.savedBy !== 'current-controller' && h.savedBy !== 'earlier-controller') || !count(h.atCitySequence) || h.atCitySequence < 2 || !isInstant(h.at)) return null
+    // Newest first, consecutive: revision N, N-1, ...
+    if (designs.length === 0 ? h.revision !== body.designCount : h.revision !== designs[designs.length - 1].revision - 1) return null
+    designs.push({ revision: h.revision, catalog: h.catalog as string, ...choiceIn(h), by: h.by, savedBy: h.savedBy, atCitySequence: h.atCitySequence, at: h.at })
+  }
+  if ((body.designCount === 0) !== (designs.length === 0)) return null
+  return {
+    rehearsal: REHEARSAL_MARK,
+    resource: 'local-test-credit',
+    recipe,
+    property: { propertyId: p.propertyId, buildingId: p.buildingId, tier: p.tier, built: p.built, nextTierAt: p.nextTierAt, maxTier: p.maxTier, activatedSequence: p.activatedSequence, foundingOrder: p.foundingOrder },
+    founding: body.founding,
+    open: body.open,
+    control: body.control,
+    investment: { currentController: i.currentController, previousControllers: i.previousControllers, community: i.community, total: i.total },
+    yours,
+    eras,
+    eraCount: body.eraCount,
+    unattributed: { patronUnits: u.patronUnits, actions: u.actions },
+    contributors: { owners: who.owners, patrons: who.patrons },
+    designs,
+    designCount: body.designCount,
   }
 }

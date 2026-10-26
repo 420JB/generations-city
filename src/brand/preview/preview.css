@@ -296,3 +296,85 @@
     height: 120px;
   }
 }
+/* P1-C2-E5A: the Architect portfolio's groups and relationship filter, and the property legacy. */
+.portfolio-group-title {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.portfolio-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+.portfolio-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 11px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.portfolio-chip:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+.portfolio-chip.on {
+  border-color: var(--gold);
+  background: rgba(255, 212, 90, 0.14);
+}
+.portfolio-chip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+.portfolio-count {
+  font-family: var(--font-num);
+  color: var(--muted);
+}
+.portfolio-chip.on .portfolio-count {
+  color: var(--gold);
+}
+.legacy-head {
+  display: grid;
+  gap: 10px;
+}
+.legacy-head .stat-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+.legacy-section h3 {
+  margin: 0 0 2px;
+}
+.split-prev {
+  background: linear-gradient(90deg, #7d8cff, #5a67d8);
+}
+.legacy-bar {
+  height: 8px;
+  margin: 8px 0 10px;
+}
+.legacy-key {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 2px;
+  vertical-align: 0;
+}
+.legacy-list li {
+  align-items: flex-start;
+}
+.legacy-sub {
+  display: block;
+  margin-top: 2px;
+}
+@media (max-width: 420px) {
+  .legacy-head .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

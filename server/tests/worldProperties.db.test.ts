@@ -1603,11 +1603,12 @@ describe.skipIf(NO_TEST_DATABASE)('world properties (migration 0007) against a d
       }
       // The store reads world_properties (parity) and verify reads it; neither writes. The construction store (P1-C2-E3A)
       // reads a property to build on it, and the design store (P1-C2-E4A) one to design it; neither ever writes one. The
+      // property legacy (P1-C2-E5A) reads one, and its founder, to tell its history, in a read only snapshot. The
       // local rehearsal composes the activation service, and main builds the property store for it and for nothing else.
       // Nothing else names it.
-      expect(reaching.sort()).toEqual(['main.ts', join('world', 'construction.ts'), join('world', 'designs.ts'), join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
-      for (const file of reaching) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/INSERT INTO world_properties/)
-      for (const file of [join('world', 'construction.ts'), join('world', 'designs.ts'), join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
+      expect(reaching.sort()).toEqual(['main.ts', join('world', 'construction.ts'), join('world', 'designs.ts'), join('world', 'legacy.ts'), join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
+      for (const file of reaching) expect(await readFile(join(root, file), 'utf8')).not.toMatch(/INSERT INTO world_properties|UPDATE world_properties|DELETE FROM world_properties/)
+      for (const file of [join('world', 'construction.ts'), join('world', 'designs.ts'), join('world', 'legacy.ts'), join('world', 'rehearsal.ts'), join('world', 'store.ts'), join('world', 'verify.ts'), join('world', 'verifyTickets.ts')])
         expect(await readFile(join(root, file), 'utf8')).not.toMatch(/createWorldPropertyStore/)
       // main builds it exactly once, inside the block that only runs with the local rehearsal file (refused outside local mode).
       const main = await readFile(join(root, 'main.ts'), 'utf8')

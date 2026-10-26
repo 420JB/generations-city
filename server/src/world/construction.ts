@@ -19,6 +19,7 @@ import {
 } from '../engine'
 import type { Logger } from '../log'
 import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play/session'
+import { readPropertyLegacy, type PropertyLegacy } from './legacy'
 import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldScope } from './store'
 
 /**
@@ -76,6 +77,9 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldSco
  * split into the control eras that are still theirs now and earlier ones, and what they built as a patron (which
  * develops others' properties and is never counted as their own progression). Descriptive statistics only: no rank,
  * level, XP, badge or reward exists, and none is implied.
+ *
+ * PROPERTY LEGACY (`legacy`, P1-C2-E5A, `legacy.ts`). One property's founding, control eras, investment by whose it is, the
+ * viewer's own part in it and its design revisions, read from those records only. Read only, like the two reads above.
  */
 export type ConstructionRole = 'owner' | 'patron'
 
@@ -260,6 +264,8 @@ export interface WorldConstructionStore {
   overview(viewer: LivePlaySession, propertyId: unknown, authority: ConstructionAuthority): Promise<ConstructionOverview>
   /** `viewer`'s own construction record in their session's world. Read only: one snapshot, no lock, nothing written. */
   architect(viewer: LivePlaySession, authority: ConstructionAuthority): Promise<ArchitectOverview>
+  /** A property's legacy as `viewer` may see it (`legacy.ts`). Read only: one snapshot, no lock, nothing written. */
+  legacy(viewer: LivePlaySession, propertyId: unknown, authority: ConstructionAuthority): Promise<PropertyLegacy>
 }
 
 export interface WorldConstructionStoreOptions {
@@ -661,6 +667,8 @@ export function createWorldConstructionStore(db: Database, { mode, log, onStep, 
         }
       })
     },
+
+    legacy: (viewer, propertyId, authority) => readPropertyLegacy(db, recipe, viewer, propertyId, authority),
   }
 }
 

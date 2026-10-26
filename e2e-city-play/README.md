@@ -581,7 +581,39 @@ construction opens outside the local rehearsal.
   media (billboards) is not a design and has no route here.
 - **`city:verify`** checks every design: a property of its world, revisions 1, 2, 3 ..., a catalog
   choice this build has, the local fixture authority, a city sequence within the property's life.
-- **Browser tests.** `design.spec.ts`, `design-details.spec.ts`, `design-street.spec.ts` (construction Discord servers per run: 200).
+- **Browser tests.** `design.spec.ts`, `design-details.spec.ts`, `design-street.spec.ts` (construction Discord servers per run: 220, with P1-C2-E5A's).
+
+### Architect portfolio and property legacy (P1-C2-E5A, local rehearsal only, read only)
+
+What the construction and design records already hold, told to the player. No migration, no write path, no new
+counter: every number is the server's, read in one read-only snapshot.
+
+- **Architect portfolio.** The Architect activity (`GET /v1/play/rehearsal/architect`, unchanged) shown as a
+  portfolio: the player's own building as the NFT's test controller (owner units, split into control held now and
+  earlier control) apart from their patronage (patron units, never their own building), and the properties
+  filtered by relationship: controlled now (the local file names them), founded (the permanent record), patron,
+  and earlier control (owner units of a control that has since ended). One property may be in several; it is
+  listed once. Each says its saved design, from the city's own appearance answer, and offers OPEN, DESIGN (its
+  controller only) and LEGACY.
+- **Property legacy.** `GET /v1/play/rehearsal/legacy?property=<id>`: the property's founding (the player,
+  someone else, never named, or not recorded), whom the local file names its controller now, every control era
+  the construction records saw (owner and patron units in each; current or earlier; the player's or not), its
+  lifetime investment by the current controller, earlier controllers and patrons, the player's own part in it,
+  and its design revisions, v1 to v3, each attributed by relation only (the player or not; whether its designer is
+  the controller named now; never which control period it was saved in). Eras are recorded only when someone builds
+  while a controller is named: changes of control without building may not appear, so they are "recorded building
+  eras", never a full ownership or transfer history. Patron units built while nobody was named belong to no era and are
+  shown apart ("While no controller was named"), never placed before, between or after a particular era. From the property panel (Property legacy) and the portfolio (LEGACY). The session's
+  player only; one property of the session's own world; a GET only; nobody named.
+- **Accounting.** A controller's units stay in their era: a new controller inherits the property, its design and
+  its history, never the previous controller's own record; a patron's units are never the controller's; the
+  investment split always adds up to the lifetime units; a design is never a unit, a credit or progress; reads
+  write nothing. `server/tests/propertyLegacy.db.test.ts` proves it against the real stores.
+- **Browser tests.** `portfolio-legacy.spec.ts` (slots 20-21): the portfolio and both legacies end to end; on a
+  phone-sized screen and by keyboard.
+
+Not decided, on purpose (owner decisions, nothing implemented): Architect ranks, levels, XP, titles or badges;
+earned or unlockable designs; rewards of any kind for construction, patronage or founding.
 
 Not decided, on purpose: more catalogs or slots, freeform or per-piece landscaping, paid, earned or unlockable designs, a design
 marketplace, uploads or custom media, billboards and public owner media's transfer rules, verified NFT

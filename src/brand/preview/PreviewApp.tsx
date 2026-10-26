@@ -10,16 +10,27 @@ import type { SampleBrand } from '../samples'
 import type { WorldPoint } from '../../game/world'
 import type { PropertyDesign } from '../../world/design'
 import { withPropertyDesigns } from '../core/persisted'
-import { ArchitectPanel } from './architect'
+import { ArchitectPanel, type SavedDesigns } from './architect'
 import type { ConstructionAccess } from './construction'
 import { ArchitectDesignPanel, type DesignAccess } from './design'
+import { PropertyLegacyPanel } from './legacy'
 import { MyPropertiesPanel, PropertyContextCard, type HomeClaim, type PropertyHome } from './home'
 import { BuildingPreviewPanel, DistrictPanel, PlotPanel } from './panels'
 import { propertyContext } from './properties'
 import { RehearsalPlotPanel, type PlacementRehearsal, type StoredProperty } from './rehearsal'
 
-/** A building panel opened from the Architect activity goes back to it; so does its design view, through the building panel. */
-type Panel = { kind: 'district'; id: string } | { kind: 'building'; id: string; from?: 'architect' } | { kind: 'design'; id: string; from?: 'architect' } | { kind: 'properties' } | { kind: 'architect' } | null
+/**
+ * A building panel opened from the Architect activity goes back to it; so does its design view, through the building panel.
+ * A property legacy goes back to where it was opened (`back`): its building panel (which keeps its own `from`), or the portfolio.
+ */
+type Panel =
+  | { kind: 'district'; id: string }
+  | { kind: 'building'; id: string; from?: 'architect' }
+  | { kind: 'design'; id: string; from?: 'architect' }
+  | { kind: 'legacy'; id: string; back: 'building' | 'architect'; from?: 'architect' }
+  | { kind: 'properties' }
+  | { kind: 'architect' }
+  | null
 
 /** A plot the engine offers, as the renderer's placement layer takes it. */
 export type PreviewCandidate = ScenePlotCandidate & { plotId: string }
@@ -123,6 +134,7 @@ export function BrandCityPreview({
   home,
   construction,
   design,
+  savedDesigns,
 }: {
   city: LoadedBrandCity
   members: readonly (PreviewMember | null)[]
@@ -135,6 +147,8 @@ export function BrandCityPreview({
   construction?: ConstructionAccess | null
   /** Architect design on stored properties' panels, when the server runs the local rehearsal (P1-C2-E4A). */
   design?: DesignAccess | null
+  /** The city's saved designs as the page draws them: the Architect portfolio says each property's (P1-C2-E5A). */
+  savedDesigns?: SavedDesigns | null
 }) {
   const { scene, state, config } = city
   const [memberIndex, setMemberIndex] = useState(1)
@@ -174,7 +188,7 @@ export function BrandCityPreview({
 
   const say = useCallback((text: string) => setNotice({ id: Date.now(), text }), [])
   // The building whose design is open stays selected on the map, so its preview is the one in view.
-  const selectedId = panel?.kind === 'building' || panel?.kind === 'design' ? panel.id : null
+  const selectedId = panel?.kind === 'building' || panel?.kind === 'design' || panel?.kind === 'legacy' ? panel.id : null
 
   /** The choice the design view previews, for its building. Drawn only while that building's design view is open. */
   const [preview, setPreview] = useState<{ id: string; design: PropertyDesign } | null>(null)
@@ -222,6 +236,12 @@ export function BrandCityPreview({
     setPanel({ kind: 'architect' })
   }, [])
   const loadActivity = useCallback(() => construction!.activity(), [construction])
+  const loadLegacy = useCallback((propertyId: string) => construction!.legacy(propertyId), [construction])
+  /** A property's legacy, from its panel or the portfolio: the camera goes to the building (it is already in view from its panel). */
+  const openLegacy = useCallback((buildingId: string, back: 'building' | 'architect', from?: 'architect') => {
+    setPanel({ kind: 'legacy', id: buildingId, back, from })
+    if (back === 'architect') setFocus((f) => ({ buildingId, seq: (f?.seq ?? 0) + 1 }))
+  }, [])
   /** The player's properties, by building id. */
   const founded = useMemo(() => new Set(home?.founded.map((p) => p.buildingId)), [home])
   // A panel opened from the player's properties takes the keyboard with it (the list it was opened from is gone).
@@ -365,6 +385,7 @@ export function BrandCityPreview({
       <ArchitectPanel
         city={city}
         load={loadActivity}
+        designs={savedDesigns}
         onView={(buildingId) => {
           if (!state.buildings[buildingId]) return
           warpFromArchitect(buildingId)
@@ -379,7 +400,22 @@ export function BrandCityPreview({
               }
             : undefined
         }
+        onLegacy={(buildingId) => {
+          if (!state.buildings[buildingId] || !stored?.(buildingId)) return
+          // The legacy panel takes the keyboard itself.
+          openLegacy(buildingId, 'architect')
+        }}
         onBack={home ? openHome : undefined}
+        onClose={() => setPanel(null)}
+      />
+    ) : panel?.kind === 'legacy' && construction && state.buildings[panel.id] && stored?.(panel.id) ? (
+      <PropertyLegacyPanel
+        key={panel.id}
+        city={city}
+        buildingId={panel.id}
+        propertyId={stored(panel.id)!.propertyId}
+        load={loadLegacy}
+        onBack={panel.back === 'architect' ? openArchitect : () => setPanel({ kind: 'building', id: panel.id, from: panel.from })}
         onClose={() => setPanel(null)}
       />
     ) : panel?.kind === 'design' && design && onPreview && state.buildings[panel.id] && stored?.(panel.id) ? (
@@ -405,6 +441,7 @@ export function BrandCityPreview({
         construction={construction ?? null}
         design={design ?? null}
         onDesign={design ? () => openDesign(panel.id, panel.from) : undefined}
+        onLegacy={construction ? () => openLegacy(panel.id, 'building', panel.from) : undefined}
         onArchitect={construction ? openArchitect : undefined}
         onDistrict={openDistrict}
         onBack={panel.from === 'architect' ? openArchitect : founded.has(panel.id) ? openHome : undefined}

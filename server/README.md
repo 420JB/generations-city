@@ -64,6 +64,7 @@ server/
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
     world/construction.ts  LOCAL ONLY: test construction of a property (migrations 0013, 0014: Tier 2) and each player's Architect activity, paid in valueless test credits; only the local rehearsal uses it
     world/designs.ts     LOCAL ONLY: Architect property design (migrations 0015 to 0017), a catalog facade, roof, windows, lighting, entrance and landscaping saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
+    world/legacy.ts      READ ONLY: a property's legacy (P1-C2-E5A): founding, control eras, investment by the current controller, earlier controllers and patrons, the viewer's own part, design revisions by relation; no migration; only the local rehearsal reads it
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011, leases and governing configuration 0012)

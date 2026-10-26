@@ -6,11 +6,12 @@ import { roofHeightPx } from '../../ui/city/buildingGeometry'
 import { buildingHeightPx } from '../../ui/city/geometry'
 import { CitySceneContext, sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader } from '../../ui/common'
-import { appearanceOf, ARCHITECT_DESIGN_V1, ARCHITECT_DESIGN_V2, DESIGN_SLOTS, sameDesign, type DesignSlot, type PropertyDesign } from '../../world/design'
+import { appearanceOf, DESIGN_SLOTS, sameDesign, type DesignSlot, type PropertyDesign } from '../../world/design'
 import type { RehearsalDesign, RehearsalDesignCatalog, RehearsalDesignView } from '../../protocol/playRehearsal'
 import { withPropertyDesigns } from '../core/persisted'
 import type { LoadedBrandCity } from '../load'
 import type { ClaimProblem } from './claim'
+import { catalogNote, designName, LABELS, nameOf, revisionName } from './designNames'
 import { DESIGN_REFUSALS, designSettlementOf, type DesignSave, type DesignSaveBook } from './designPress'
 
 /**
@@ -48,58 +49,7 @@ export interface DesignAccess {
   saves(): DesignSaveBook
 }
 
-const FACADE_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
-  slate: { name: 'Slate', note: 'Cool blue-grey stone' },
-  limestone: { name: 'Limestone', note: 'Warm pale stone' },
-  brick: { name: 'Brick', note: 'Red fired brick' },
-  copper: { name: 'Copper', note: 'Burnished copper, verdigris trim' },
-  jade: { name: 'Jade', note: 'Deep green, pale trim' },
-}
-const ROOF_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
-  flat: { name: 'Flat deck', note: 'A low parapet deck' },
-  terrace: { name: 'Roof terrace', note: 'A planted rooftop pavilion' },
-  dome: { name: 'Dome', note: 'A rounded dome and finial' },
-  spire: { name: 'Spire', note: 'A tall pointed spire' },
-}
-const WINDOW_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
-  grid: { name: 'Standard grid', note: 'The city’s usual punched windows' },
-  arched: { name: 'Classic arched', note: 'Tall arched openings' },
-  ribbon: { name: 'Ribbon glass', note: 'Continuous horizontal glass bands' },
-  lattice: { name: 'Industrial lattice', note: 'Four-pane factory windows' },
-}
-const LIGHTING_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
-  standard: { name: 'Standard lighting', note: 'The city’s usual warm glow, no floodlights' },
-  warm: { name: 'Warm floodlights', note: 'Amber uplights and a lit cornice' },
-  cool: { name: 'Cool floodlights', note: 'Blue-white uplights, cool glow, lit cornice' },
-}
-const ENTRANCE_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
-  standard: { name: 'Standard entry', note: 'The city’s usual lit door' },
-  canopy: { name: 'Canopy entry', note: 'A glass door under a flat canopy' },
-  arched: { name: 'Arched entry', note: 'An arched doorway in a trim surround' },
-  portico: { name: 'Grand portico', note: 'Columns and a pediment across the podium' },
-}
-const LANDSCAPING_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
-  standard: { name: 'Standard grounds', note: 'Bare paving, as every lot starts' },
-  garden: { name: 'Garden grounds', note: 'Trees, shrubs and flower planters' },
-  courtyard: { name: 'Stone courtyard', note: 'Stone planters, lamp posts and a bench' },
-}
-const LABELS: Readonly<Record<DesignSlot, Readonly<Record<string, { name: string; note: string }>>>> = {
-  facade: FACADE_LABELS,
-  roof: ROOF_LABELS,
-  windows: WINDOW_LABELS,
-  lighting: LIGHTING_LABELS,
-  entrance: ENTRANCE_LABELS,
-  landscaping: LANDSCAPING_LABELS,
-}
 const SLOT_NAMES: Readonly<Record<DesignSlot, string>> = { facade: 'Facade', roof: 'Roof', windows: 'Windows', lighting: 'Lighting', entrance: 'Entrance', landscaping: 'Landscaping' }
-const nameOf = (slot: DesignSlot, id: string) => LABELS[slot][id]?.name ?? id
-const designName = (d: PropertyDesign) => DESIGN_SLOTS.map((slot) => nameOf(slot, d[slot])).join(' · ')
-/** A saved design from catalog v1, which chose no windows, lighting, entrance or landscaping: said as such. */
-const V1_NOTE = 'chosen before windows and lighting could be chosen: standard windows, lighting, entrance and grounds'
-/** A saved design from catalog v2, which chose no entrance or landscaping: said as such. */
-const V2_NOTE = 'chosen before entrances and landscaping could be chosen: standard entrance and grounds'
-/** How a saved design of an earlier catalog is said: what it chose, and what it did not. */
-const catalogNote = (catalog: string) => (catalog === ARCHITECT_DESIGN_V1.key ? V1_NOTE : catalog === ARCHITECT_DESIGN_V2.key ? V2_NOTE : null)
 
 /** The view's three tabs, in order: each groups two categories. */
 const GROUPS: readonly { key: string; name: string; slots: readonly DesignSlot[] }[] = [
@@ -120,8 +70,8 @@ const LOCAL_TEST = 'LOCAL TEST control: this local server’s test file names th
 
 const CONFLICT = DESIGN_REFUSALS.action_conflict
 
-/** The building as the city draws it, with `design`: the same sprite, at its real tier and progress. Decorative: the caption says what it shows. */
-function DesignThumb({ city, buildingId, design, caption, testId }: { city: LoadedBrandCity; buildingId: string; design: PropertyDesign; caption: string; testId: string }) {
+/** The building as the city draws it, with `design`: the same sprite, at its real tier and progress. Decorative: the caption says what it shows. Also the property legacy's preview. */
+export function DesignThumb({ city, buildingId, design, caption, testId }: { city: LoadedBrandCity; buildingId: string; design: PropertyDesign; caption: string; testId: string }) {
   const b = useMemo(() => withPropertyDesigns(city.state, { [buildingId]: design }).buildings[buildingId], [city.state, buildingId, design])
   const total = totalBuilt(b)
   const top = buildingHeightPx(total) + roofHeightPx(design.roof, 1) + 46
@@ -453,11 +403,7 @@ export function ArchitectDesignPanel({
                     data-landscaping={h.landscaping ?? ''}
                   >
                     <span className="grow">
-                      {h.catalog === ARCHITECT_DESIGN_V1.key
-                        ? `${nameOf('facade', h.facade)} · ${nameOf('roof', h.roof)} (${V1_NOTE})`
-                        : h.catalog === ARCHITECT_DESIGN_V2.key
-                          ? `${DESIGN_SLOTS.slice(0, 4).map((slot) => nameOf(slot, appearanceOf(h)[slot])).join(' · ')} (${V2_NOTE})`
-                          : designName(appearanceOf(h))}{' '}
+                      {revisionName(h)}{' '}
                       · {h.by === 'viewer' ? 'You' : 'Another player'}
                     </span>
                     <span className="muted small">#{h.revision}</span>

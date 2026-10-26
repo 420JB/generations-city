@@ -41,6 +41,7 @@ import {
   PLAY_REHEARSAL_CONSTRUCTIONS_ENDPOINT,
   PLAY_REHEARSAL_DESIGN_ENDPOINT,
   PLAY_REHEARSAL_DESIGNS_ENDPOINT,
+  PLAY_REHEARSAL_LEGACY_ENDPOINT,
   PLAY_SESSION_ENDPOINT,
   type PlayErrorBody,
   type RehearsalRouteErrorCode,
@@ -431,6 +432,21 @@ export function createApp(deps: AppDeps): RequestListener {
     }
   }
 
+  /** LOCAL REHEARSAL: a property's legacy, as the session's player may see it (P1-C2-E5A). Read only. */
+  async function serveRehearsalLegacy(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
+    if (!withinClientLimit(res, PLAY_REHEARSAL_LEGACY_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
+    const presented = playCookie.read(req)
+    const property = new URL(req.url ?? '/', 'http://localhost').searchParams.get('property')
+    try {
+      return send(res, 200, await service.legacy(presented, property), PRIVATE)
+    } catch (err) {
+      if (err instanceof PlaySessionError) return playRefusal(res, presented, err)
+      if (err instanceof RehearsalRefusal) return identityError(res, err.status, err.code)
+      log.error('rehearsal legacy read failed', errorFields(err))
+      return identityError(res, 503, 'play_session_unavailable', { 'retry-after': '5' })
+    }
+  }
+
   /** LOCAL REHEARSAL: the saved Architect design of every property of the session's city (P1-C2-E4A). Read only. */
   async function serveRehearsalAppearance(req: IncomingMessage, res: ServerResponse, client: ClientKey, service: LocalPropertyRehearsal) {
     if (!withinClientLimit(res, PLAY_REHEARSAL_APPEARANCE_ENDPOINT, client, LIMITS.playRehearsalTicket.client)) return
@@ -664,6 +680,9 @@ export function createApp(deps: AppDeps): RequestListener {
         break
       case PLAY_REHEARSAL_APPEARANCE_ENDPOINT:
         if (rehearsal) return serveRehearsalAppearance(req, res, client, rehearsal)
+        break
+      case PLAY_REHEARSAL_LEGACY_ENDPOINT:
+        if (rehearsal) return serveRehearsalLegacy(req, res, client, rehearsal)
         break
       case PLAY_REHEARSAL_DESIGN_ENDPOINT:
         if (rehearsal) return serveRehearsalDesign(req, res, client, rehearsal)

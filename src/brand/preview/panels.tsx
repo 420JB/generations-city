@@ -273,6 +273,7 @@ export function BuildingPreviewPanel({
   construction = null,
   design = null,
   onDesign,
+  onLegacy,
   onArchitect,
   onDistrict,
   onBack,
@@ -295,6 +296,8 @@ export function BuildingPreviewPanel({
   design?: DesignAccess | null
   /** Opens the property's Architect design view (with `design` only; offered to its named controller only). */
   onDesign?: () => void
+  /** Opens the property's legacy: founding, control eras, investment and design history (P1-C2-E5A). */
+  onLegacy?: () => void
   /** Opens the player's own construction record (with `construction` only). */
   onArchitect?: () => void
   onDistrict: (id: string) => void
@@ -396,6 +399,11 @@ export function BuildingPreviewPanel({
         </div>
       </dl>
       {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
+      {stored && onLegacy && (
+        <button type="button" className="btn home-claim" onClick={onLegacy} data-testid="property-legacy-open">
+          Property legacy · founding, control eras and design history
+        </button>
+      )}
       {/* Keyed apart from its sibling construction card: a shared key made React keep stale copies of this card (found in P1-C2-E4B). */}
       {stored && design && onDesign && <DesignCard key={`design-${stored.propertyId}`} propertyId={stored.propertyId} tier={tier} founder={stored.activator === 'viewer'} access={design} onDesign={onDesign} />}
       {stored && context}

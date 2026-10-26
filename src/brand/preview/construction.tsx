@@ -5,6 +5,7 @@ import type { ArchitectLoad } from './architect'
 import type { ClaimProblem } from './claim'
 import { settlementOf, type ConstructionPress, type PressBook } from './constructionPress'
 import { ConstructionNote } from './home'
+import type { LegacyLoad } from './legacy'
 
 /**
  * LOCAL TEST CONSTRUCTION on a stored property's panel (P1-C2-E3A; Tier 2 and the next goal in P1-C2-E3B). Only the Proofy Play page passes access to it, and only
@@ -35,6 +36,8 @@ export interface ConstructionAccess {
   presses(): PressBook
   /** The signed-in player's own construction record in this city (Architect activity). */
   activity(): Promise<ArchitectLoad>
+  /** A property's legacy as the server answers it for this viewer (P1-C2-E5A). Read only. */
+  legacy(propertyId: string): Promise<LegacyLoad>
 }
 
 const ROLE: Record<ConstructionRole, string> = { owner: 'Owner', patron: 'Patron' }

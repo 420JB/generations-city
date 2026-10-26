@@ -17,6 +17,7 @@ import {
   type RehearsalDesignResponse,
   type RehearsalDesignView,
   type RehearsalErrorCode,
+  type RehearsalPropertyLegacy,
   type RehearsalTicket,
   type RehearsalTicketResponse,
   type RuleAnswer,
@@ -32,6 +33,7 @@ import {
   type WorldConstructionRefusalCode,
   type WorldConstructionStore,
 } from './construction'
+import type { PropertyLegacy } from './legacy'
 import { createDesignService, WorldDesignRefusal, type DesignOverview, type WorldDesignRefusalCode, type WorldDesignStore } from './designs'
 import { createPropertyActivationService, WorldPropertyRefusal, type WorldPropertyRefusalCode, type WorldPropertyStore } from './properties'
 import type { TicketEligibility } from './rotation'
@@ -433,6 +435,8 @@ export interface LocalPropertyRehearsal {
   construct(presented: string | null, body: Record<string, unknown>): Promise<RehearsalConstructionResponse>
   /** The cookie's player's own construction record in its city (Architect activity). Read only. */
   architect(presented: string | null): Promise<RehearsalArchitectView>
+  /** A property's legacy (founding, control eras, investment, the player's part, design revisions) as the cookie's player may see it (P1-C2-E5A). Read only. */
+  legacy(presented: string | null, propertyId: string | null): Promise<RehearsalPropertyLegacy>
   /** The saved design of every property of the cookie's city that has one. Read only. */
   appearance(presented: string | null): Promise<RehearsalAppearanceResponse>
   /** A property's design as the cookie's player may see it. Read only. */
@@ -638,6 +642,13 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
       return architectView(await constructionCall((c) => c.architect(session, authority)))
     },
 
+    async legacy(presented, propertyId) {
+      // The viewer is the cookie's session's player, as Proofy Play redeemed it: the request names a property and nobody.
+      const session = await sessions.session(presented)
+      if (propertyId === null || !UUID.test(propertyId)) throw new RehearsalRefusal(400, 'invalid_request')
+      return legacyView(await constructionCall((c) => c.legacy(session, propertyId, authority)))
+    },
+
     async appearance(presented) {
       // Every saved design of the session's own city, for anyone signed in to it: designs are what the city looks like.
       const session = await sessions.session(presented)
@@ -738,6 +749,27 @@ export function architectView(o: ArchitectOverview): RehearsalArchitectView {
     totals: { ...o.totals },
     properties: o.properties.map((a) => ({ ...a, standing: a.standing.kind === 'complete' ? { kind: 'complete' } : { ...a.standing }, yours: { ...a.yours } })),
     propertyCount: o.propertyCount,
+  }
+}
+
+/** A property's legacy as its viewer is told it: no other player is named, and every amount is marked as local test units. */
+export function legacyView(o: PropertyLegacy): RehearsalPropertyLegacy {
+  return {
+    rehearsal: REHEARSAL_MARK,
+    resource: 'local-test-credit',
+    recipe: { key: o.recipe.key, unitsPerAction: o.recipe.unitsPerAction, tierThresholds: [...o.recipe.tierThresholds], provisional: true },
+    property: { ...o.property },
+    founding: o.founding,
+    open: o.open,
+    control: o.control,
+    investment: { ...o.investment },
+    yours: { ...o.yours },
+    eras: o.eras.map((e) => ({ ...e })),
+    eraCount: o.eraCount,
+    unattributed: { ...o.unattributed },
+    contributors: { ...o.contributors },
+    designs: o.designs.map((d) => ({ ...d })),
+    designCount: o.designCount,
   }
 }
 

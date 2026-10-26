@@ -17,7 +17,7 @@ import { createWorldPropertyStore } from '../src/world/properties'
 import { createLocalPropertyRehearsal, parseRehearsalFile, REHEARSAL_FILE_KIND_V3, REHEARSAL_FILE_KIND_V4, rehearsalConstructionAuthority, rehearsalEligibility } from '../src/world/rehearsal'
 import { createWorldStore } from '../src/world/store'
 import { createDistrictTicketStore } from '../src/world/tickets'
-import { parseRehearsalArchitectView, parseRehearsalConstructionResponse, parseRehearsalConstructionView } from '../../src/protocol/playRehearsal'
+import { parseRehearsalArchitectView, parseRehearsalConstructionResponse, parseRehearsalConstructionView, parseRehearsalPropertyLegacy } from '../../src/protocol/playRehearsal'
 import { MIGRATIONS_DIR, NO_TEST_DATABASE, useTestSchema } from './dbHarness'
 import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fakePlay'
 import { TEST_ORIGIN, testConfig } from './testConfig'
@@ -33,6 +33,7 @@ const keeper = (id: string | number) => `${KEEPERS}/${id}`
 const CONSTRUCTION = '/v1/play/rehearsal/construction'
 const CONSTRUCTIONS = '/v1/play/rehearsal/constructions'
 const ARCHITECT = '/v1/play/rehearsal/architect'
+const LEGACY = '/v1/play/rehearsal/legacy'
 const FILE_V4 = {
   kind: REHEARSAL_FILE_KIND_V4,
   players: { [ADA.discordUserId]: [keeper(1), keeper(2)], [BEA.discordUserId]: [keeper(3)] },
@@ -309,7 +310,13 @@ describe.skipIf(NO_TEST_DATABASE)('local test construction routes against a disp
     expect(store).toMatch(/if \(stamp !== 'local'\) throw new WorldConstructionRefusal\('mutations_held'/)
     // No economy, wallet or chain: the store imports and calls nothing but its database and the engine.
     expect(store).not.toMatch(/fetch\(|from 'viem'|from '\.\.\/ownership|from '\.\.\/play\/client'/)
-    expect([...store.matchAll(/^(?:import .*|\}) from '([^']+)'$/gm)].map((m) => m[1]).sort()).toEqual(['../city/store', '../config', '../db/pool', '../db/transaction', '../engine', '../log', '../play/session', './store', 'pg'])
+    expect([...store.matchAll(/^(?:import .*|\}) from '([^']+)'$/gm)].map((m) => m[1]).sort()).toEqual(['../city/store', '../config', '../db/pool', '../db/transaction', '../engine', '../log', '../play/session', './legacy', './store', 'pg'])
+    // Its property legacy read (P1-C2-E5A) writes nothing at all: a read only snapshot, no lock, no statement that changes a row.
+    const legacy = await readFile(join(root, 'world', 'legacy.ts'), 'utf8')
+    expect(legacy).toMatch(/SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY/)
+    expect(legacy).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|FOR UPDATE|FOR SHARE|LOCK)\b/)
+    expect(legacy).not.toMatch(/fetch\(|from 'viem'|from '\.\.\/ownership|from '\.\.\/play\/client'/)
+    expect([...legacy.matchAll(/^(?:import .*|\}) from '([^']+)'$/gm)].map((m) => m[1]).sort()).toEqual(['../db/pool', '../db/transaction', '../engine', '../play/session', './construction', './designs', './store', 'pg'])
   })
   /*
    * AN ANSWER THAT FAILS AFTER, OR AROUND, THE WRITE (independent audit M1). A construction that was committed is never
@@ -559,5 +566,59 @@ describe.skipIf(NO_TEST_DATABASE)('local test construction routes against a disp
     const { base, launchAs } = await boot({ fixture: { ...FILE_V4, controllers: FILE_V4.controllers.filter((c) => c.guild !== GUILD_B) } })
     const res = await architectOf(base, await launchAs(INSTALLATION_B, ADA))
     expect([res.status, await res.json()]).toEqual([403, { error: 'construction_not_open' }])
+  })
+
+  it('P1-C2-E5A. the property legacy route: read only, the cookie\'s player only, one property of its own world, parsed strictly, nobody named', async () => {
+    const { base, launchAs, place, build, post, sequence } = await boot()
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const bea = await launchAs(INSTALLATION_A, BEA)
+    // Ada founds keeper #1 (she controls it) and #2 (Bea controls it); Ada builds #1 as its owner, Bea as a patron.
+    const p1 = await place(ada, keeper(1))
+    const p2 = await place(ada, keeper(2))
+    expect((await build(ada, p1.id, 'owner')).status).toBe(200)
+    expect((await build(bea, p1.id, 'patron')).status).toBe(200)
+    const at = await sequence(ada.actor.worldId)
+    const legacyOf = (b: { cookie: string }, query: string) => fetch(`${base}${LEGACY}${query}`, { headers: { cookie: b.cookie } })
+
+    const res = await legacyOf(ada, `?property=${p1.id}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    const raw = await res.text()
+    const mine = parseRehearsalPropertyLegacy(JSON.parse(raw))!
+    expect(mine).toMatchObject({ rehearsal: { kind: 'local-test-assets', verified: false }, resource: 'local-test-credit', founding: 'viewer', control: 'viewer', open: true })
+    expect(mine.investment).toEqual({ currentController: 50, previousControllers: 0, community: 50, total: 100 })
+    expect(mine.yours).toEqual({ ownerUnits: 50, currentEraOwnerUnits: 50, earlierEraOwnerUnits: 0, patronUnits: 0, actions: 1 })
+    expect(mine.eras.map((e) => [e.era, e.current, e.yours, e.ownerUnits, e.patronUnits])).toEqual([[1, true, true, 50, 50]])
+    for (const id of [BEA.discordUserId, BEA.coreUserId, ada.cookie.split('=')[1], ada.actor.sessionRef]) expect(raw).not.toContain(id)
+    // Bea reads the same property as hers is: another's founding, another's control, her patron step.
+    const hers = parseRehearsalPropertyLegacy(await (await legacyOf(bea, `?property=${p1.id}`)).json())!
+    expect(hers).toMatchObject({ founding: 'other', control: 'other', yours: { ownerUnits: 0, patronUnits: 50 } })
+    // Founding is not controlling: Ada founded #2, Bea controls it.
+    expect(parseRehearsalPropertyLegacy(await (await legacyOf(ada, `?property=${p2.id}`)).json())).toMatchObject({ founding: 'viewer', control: 'other', yours: { actions: 0 } })
+    // Nothing the browser names changes whose legacy it is.
+    expect(parseRehearsalPropertyLegacy(await (await legacyOf(ada, `?property=${p1.id}&discordUserId=${BEA.discordUserId}&coreUserId=${BEA.coreUserId}`)).json())).toEqual(mine)
+    // Exactly one property id of this world; no session is 401; a GET only; nothing was written.
+    expect(await (await legacyOf(ada, '')).json()).toEqual({ error: 'invalid_request' })
+    expect(await (await legacyOf(ada, '?property=x')).json()).toEqual({ error: 'invalid_request' })
+    expect(await (await legacyOf(ada, `?property=${randomUUID()}`)).json()).toEqual({ error: 'unknown_property' })
+    expect((await legacyOf({ cookie: '' }, `?property=${p1.id}`)).status).toBe(401)
+    expect((await post(LEGACY, ada, { propertyId: p1.id })).status).toBe(405)
+    const adaB = await launchAs(INSTALLATION_B, ADA)
+    expect(await (await legacyOf(adaB, `?property=${p1.id}`)).json()).toEqual({ error: 'unknown_property' })
+    expect(await sequence(ada.actor.worldId)).toBe(at)
+  })
+
+  it('P1-C2-E5A. the property legacy route does not exist without the rehearsal, or outside local mode', async () => {
+    for (const options of [{ rehearsal: false }, { mode: 'staging' as const }]) {
+      const { base, launchAs } = await boot(options)
+      const cookie = options.mode ? '' : (await launchAs(INSTALLATION_A)).cookie
+      expect((await fetch(`${base}${LEGACY}?property=${randomUUID()}`, { headers: { cookie } })).status).toBe(404)
+    }
+  })
+
+  it('P1-C2-E5A. a rehearsal built without the construction store holds the property legacy too', async () => {
+    const { base, launchAs } = await boot({ construction: false })
+    const { cookie } = await launchAs(INSTALLATION_A)
+    expect(await (await fetch(`${base}${LEGACY}?property=${randomUUID()}`, { headers: { cookie } })).json()).toEqual({ error: 'mutations_held' })
   })
 })
