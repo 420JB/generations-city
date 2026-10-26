@@ -22,9 +22,10 @@ import { ADA, BEA, DOC_A, DOC_B, fakePlay, GUILD_A, GUILD_B, INSTALLATION_A, INS
 import { TEST_ORIGIN, testConfig } from './testConfig'
 
 /**
- * ARCHITECT DESIGN over the rehearsal routes (P1-C2-E4A): `GET /v1/play/rehearsal/appearance`, `GET …/design` and
- * `POST …/designs`, against the real app, session, world, ticket, property, construction and design stores. The browser
- * names a property, two catalog identifiers, the revision it chose on and a press id; nothing else is read. The file's
+ * ARCHITECT DESIGN over the rehearsal routes (P1-C2-E4A, P1-C2-E4B): `GET /v1/play/rehearsal/appearance`, `GET …/design`
+ * and `POST …/designs`, against the real app, session, world, ticket, property, construction and design stores. The browser
+ * names a property, four catalog identifiers (or, in a save an earlier page kept, two of catalog v1), the revision it chose
+ * on and a press id; nothing else is read. The file's
  * controllers are the only ones who may save: test data, never verified ownership.
  */
 const KEEPERS = 'eip155:8453/erc721:0x000000000000000000000000000000000000a001'
@@ -32,7 +33,10 @@ const keeper = (id: string | number) => `${KEEPERS}/${id}`
 const APPEARANCE = '/v1/play/rehearsal/appearance'
 const DESIGN = '/v1/play/rehearsal/design'
 const DESIGNS = '/v1/play/rehearsal/designs'
-const CATALOG = 'architect-design-v1'
+const CATALOG = 'architect-design-v2'
+const V1 = 'architect-design-v1'
+/** A design without a window or lighting choice is sent with the catalog's standard ones. */
+const whole = (d: { facade: string; roof: string; windows?: string; lighting?: string }) => ({ windows: 'grid', lighting: 'standard', ...d })
 const FILE_V4 = {
   kind: REHEARSAL_FILE_KIND_V4,
   players: { [ADA.discordUserId]: [keeper(1), keeper(2)], [BEA.discordUserId]: [keeper(3)] },
@@ -111,10 +115,13 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     }
     const view = (b: Pick<Browser, 'cookie'>, propertyId: string | null) => fetch(`${base}${DESIGN}${propertyId === null ? '' : `?property=${propertyId}`}`, { headers: { cookie: b.cookie } })
     const appearance = (b: Pick<Browser, 'cookie'>) => fetch(`${base}${APPEARANCE}`, { headers: { cookie: b.cookie } })
-    const save = (b: Browser, propertyId: string, design: { facade: string; roof: string }, baseRevision: number, actionId: string = randomUUID(), extra: Record<string, unknown> = {}) =>
-      post(DESIGNS, b, { ...b.actor, propertyId, actionId, baseRevision, catalog: CATALOG, ...design, ...extra })
+    const save = (b: Browser, propertyId: string, design: { facade: string; roof: string; windows?: string; lighting?: string }, baseRevision: number, actionId: string = randomUUID(), extra: Record<string, unknown> = {}) =>
+      post(DESIGNS, b, { ...b.actor, propertyId, actionId, baseRevision, catalog: CATALOG, ...whole(design), ...extra })
+    /** Exactly the body an E4A page sent (and kept): catalog v1, a facade and a roof, nothing else. */
+    const legacySave = (b: Browser, propertyId: string, design: { facade: string; roof: string }, baseRevision: number, actionId: string = randomUUID()) =>
+      post(DESIGNS, b, { ...b.actor, propertyId, actionId, baseRevision, catalog: V1, ...design })
     const designsOf = async (worldId: string) => (await t.db.query<{ revision: number; facade: string; roof: string; action_id: string }>('SELECT revision, facade, roof, action_id FROM world_property_designs WHERE world_id = $1 ORDER BY property_id, revision', [worldId])).rows
-    return { base, launchAs, post, city, place, view, appearance, save, designsOf }
+    return { base, launchAs, post, city, place, view, appearance, save, legacySave, designsOf }
   }
 
   it('the controller saves over the routes and every answer parses strictly; the city reads it back; the city itself does not move', async () => {
@@ -123,29 +130,44 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     const bea = await launchAs(INSTALLATION_A, BEA)
     const p = await place(ada, keeper(1))
     const empty = parseRehearsalAppearanceResponse(await (await appearance(ada)).json())!
-    expect(empty).toEqual({ rehearsal: { kind: 'local-test-assets', verified: false }, catalog: { key: CATALOG, facades: ['slate', 'limestone', 'brick', 'copper', 'jade'], roofs: ['flat', 'terrace', 'dome', 'spire'], default: { facade: 'slate', roof: 'flat' } }, designs: [] })
+    expect(empty).toEqual({
+      rehearsal: { kind: 'local-test-assets', verified: false },
+      catalog: {
+        key: CATALOG,
+        facades: ['slate', 'limestone', 'brick', 'copper', 'jade'],
+        roofs: ['flat', 'terrace', 'dome', 'spire'],
+        windows: ['grid', 'arched', 'ribbon', 'lattice'],
+        lighting: ['standard', 'warm', 'cool'],
+        default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard' },
+      },
+      designs: [],
+    })
     expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ control: 'viewer', open: true, saved: null, historyCount: 0 })
     expect(parseRehearsalDesignView(await (await view(bea, p.id)).json())).toMatchObject({ control: 'other', saved: null })
     const before = await city(ada)
 
     const action = randomUUID()
-    const res = await save(ada, p.id, { facade: 'jade', roof: 'spire' }, 0, action)
+    const res = await save(ada, p.id, { facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm' }, 0, action)
     expect(res.status).toBe(200)
     const saved = parseRehearsalDesignResponse(await res.json())!
-    expect(saved).toMatchObject({ fresh: true, design: { propertyId: p.id, buildingId: p.buildingId, revision: 1, actionId: action, catalog: CATALOG, facade: 'jade', roof: 'spire', atCitySequence: before.world.sequence }, view: { saved: { revision: 1, facade: 'jade', roof: 'spire' }, history: [{ by: 'viewer' }] } })
+    expect(saved).toMatchObject({
+      fresh: true,
+      design: { propertyId: p.id, buildingId: p.buildingId, revision: 1, actionId: action, catalog: CATALOG, facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm', atCitySequence: before.world.sequence },
+      view: { saved: { revision: 1, facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm' }, history: [{ by: 'viewer' }] },
+    })
     // Everyone in the city reads it, and nothing in the stored city changed.
-    expect(parseRehearsalAppearanceResponse(await (await appearance(bea)).json())!.designs).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: CATALOG, facade: 'jade', roof: 'spire' }])
+    expect(parseRehearsalAppearanceResponse(await (await appearance(bea)).json())!.designs).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: CATALOG, facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm' }])
     const after = await city(ada)
     expect(after.world.sequence).toBe(before.world.sequence)
     expect(after.world.state).toEqual(before.world.state)
     // The same press again: the same design, nothing more.
-    expect(parseRehearsalDesignResponse(await (await save(ada, p.id, { facade: 'jade', roof: 'spire' }, 0, action)).json())).toMatchObject({ fresh: false, design: saved.design })
+    expect(parseRehearsalDesignResponse(await (await save(ada, p.id, { facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm' }, 0, action)).json())).toMatchObject({ fresh: false, design: saved.design })
     expect(await designsOf(ada.actor.worldId)).toEqual([{ revision: 1, facade: 'jade', roof: 'spire', action_id: action }])
     expect((await verifyCity(t.db)).violations).toEqual([])
   })
 
   it('refuses everyone but the current controller, anything but catalog identifiers, and any body but exactly its keys', async () => {
-    const { launchAs, place, view, save, post, designsOf } = await boot()
+    const { launchAs, place, view, save, legacySave, post, designsOf } = await boot()
     const ada = await launchAs(INSTALLATION_A, ADA)
     const bea = await launchAs(INSTALLATION_A, BEA)
     const p = await place(ada, keeper(1))
@@ -160,12 +182,23 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     // Not identifiers of the catalog, or not identifiers at all.
     expect(await refused(await save(ada, p.id, { facade: 'aurora', roof: 'dome' }, 0))).toEqual([422, { error: 'design_unsupported' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'halo' }, 0))).toEqual([422, { error: 'design_unsupported' }])
-    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, randomUUID(), { catalog: 'architect-design-v2' }))).toEqual([422, { error: 'design_unsupported' }])
+    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, randomUUID(), { catalog: 'architect-design-v3' }))).toEqual([422, { error: 'design_unsupported' }])
+    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', windows: 'panoramic' }, 0))).toEqual([422, { error: 'design_unsupported' }])
+    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', lighting: 'neon' }, 0))).toEqual([422, { error: 'design_unsupported' }])
+    // A v2 design named as v1, and a v1 body naming treatments: neither is a design of the catalog it names.
+    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, randomUUID(), { catalog: V1 }))).toEqual([422, { error: 'design_unsupported' }])
+    // A save an earlier page kept that was never recorded: refused, and never saved as a v2 design.
+    expect(await refused(await legacySave(ada, p.id, { facade: 'copper', roof: 'dome' }, 0))).toEqual([409, { error: 'design_retired' }])
+    for (const lighting of ['#ff0000', 'url(x)', '<b>', 'Warm', ''])
+      expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', lighting }, 0)), lighting).toEqual([400, { error: 'invalid_request' }])
+    // Half a treatment, or a treatment of the wrong type, is no body at all.
+    expect(await refused(await post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: CATALOG, facade: 'copper', roof: 'dome', windows: 'grid' }))).toEqual([400, { error: 'invalid_request' }])
+    expect(await refused(await post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: CATALOG, facade: 'copper', roof: 'dome', windows: null, lighting: null }))).toEqual([400, { error: 'invalid_request' }])
     for (const facade of ['<img src=x onerror=alert(1)>', '#ff0000', 'url(https://example.com/a.png)', 'Copper', '', 'a'.repeat(65)])
       expect(await refused(await save(ada, p.id, { facade, roof: 'dome' }, 0)), facade).toEqual([400, { error: 'invalid_request' }])
     for (const extra of [{ color: '#ff0000' }, { svg: '<svg/>' }, { tier: 2 }, { units: 0 }])
       expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, randomUUID(), extra)), JSON.stringify(extra)).toEqual([400, { error: 'invalid_request' }])
-    expect(await refused(await post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), catalog: CATALOG, facade: 'copper', roof: 'dome' }))).toEqual([400, { error: 'invalid_request' }])
+    expect(await refused(await post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), catalog: CATALOG, ...whole({ facade: 'copper', roof: 'dome' }) }))).toEqual([400, { error: 'invalid_request' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, 'not-a-uuid'))).toEqual([400, { error: 'invalid_request' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, -1))).toEqual([400, { error: 'invalid_request' }])
     expect(await refused(await save(ada, randomUUID(), { facade: 'copper', roof: 'dome' }, 0))).toEqual([422, { error: 'unknown_property' }])
@@ -174,8 +207,8 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     expect(await refused(await save(ada, p.id, { facade: 'brick', roof: 'dome' }, 0))).toEqual([409, { error: 'design_stale' }])
     expect((await save(ada, p.id, { facade: 'brick', roof: 'dome' }, 1)).status).toBe(200)
     // A save from another page (another player's session named) and one with no Origin are refused before anything is read.
-    expect(await refused(await post(DESIGNS, bea, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 2, catalog: CATALOG, facade: 'jade', roof: 'dome' }))).toEqual([409, { error: 'play_actor_mismatch' }])
-    expect(await refused(await save(ada, p.id, { facade: 'jade', roof: 'dome' }, 2, randomUUID(), {}, ).then(async (r) => (await r.json(), post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 3, catalog: CATALOG, facade: 'slate', roof: 'dome' }, { origin: null }))))).toEqual([403, { error: 'origin_mismatch' }])
+    expect(await refused(await post(DESIGNS, bea, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 2, catalog: CATALOG, ...whole({ facade: 'jade', roof: 'dome' }) }))).toEqual([409, { error: 'play_actor_mismatch' }])
+    expect(await refused(await save(ada, p.id, { facade: 'jade', roof: 'dome' }, 2, randomUUID(), {}, ).then(async (r) => (await r.json(), post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 3, catalog: CATALOG, ...whole({ facade: 'slate', roof: 'dome' }) }, { origin: null }))))).toEqual([403, { error: 'origin_mismatch' }])
     const revisionsOf = async (propertyId: string) => (await t.db.query<{ revision: number; facade: string; roof: string }>('SELECT revision, facade, roof FROM world_property_designs WHERE property_id = $1 ORDER BY revision', [propertyId])).rows
     expect(await revisionsOf(p.id)).toEqual([
       { revision: 1, facade: 'copper', roof: 'dome' },
@@ -210,7 +243,9 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     // Anything else under that id is refused, whatever was previewed since; the page resends exactly what it sent.
     expect(await (await save(ada, p.id, { facade: 'jade', roof: 'terrace' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
     lose = false
-    expect(parseRehearsalDesignResponse(await (await save(ada, p.id, { facade: 'copper', roof: 'terrace' }, 0, action)).json())).toMatchObject({ fresh: false, design: { revision: 1, actionId: action, facade: 'copper', roof: 'terrace' } })
+    // Nor the same facade and roof with other lighting.
+    expect(await (await save(ada, p.id, { facade: 'copper', roof: 'terrace', lighting: 'cool' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
+    expect(parseRehearsalDesignResponse(await (await save(ada, p.id, { facade: 'copper', roof: 'terrace' }, 0, action)).json())).toMatchObject({ fresh: false, design: { revision: 1, actionId: action, facade: 'copper', roof: 'terrace', windows: 'grid', lighting: 'standard' } })
     expect(await designsOf(ada.actor.worldId)).toEqual([{ revision: 1, facade: 'copper', roof: 'terrace', action_id: action }])
   })
 
@@ -254,5 +289,52 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     const p = await place(ada, keeper(1))
     expect([(await appearance(ada)).status, await (await appearance(ada)).json()]).toEqual([403, { error: 'mutations_held' }])
     expect(await (await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0)).json()).toEqual({ error: 'mutations_held' })
+  })
+
+  it('22. a save an earlier page made (catalog v1) and kept is answered with its original receipt, exactly, and never applied as another design (P1-C2-E4B)', async () => {
+    const { launchAs, place, view, appearance, save, legacySave, designsOf } = await boot()
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const p = await place(ada, keeper(1))
+    // A row exactly as the E4A build wrote it before 0016 (catalog v1, no treatment). 0016's guard takes no new v1 row, so
+    // it is written past the guard here; the populated 0015 upgrade itself is in propertyDesignDetails.db.test.ts.
+    const action = randomUUID()
+    const session = (await t.db.query<{ id: string }>('SELECT id FROM play_sessions WHERE world_id = $1 AND discord_user_id = $2 ORDER BY created_at DESC LIMIT 1', [ada.actor.worldId, ADA.discordUserId])).rows[0].id
+    const c = await t.db.connect()
+    try {
+      await c.query('BEGIN')
+      await c.query(`SET LOCAL session_replication_role = 'replica'`)
+      await c.query(
+        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+         SELECT w.id, w.city_id, w.city_instance_id, $2, 1, $3, $4, 'brick', 'dome', $5, $6, $7, 'local-fixture-controller', c.sequence FROM worlds w JOIN city c ON c.id = w.city_id WHERE w.id = $1`,
+        [ada.actor.worldId, p.id, action, V1, ADA.coreUserId, ADA.discordUserId, session],
+      )
+      await c.query('COMMIT')
+    } finally {
+      c.release()
+    }
+    // Read as v1, exactly: no treatment named, for everyone.
+    expect(parseRehearsalAppearanceResponse(await (await appearance(ada)).json())!.designs).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: V1, facade: 'brick', roof: 'dome', windows: null, lighting: null }])
+    expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ saved: { revision: 1, catalog: V1, windows: null, lighting: null }, history: [{ catalog: V1, windows: null }] })
+    // The kept request, resent exactly: its original receipt, nothing written.
+    const replay = await legacySave(ada, p.id, { facade: 'brick', roof: 'dome' }, 0, action)
+    expect(replay.status).toBe(200)
+    expect(parseRehearsalDesignResponse(await replay.json())).toMatchObject({ fresh: false, design: { revision: 1, actionId: action, catalog: V1, facade: 'brick', roof: 'dome', windows: null, lighting: null } })
+    // Under that id, anything else is refused: another v1 choice, or the same one sent as v2.
+    expect(await (await legacySave(ada, p.id, { facade: 'jade', roof: 'dome' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
+    expect(await (await save(ada, p.id, { facade: 'brick', roof: 'dome' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
+    // A kept v1 save that never reached the server: refused, settling; nothing is written.
+    expect([(await legacySave(ada, p.id, { facade: 'jade', roof: 'spire' }, 1)).status]).toEqual([409])
+    expect(await designsOf(ada.actor.worldId)).toEqual([{ revision: 1, facade: 'brick', roof: 'dome', action_id: action }])
+    // The v1 design drawn as it was is already this property's design in v2 terms; a v2 save builds on it as revision 2.
+    expect(await (await save(ada, p.id, { facade: 'brick', roof: 'dome' }, 1)).json()).toEqual({ error: 'design_unchanged' })
+    const next = parseRehearsalDesignResponse(await (await save(ada, p.id, { facade: 'brick', roof: 'dome', windows: 'ribbon', lighting: 'cool' }, 1)).json())!
+    expect(next.design).toMatchObject({ revision: 2, catalog: CATALOG, facade: 'brick', roof: 'dome', windows: 'ribbon', lighting: 'cool' })
+    expect(next.view!.history.map((h) => [h.revision, h.catalog, h.windows])).toEqual([
+      [2, CATALOG, 'ribbon'],
+      [1, V1, null],
+    ])
+    // The v1 receipt is still answered after it, unchanged.
+    expect(parseRehearsalDesignResponse(await (await legacySave(ada, p.id, { facade: 'brick', roof: 'dome' }, 0, action)).json())).toMatchObject({ fresh: false, design: { revision: 1, catalog: V1 } })
+    expect((await verifyCity(t.db)).violations).toEqual([])
   })
 })

@@ -3,24 +3,25 @@ import { environmentStamp } from '../city/store'
 import type { AppMode } from '../config'
 import type { Database } from '../db/pool'
 import { withTransaction } from '../db/transaction'
-import { CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogDesign, parseAssetKey, sameDesign, type DesignCatalog, type PropertyDesign } from '../engine'
+import { appearanceOf, CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogChoice, parseAssetKey, sameDesign, type DesignCatalog, type DesignChoice } from '../engine'
 import type { Logger } from '../log'
 import type { ExpectedActor, LivePlaySession, PlaySessionService } from '../play/session'
 import type { ConstructionAuthority } from './construction'
 import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldScope } from './store'
 
 /**
- * ARCHITECT PROPERTY DESIGN, AUTHORITATIVE PERSISTENCE (P1-C2-E4A). LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.
+ * ARCHITECT PROPERTY DESIGN, AUTHORITATIVE PERSISTENCE (P1-C2-E4A, P1-C2-E4B). LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.
  *
- * What a property's current NFT controller can CHOOSE about how its building is drawn: a facade finish and a roof
- * silhouette from the engine's current design catalog (`CURRENT_DESIGN_CATALOG`, `src/world/design.ts`). Identifiers
- * only, each one the standard renderer already draws. Nothing here spends a test credit, builds a unit, changes a tier,
+ * What a property's current NFT controller can CHOOSE about how its building is drawn: a facade finish, a roof
+ * silhouette, a window treatment and an exterior lighting treatment from the engine's current design catalog
+ * (`CURRENT_DESIGN_CATALOG`, `src/world/design.ts`; migrations 0015 and 0016). Identifiers only, each one the standard
+ * renderer already draws. Nothing here spends a test credit, builds a unit, changes a tier,
  * a founder, a plot or a city sequence, or touches RF, Proofy Points or any economy. The one caller outside tests is the
  * local rehearsal (`rehearsal.ts`), whose routes exist only in a local deployment started with an explicit rehearsal
  * file; like construction it refuses any mode or database but a local one, and so does the database (migration 0015).
  *
- * WHAT THE BROWSER DECIDES: which property, which facade and roof of which catalog, the revision it was editing on, and
- * the id of this one save. Nothing else, and nothing it sends is drawn as sent: the server stores only identifiers the
+ * WHAT THE BROWSER DECIDES: which property, which choices of which catalog, the revision it was editing on, and the id
+ * of this one save. Nothing else, and nothing it sends is drawn as sent: the server stores only identifiers the
  * catalog lists, and the page draws them through the city's own art.
  *
  * WHO MAY SAVE. Only the player the trusted source (`ConstructionAuthority`, locally the rehearsal file: TEST DATA, never
@@ -46,6 +47,13 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldSco
  * for exactly the same property, catalog, choices and base revision, gets the design it saved back (`fresh: false`) and
  * saves nothing more; any other use of that id is refused (`action_conflict`), so a lost answer can never apply a
  * different design under it.
+ *
+ * CATALOG VERSIONS. Every saved design is read by the catalog it names, forever: an `architect-design-v1` design (a facade
+ * and a roof, no window or lighting treatment) is answered exactly as it was saved, and drawn with the treatments it was
+ * saved with. New designs are chosen from the current catalog only. A save named in an earlier catalog is still answered
+ * from its row if it was recorded (the same id, exactly as first sent: its original receipt); if it never was, it is
+ * refused (`design_retired`) and nothing is written, so a page left open on an earlier editor never saves a different
+ * design than the one it showed (a v1 save would otherwise drop the property's current windows and lighting unseen).
  */
 export type WorldDesignRefusalCode =
   /** This deployment does not save designs (anything but a local database). */
@@ -64,8 +72,10 @@ export type WorldDesignRefusalCode =
   | 'not_current_controller'
   /** The trusted source names nobody as the NFT's current controller. */
   | 'control_unverified'
-  /** Not a facade and roof of the current catalog. */
+  /** Not exactly a choice of a catalog this build has (every slot it chooses, and no other). */
   | 'design_unsupported'
+  /** A choice of an earlier catalog, never recorded under this id: new designs are chosen from the current catalog only. Nothing was written. */
+  | 'design_retired'
   /** The property's design changed after the revision this save was made on. Nothing was written. */
   | 'design_stale'
   /** The save is exactly the property's current design. Nothing was written. */
@@ -90,10 +100,13 @@ export interface DesignInput {
   catalog: unknown
   facade: unknown
   roof: unknown
+  /** Absent in a save of a catalog without windows or lighting (v1): exactly what such a save names. */
+  windows?: unknown
+  lighting?: unknown
 }
 
-/** A saved design, as stored. */
-export interface DesignRecord extends PropertyDesign {
+/** A saved design, as stored: `windows` and `lighting` are null for a design of a catalog without them (v1). */
+export interface DesignRecord extends DesignChoice {
   propertyId: string
   buildingId: string
   revision: number
@@ -116,18 +129,18 @@ export interface DesignOverview {
   catalog: DesignCatalog
   property: { propertyId: string; buildingId: string }
   /** The latest saved revision, or null: drawn with the catalog's default. */
-  saved: { revision: number; catalog: string; facade: string; roof: string; atCitySequence: number; at: string } | null
+  saved: (DesignChoice & { revision: number; catalog: string; atCitySequence: number; at: string }) | null
   /** Who the trusted source names as the NFT's current controller, as the viewer may know it. Never verified. */
   control: 'viewer' | 'other' | 'unknown'
   /** Whether the trusted source has data for this city at all (where it has none, nobody can save). */
   open: boolean
   /** Saved revisions, newest first (at most DESIGN_HISTORY_LIMIT), and how many there are. `by` says only whether it was the viewer. */
-  history: { revision: number; catalog: string; facade: string; roof: string; by: 'viewer' | 'other'; at: string }[]
+  history: (DesignChoice & { revision: number; catalog: string; by: 'viewer' | 'other'; at: string })[]
   historyCount: number
 }
 
 /** The saved design of one property, as the whole city draws it. */
-export interface CityDesign extends PropertyDesign {
+export interface CityDesign extends DesignChoice {
   propertyId: string
   buildingId: string
   revision: number
@@ -175,6 +188,8 @@ interface DesignRow {
   catalog: string
   facade: string
   roof: string
+  windows: string | null
+  lighting: string | null
   designer_core_user_id: string
   designer_discord_user_id: string
   at_city_sequence: string
@@ -182,13 +197,15 @@ interface DesignRow {
 }
 
 const DESIGN_COLUMNS =
-  'd.property_id, p.building_id, d.revision, d.action_id, d.catalog, d.facade, d.roof, d.designer_core_user_id, d.designer_discord_user_id, d.at_city_sequence, d.designed_at'
+  'd.property_id, p.building_id, d.revision, d.action_id, d.catalog, d.facade, d.roof, d.windows, d.lighting, d.designer_core_user_id, d.designer_discord_user_id, d.at_city_sequence, d.designed_at'
 
-/** A stored row this build can read: its catalog one this build has, and its choices that catalog's. Anything else is a world this build did not write. */
+/** A stored row's choice, exactly: its four identifiers (null for a slot its catalog does not have). */
+const choiceOf = (r: Pick<DesignRow, 'facade' | 'roof' | 'windows' | 'lighting'>): DesignChoice => ({ facade: r.facade, roof: r.roof, windows: r.windows, lighting: r.lighting })
+
+/** A stored row this build can read: its catalog one this build has, and its choices exactly that catalog's. Anything else is a world this build did not write. */
 function readable(r: DesignRow): DesignRow {
-  const catalog = DESIGN_CATALOGS[r.catalog]
-  if (!Object.hasOwn(DESIGN_CATALOGS, r.catalog) || !isCatalogDesign(catalog, { facade: r.facade, roof: r.roof }))
-    throw new WorldRefusal('world_unavailable', `property ${r.property_id} has a design (${r.catalog} ${r.facade} / ${r.roof}) this build does not draw`)
+  if (!Object.hasOwn(DESIGN_CATALOGS, r.catalog) || !isCatalogChoice(DESIGN_CATALOGS[r.catalog], choiceOf(r)))
+    throw new WorldRefusal('world_unavailable', `property ${r.property_id} has a design (${r.catalog} ${r.facade} / ${r.roof} / ${r.windows} / ${r.lighting}) this build does not draw`)
   return r
 }
 
@@ -198,8 +215,7 @@ const recordOf = (r: DesignRow): DesignRecord => ({
   revision: r.revision,
   actionId: r.action_id,
   catalog: r.catalog,
-  facade: r.facade,
-  roof: r.roof,
+  ...choiceOf(r),
   designer: { coreUserId: r.designer_core_user_id, discordUserId: r.designer_discord_user_id },
   atCitySequence: Number(r.at_city_sequence),
   designedAt: r.designed_at.toISOString(),
@@ -244,9 +260,11 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
     const { propertyId, actionId, baseRevision } = input
     if (typeof propertyId !== 'string' || !UUID.test(propertyId) || typeof actionId !== 'string' || !UUID.test(actionId)) throw new WorldDesignRefusal('unknown_property', 'The save names no property or action this server can read.')
     if (!Number.isSafeInteger(baseRevision) || (baseRevision as number) < 0 || (baseRevision as number) >= MAX_REVISION) throw new WorldDesignRefusal('design_stale', 'The save names no revision of this property.')
-    const design = { facade: input.facade, roof: input.roof }
-    // Only identifiers of the catalog this build draws: never a color, markup or anything the browser made up.
-    if (input.catalog !== catalog.key || !isCatalogDesign(catalog, design)) throw new WorldDesignRefusal('design_unsupported', `That is not a facade and roof of ${catalog.key}.`)
+    // Exactly a choice of a catalog this build has, judged by the catalog the save names: only identifiers it lists, never
+    // a color, markup or anything the browser made up. A save of a catalog without windows or lighting names neither.
+    const named = typeof input.catalog === 'string' && Object.hasOwn(DESIGN_CATALOGS, input.catalog) ? DESIGN_CATALOGS[input.catalog] : null
+    const choice = { facade: input.facade, roof: input.roof, windows: input.windows === undefined ? null : input.windows, lighting: input.lighting === undefined ? null : input.lighting }
+    if (!named || !isCatalogChoice(named, choice)) throw new WorldDesignRefusal('design_unsupported', `That is not a design of ${catalog.key}.`)
     const base = baseRevision as number
     const where = { guildId: actor.scope.discordGuildId }
     if (!authority.opensIn(where)) throw new WorldDesignRefusal('design_not_open', 'Property design is not open in this city on this local server.')
@@ -271,22 +289,28 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
       if (live.length !== 1) throw new WorldDesignRefusal('session_ended', 'The play session ended before the design was saved.')
       const designer: ActivatorIdentity = { coreUserId: live[0].core_user_id, discordUserId: live[0].discord_user_id }
 
-      // The same save again: the design it saved, for the player who saved it, and only for exactly that.
+      // The same save again: the design it saved, for the player who saved it, and only for exactly that. A save recorded from
+      // an earlier catalog is answered so too, from its row, exactly as it was saved.
       const done = (
         await client.query<DesignRow>(`SELECT ${DESIGN_COLUMNS} FROM world_property_designs d JOIN world_properties p ON p.id = d.property_id WHERE d.world_id = $1 AND d.action_id = $2`, [actor.scope.worldId, actionId])
       ).rows[0]
       if (done) {
         const same =
           done.property_id === propertyId &&
-          done.catalog === catalog.key &&
-          done.facade === design.facade &&
-          done.roof === design.roof &&
+          done.catalog === named.key &&
+          done.facade === choice.facade &&
+          done.roof === choice.roof &&
+          done.windows === choice.windows &&
+          done.lighting === choice.lighting &&
           done.revision === base + 1 &&
           done.designer_core_user_id === designer.coreUserId &&
           done.designer_discord_user_id === designer.discordUserId
         if (!same) throw new WorldDesignRefusal('action_conflict', 'This action id already names another design save.')
         return { fresh: false, design: recordOf(readable(done)) }
       }
+      // Never recorded, and not of the current catalog: it is not saved now as anything else.
+      if (named.key !== catalog.key)
+        throw new WorldDesignRefusal('design_retired', `That design was chosen from ${named.key}, which no longer takes new saves; designs are chosen from ${catalog.key} now.`)
 
       const property = await propertyIn(client, actor.scope, propertyId)
       const asset = property && assetOf(property)
@@ -299,16 +323,16 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
 
       const [latest] = await revisionsOf(client, property.id)
       if ((latest?.revision ?? 0) !== base) throw new WorldDesignRefusal('design_stale', `This property's design is at revision ${latest?.revision ?? 0}; the save was made on revision ${base}.`)
-      if (sameDesign(latest ?? catalog.default, design)) throw new WorldDesignRefusal('design_unchanged', 'That is already this property\'s design.')
+      if (sameDesign(latest ? appearanceOf(choiceOf(latest)) : catalog.default, appearanceOf(choice))) throw new WorldDesignRefusal('design_unchanged', 'That is already this property\'s design.')
       await onStep?.('checked')
 
       const row = (
         await client.query<Omit<DesignRow, 'building_id'>>(
-          `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, designer_core_user_id, designer_discord_user_id,
-                                              designed_in_play_session, authority, at_city_sequence)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'local-fixture-controller', $13)
-           RETURNING property_id, revision, action_id, catalog, facade, roof, designer_core_user_id, designer_discord_user_id, at_city_sequence, designed_at`,
-          [actor.scope.worldId, read.cityId, read.instance, property.id, base + 1, actionId, catalog.key, design.facade, design.roof, designer.coreUserId, designer.discordUserId, actor.id, read.sequence],
+          `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, designer_core_user_id,
+                                              designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'local-fixture-controller', $15)
+           RETURNING property_id, revision, action_id, catalog, facade, roof, windows, lighting, designer_core_user_id, designer_discord_user_id, at_city_sequence, designed_at`,
+          [actor.scope.worldId, read.cityId, read.instance, property.id, base + 1, actionId, catalog.key, choice.facade, choice.roof, choice.windows, choice.lighting, designer.coreUserId, designer.discordUserId, actor.id, read.sequence],
         )
       ).rows[0]
       await onStep?.('designed')
@@ -352,14 +376,13 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
           return {
             catalog,
             property: { propertyId: property.id, buildingId: property.building_id },
-            saved: latest ? { revision: latest.revision, catalog: latest.catalog, facade: latest.facade, roof: latest.roof, atCitySequence: Number(latest.at_city_sequence), at: latest.designed_at.toISOString() } : null,
+            saved: latest ? { revision: latest.revision, catalog: latest.catalog, ...choiceOf(latest), atCitySequence: Number(latest.at_city_sequence), at: latest.designed_at.toISOString() } : null,
             control: controller === null ? 'unknown' : controller === who.discordUserId ? 'viewer' : 'other',
             open: authority.opensIn(where),
             history: rows.slice(0, DESIGN_HISTORY_LIMIT).map((r) => ({
               revision: r.revision,
               catalog: r.catalog,
-              facade: r.facade,
-              roof: r.roof,
+              ...choiceOf(r),
               by: r.designer_discord_user_id === who.discordUserId && r.designer_core_user_id === who.coreUserId ? ('viewer' as const) : ('other' as const),
               at: r.designed_at.toISOString(),
             })),
@@ -389,7 +412,7 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
               [s.worldId, s.environment, s.gameKey, s.installationId, s.discordGuildId],
             )
           ).rows.map(readable)
-          return rows.map((r) => ({ propertyId: r.property_id, buildingId: r.building_id, revision: r.revision, catalog: r.catalog, facade: r.facade, roof: r.roof }))
+          return rows.map((r) => ({ propertyId: r.property_id, buildingId: r.building_id, revision: r.revision, catalog: r.catalog, ...choiceOf(r) }))
         })
       } catch (err) {
         if (err instanceof WorldRefusal) throw new WorldDesignRefusal('world_unavailable', err.message)

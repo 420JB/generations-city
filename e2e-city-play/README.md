@@ -519,15 +519,24 @@ other recipe, verified NFT control (Proofy Core), real transfers, patron rewards
 Architect ranks, levels or rewards, official civic awards for construction, and whether or how
 construction opens outside the local rehearsal.
 
-**Architect design (P1-C2-E4A, migration 0015): LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.**
+**Architect design (P1-C2-E4A, P1-C2-E4B, migrations 0015, 0016): LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.**
 
-- **What can be chosen.** A facade finish and a roof silhouette from one versioned catalog
-  (`architect-design-v1`, `src/world/design.ts`): facades slate, limestone, brick, copper, jade; roofs
-  flat, terrace, dome, spire. Each is an identifier the standard renderer already draws
-  (`FACADE_PALETTES`, `Roof`); no color, markup, URL, upload or text is ever sent, stored or drawn as
-  sent. A property never designed is drawn with slate and flat, as every new building is. A Tier 0
-  foundation draws its facade at once and its saved roof from Tier 1; the design then grows with every
-  tier. Tier, height, district color and the NFT's label are never the design's.
+- **What can be chosen.** From the current versioned catalog (`architect-design-v2`,
+  `src/world/design.ts`): a facade (slate, limestone, brick, copper, jade), a roof (flat, terrace,
+  dome, spire), windows (grid, arched, ribbon, lattice: the renderer's own window patterns) and
+  exterior lighting (standard: the usual warm glow, no floodlights; warm and cool: static floodlights
+  washing the facade above the podium and lighting the top cornice, with a matching window glow).
+  Each is an identifier the standard renderer already draws; no color, markup, URL, upload or text is
+  ever sent, stored or drawn as sent. A property never designed is drawn with slate, flat, grid and
+  standard, as every new building is. A Tier 0 foundation draws its facade at once and its roof,
+  windows and lighting from Tier 1; the design then grows with every tier. Far from the camera the
+  floodlights keep only their lit cornice. Tier, height, district color and the NFT's label are never
+  the design's.
+- **Catalog v1.** Designs saved before E4B (`architect-design-v1`: a facade and a roof) keep that
+  catalog and meaning; they name no windows or lighting and are drawn with grid and standard, exactly
+  as before. v1 takes no new save (the database refuses one): a v1 save a page kept is checked exactly
+  as kept, answered with its receipt if it was recorded and refused (`design_retired`, nothing saved)
+  if not.
 - **Who may change it.** Only the player the local file's `controllers` name as the NFT's current
   controller in this city (TEST DATA, never verified ownership), asked again for every save under the
   city lock. Founding the property, building on it as a patron or having controlled it before allow
@@ -536,10 +545,12 @@ construction opens outside the local rehearsal.
 - **Routes.** `GET /v1/play/rehearsal/appearance` (every saved design of the session's city, read
   with the rehearsal data on load), `GET …/design?property=` (one property's design, its history with
   nobody named, and whom the file names its controller) and `POST …/designs` (`{ sessionRef, worldId,
-  discordUserId, propertyId, actionId, baseRevision, catalog, facade, roof }`, exactly these keys).
+  discordUserId, propertyId, actionId, baseRevision, catalog, facade, roof, windows, lighting }`,
+  exactly these keys; without `windows` and `lighting` only as an earlier page's v1 save).
 - **The player's view.** The property panel's ARCHITECT DESIGN card; for the named controller, Open
   Architect design (also DESIGN in the Architect activity). Each choice is previewed on the city's own
-  building at once and beside the saved version (both drawn by the city's building sprite); nothing is
+  building at once and beside the saved version (both drawn by the city's building sprite), with a line
+  naming every category the preview changes; all four are saved together as one revision; nothing is
   sent until Save, and Cancel, Back, Close or another building drop the preview. No polling: the
   page reads designs on load, after a placement and after a save.
 - **Persistence and safety.** Each save is the property's next revision (append-only; any earlier
@@ -555,9 +566,9 @@ construction opens outside the local rehearsal.
   media (billboards) is not a design and has no route here.
 - **`city:verify`** checks every design: a property of its world, revisions 1, 2, 3 ..., a catalog
   choice this build has, the local fixture authority, a city sequence within the property's life.
-- **Browser tests.** `design.spec.ts` (construction Discord servers per run: 150).
+- **Browser tests.** `design.spec.ts`, `design-details.spec.ts` (construction Discord servers per run: 170).
 
-Not decided, on purpose: more catalogs or slots, paid, earned or unlockable designs, a design
+Not decided, on purpose: more catalogs or slots (landscaping included), paid, earned or unlockable designs, a design
 marketplace, uploads or custom media, billboards and public owner media's transfer rules, verified NFT
 control, and whether or how design opens outside the local rehearsal.
 

@@ -668,9 +668,9 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
         }
         expect(await rows()).toEqual(before)
         // And 0011 after it, changing nothing either.
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13, 14, 15], current: 15 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [11, 12, 13, 14, 15, 16], current: 16 })
         expect(await rows()).toEqual(before)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 15 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [], current: 16 })
         expect(await verifyCity(t.db)).toMatchObject({ ok: true, worlds: [{ properties: 1, districtTickets: null }, { properties: 0, districtTickets: null }] })
         // The world enters the rotation now; its earlier property is not a ticket's, and the next one consumes one.
         const ta = (await env.ticketOf(a, [keeper(1), keeper(2)]))
@@ -690,7 +690,7 @@ describe.skipIf(NO_TEST_DATABASE)('district tickets (migration 0010) against a d
         expect(await t.tables()).not.toContain('world_district_tickets')
         const left = (await t.db.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND (p.proname LIKE 'world_rotation%' OR p.proname LIKE 'world_district%' OR p.proname LIKE 'world_assignment%')", [t.schema])).rows[0].n
         expect(left).toBe(0)
-        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [10, 11, 12, 13, 14, 15], current: 15 })
+        expect(await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).toEqual({ applied: [10, 11, 12, 13, 14, 15, 16], current: 16 })
         expect(await t.tables()).toEqual(expect.arrayContaining(['world_assignment_rotations', 'world_assignment_slots', 'world_district_tickets']))
       } finally {
         await rm(dir, { recursive: true, force: true })

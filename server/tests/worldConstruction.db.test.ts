@@ -734,7 +734,7 @@ describe.skipIf(NO_TEST_DATABASE)('property construction (migration 0013) agains
     const before = await dump()
     await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })
     expect(await dump()).toEqual(before)
-    expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(15)
+    expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(16)
     await verifyCity(t.db).then((r) => expect(r.violations).toEqual([]))
 
     // Build on the migrated property, then read everything again through a brand new pool.

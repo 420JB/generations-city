@@ -1,4 +1,3 @@
-import type { PropertyDesign } from '../../world/design'
 import type { PressOwner } from './constructionPress'
 
 /**
@@ -21,21 +20,31 @@ import type { PressOwner } from './constructionPress'
  *
  * While a save is unresolved, no other save of that player in that world gets an id. It is kept in this browser's
  * storage, so a reload or a relaunch still checks it before anything new is saved. What is kept is only which request to
- * repeat, never a result.
+ * repeat, never a result, and never a session secret.
+ *
+ * CATALOG VERSIONS (P1-C2-E4B). A save kept by an earlier page (catalog v1: a facade and a roof, no windows or lighting)
+ * is still a save, and is sent again exactly as it was kept, with no window or lighting treatment added: the server
+ * answers it with its original receipt if it was recorded, and refuses it (`design_retired`, settling: nothing was saved)
+ * if it never was. It never becomes a save of the current catalog.
  */
-export interface DesignSave extends PropertyDesign {
+export interface DesignSave {
   actionId: string
   worldId: string
   discordUserId: string
   propertyId: string
   baseRevision: number
   catalog: string
+  facade: string
+  roof: string
+  /** Absent only in a save an earlier page kept (catalog v1): both absent, or both present. */
+  windows?: string
+  lighting?: string
 }
 
 export type DesignSettlement = 'settled' | 'conflict' | 'unknown'
 
 /** Refusals decided after the server found no save under the id, under the city's lock: this save wrote nothing. */
-const SETTLING_REFUSALS: ReadonlySet<string> = new Set(['unknown_property', 'not_current_controller', 'control_unverified', 'design_not_open', 'design_unsupported', 'design_stale', 'design_unchanged'])
+const SETTLING_REFUSALS: ReadonlySet<string> = new Set(['unknown_property', 'not_current_controller', 'control_unverified', 'design_not_open', 'design_unsupported', 'design_retired', 'design_stale', 'design_unchanged'])
 
 /** What an answer says about the save it answered: a design, a settling refusal, a conflict, or nothing known. */
 export function designSettlementOf(outcome: { ok: true } | { ok: false; problem: { code: string | null } }): DesignSettlement {
@@ -91,11 +100,23 @@ const isSave = (v: unknown): v is DesignSave => {
     (p.baseRevision as number) >= 0 &&
     isId(p.catalog) &&
     isId(p.facade) &&
-    isId(p.roof)
+    isId(p.roof) &&
+    // Both treatments, or (a save an earlier page kept) neither.
+    ((p.windows === undefined && p.lighting === undefined) || (isId(p.windows) && isId(p.lighting)))
   )
 }
-/** A kept save exactly as it is resent, and no other field kept. */
-const saveOf = (p: DesignSave): DesignSave => ({ actionId: p.actionId, worldId: p.worldId, discordUserId: p.discordUserId, propertyId: p.propertyId, baseRevision: p.baseRevision, catalog: p.catalog, facade: p.facade, roof: p.roof })
+/** A kept save exactly as it is resent, and no other field kept: a save kept without windows and lighting stays without them. */
+const saveOf = (p: DesignSave): DesignSave => ({
+  actionId: p.actionId,
+  worldId: p.worldId,
+  discordUserId: p.discordUserId,
+  propertyId: p.propertyId,
+  baseRevision: p.baseRevision,
+  catalog: p.catalog,
+  facade: p.facade,
+  roof: p.roof,
+  ...(p.windows !== undefined && p.lighting !== undefined ? { windows: p.windows, lighting: p.lighting } : {}),
+})
 const owns = (who: PressOwner) => (p: DesignSave) => p.worldId === who.worldId && p.discordUserId === who.discordUserId
 
 /** This page's saves, if storage cannot keep them (a private window, blocked site data): they last as long as the page. */

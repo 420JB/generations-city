@@ -396,7 +396,8 @@ export function BuildingPreviewPanel({
         </div>
       </dl>
       {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
-      {stored && design && onDesign && <DesignCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} founder={stored.activator === 'viewer'} access={design} onDesign={onDesign} />}
+      {/* Keyed apart from its sibling construction card: a shared key made React keep stale copies of this card (found in P1-C2-E4B). */}
+      {stored && design && onDesign && <DesignCard key={`design-${stored.propertyId}`} propertyId={stored.propertyId} tier={tier} founder={stored.activator === 'viewer'} access={design} onDesign={onDesign} />}
       {stored && context}
       {stored && construction ? (
         <ConstructionCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} access={construction} color={d.color} onArchitect={onArchitect} />

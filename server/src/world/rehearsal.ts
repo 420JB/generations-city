@@ -77,8 +77,8 @@ import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalC
  *     a grant is recorded once, inside the first construction of that player that needs it. A city whose
  *     Discord server the file names in neither list has no construction at all, read or write.
  *
- *   - ARCHITECT DESIGN (P1-C2-E4A): the NFT's current controller, as the same `controllers` name them, saves a
- *     facade and roof from the engine's design catalog for the property (`designs.ts`). Free, identifiers
+ *   - ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B): the NFT's current controller, as the same `controllers` name them,
+ *     saves a facade, roof, window and lighting treatment from the engine's design catalog for the property (`designs.ts`). Free, identifiers
  *     only. Founding, patronage and earlier control authorize nothing; a design stays with the property when
  *     the file names another controller. Every city's saved designs are read (`appearance`) wherever they
  *     exist; only a city whose Discord server the file names saves one.
@@ -118,7 +118,9 @@ const ACTIVATION_KEYS = ['asset', 'discordUserId', 'geometryFingerprint', 'plotI
 const ASSIGNMENT_KEYS = ['asset', 'discordUserId', 'sessionRef', 'ticketId', 'worldId']
 const RELEASE_KEYS = ['discordUserId', 'sessionRef', 'ticketId', 'worldId']
 const CONSTRUCTION_KEYS = ['actionId', 'discordUserId', 'propertyId', 'role', 'sessionRef', 'worldId']
+/** A design save names a facade and a roof, and (catalog v2, P1-C2-E4B) a window and a lighting treatment; the store judges which its catalog has. */
 const DESIGN_KEYS = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'propertyId', 'roof', 'sessionRef', 'worldId']
+const DESIGN_DETAIL_KEYS = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId']
 /** A catalog or choice identifier a design request may name (the store judges it against the catalog). */
 const CHOICE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 
@@ -375,6 +377,7 @@ const REFUSALS: Record<Answered, [number, RehearsalErrorCode]> = {
   action_conflict: [409, 'action_conflict'],
   design_not_open: [403, 'design_not_open'],
   design_unsupported: [422, 'design_unsupported'],
+  design_retired: [409, 'design_retired'],
   design_stale: [409, 'design_stale'],
   design_unchanged: [409, 'design_unchanged'],
 }
@@ -635,7 +638,7 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
       // Every saved design of the session's own city, for anyone signed in to it: designs are what the city looks like.
       const session = await sessions.session(presented)
       const saved = await designCall((d) => d.city(session))
-      return { rehearsal: REHEARSAL_MARK, catalog: catalogAnswer(CURRENT_DESIGN_CATALOG), designs: saved.map((d) => ({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog, facade: d.facade, roof: d.roof })) }
+      return { rehearsal: REHEARSAL_MARK, catalog: catalogAnswer(CURRENT_DESIGN_CATALOG), designs: saved.map((d) => ({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog, facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting })) }
     },
 
     async design(presented, propertyId) {
@@ -645,13 +648,15 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
     },
 
     async saveDesign(presented, body) {
-      const expected = actorOf(body, DESIGN_KEYS)
-      const { propertyId, actionId, baseRevision, catalog, facade, roof } = body
+      // Exactly one of the two shapes: an earlier page's save (facade and roof only) is answered as exactly that save.
+      const detailed = Object.hasOwn(body, 'windows') || Object.hasOwn(body, 'lighting')
+      const expected = actorOf(body, detailed ? DESIGN_DETAIL_KEYS : DESIGN_KEYS)
+      const { propertyId, actionId, baseRevision, catalog, facade, roof, windows, lighting } = body
       // Which property, which press, which revision, and identifiers only: no color, markup or URL is ever read.
       if (typeof propertyId !== 'string' || !UUID.test(propertyId) || typeof actionId !== 'string' || !UUID.test(actionId) || !Number.isSafeInteger(baseRevision) || (baseRevision as number) < 0)
         throw new RehearsalRefusal(400, 'invalid_request')
-      if ([catalog, facade, roof].some((v) => typeof v !== 'string' || v.length > 64 || !CHOICE.test(v))) throw new RehearsalRefusal(400, 'invalid_request')
-      const done = await designCall(() => designer!.save(presented, expected, { propertyId, actionId, baseRevision, catalog, facade, roof }))
+      if ([catalog, facade, roof, ...(detailed ? [windows, lighting] : [])].some((v) => typeof v !== 'string' || v.length > 64 || !CHOICE.test(v))) throw new RehearsalRefusal(400, 'invalid_request')
+      const done = await designCall(() => designer!.save(presented, expected, { propertyId, actionId, baseRevision, catalog, facade, roof, ...(detailed ? { windows, lighting } : {}) }))
       // Written and committed, for exactly this actor. The view only reads the property again for the page, so its
       // failure is never answered as if nothing was saved: the design is answered without a view.
       let view: RehearsalDesignView | null = null
@@ -665,14 +670,14 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
       return {
         rehearsal: REHEARSAL_MARK,
         fresh: done.fresh,
-        design: { propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, actionId: d.actionId, catalog: d.catalog, facade: d.facade, roof: d.roof, atCitySequence: d.atCitySequence, designedAt: d.designedAt },
+        design: { propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, actionId: d.actionId, catalog: d.catalog, facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting, atCitySequence: d.atCitySequence, designedAt: d.designedAt },
         view,
       }
     },
   }
 }
 
-const catalogAnswer = (c: DesignCatalog): RehearsalDesignCatalog => ({ key: c.key, facades: [...c.facades], roofs: [...c.roofs], default: { ...c.default } })
+const catalogAnswer = (c: DesignCatalog): RehearsalDesignCatalog => ({ key: c.key, facades: [...c.facades], roofs: [...c.roofs], windows: [...c.windows], lighting: [...c.lighting], default: { ...c.default } })
 
 /** A property's design as its viewer is told it: no other player is named. */
 export function designView(o: DesignOverview): RehearsalDesignView {

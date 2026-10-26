@@ -386,7 +386,7 @@ describe.skipIf(NO_TEST_DATABASE)('Tier 2 construction and Architect activity (m
     expect(await w.violations()).toEqual([])
 
     // 0014 on it: nothing that was there changes, the verifier reads it as it did, and the recipes are known again.
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([14, 15])
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([14, 15, 16])
     expect(await dump()).toEqual(before)
     expect(await w.violations()).toEqual([])
     expect(await one("SELECT world_construction_tier('local-test-tier1-v1', 100) AS t1, world_construction_units('local-test-tier1-v1', 100) AS u1, world_construction_tier('local-test-tier2-v1', 250) AS t2, world_construction_units('local-test-tier2-v1', 100) AS u2")).toEqual({ t1: 1, u1: null, t2: 2, u2: 50 })
@@ -613,7 +613,7 @@ describe.skipIf(NO_TEST_DATABASE)('Tier 2 construction and Architect activity (m
     expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(13)
 
     // The shipped 0014 then applies, with its functions pinned to this schema like 0013's.
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([14, 15])
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([14, 15, 16])
     expect(await one("SELECT world_construction_tier('local-test-tier2-v1', 250) AS tier, world_construction_units('local-test-tier2-v1', 100) AS units, (SELECT count(*)::int FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid WHERE g.tgname = 'world_property_constructions_recipe_guard' AND c.relnamespace = current_schema()::regnamespace) AS trig")).toEqual({ tier: 2, units: 50, trig: 1 })
     const pinned = (await t.db.query<{ proname: string; proconfig: string[] | null }>("SELECT proname, proconfig FROM pg_proc WHERE proname IN ('world_construction_tier', 'world_construction_units', 'world_property_constructions_recipe_guard') AND pronamespace = current_schema()::regnamespace ORDER BY proname")).rows
     expect(pinned.map((r) => [r.proname, r.proconfig?.some((c) => c.startsWith('search_path=') && c.includes('pg_temp'))])).toEqual([

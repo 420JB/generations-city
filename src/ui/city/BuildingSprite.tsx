@@ -220,6 +220,27 @@ function FaceWindows({ w, h, style, light, lobby, accent }: { w: number; h: numb
   )
 }
 
+/**
+ * Exterior floodlights on one face (a brand city's Architect lighting, P1-C2-E4B), in face-local coordinates. `wash`: two
+ * static uplight beams rising from the foot of the face, with their fixtures at near detail; `cornice`: a lit line along
+ * its top edge. Solid fills only (no animation, filter or gradient), and never a pointer target, so the building's own
+ * hit area and media stay exactly as they were.
+ */
+function Floodlight({ w, h, color, wash, cornice, fixtures }: { w: number; h: number; color: string; wash: boolean; cornice: boolean; fixtures: boolean }) {
+  if (w < 6 || h < 6) return null
+  const xs = [w * 0.27, w * 0.73]
+  const beam = (rise: number, spread: number) => xs.map((x) => `M${(x - 1.2).toFixed(1)} ${h.toFixed(1)}L${(x + 1.2).toFixed(1)} ${h.toFixed(1)}L${(x + spread).toFixed(1)} ${(h - rise).toFixed(1)}L${(x - spread).toFixed(1)} ${(h - rise).toFixed(1)}Z`).join('')
+  const rise = Math.min(h * 0.8, 46)
+  return (
+    <g pointerEvents="none" data-floodlight-face={wash ? (cornice ? 'wash cornice' : 'wash') : 'cornice'}>
+      {wash && <path d={beam(rise, w * 0.2)} fill={color} opacity={0.2} />}
+      {wash && <path d={beam(rise * 0.5, w * 0.11)} fill={color} opacity={0.3} />}
+      {wash && fixtures && <path d={xs.map((x) => `M${(x - 1.6).toFixed(1)} ${(h - 1.6).toFixed(1)}h3.2v1.6h-3.2Z`).join('')} fill="#fff4cf" />}
+      {cornice && <rect x={0} y={0.4} width={w} height={1.3} fill={color} opacity={0.9} />}
+    </g>
+  )
+}
+
 interface Props {
   building: SceneBuilding
   total: number
@@ -276,6 +297,8 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const pal = FACADE_PALETTES[b.architecture.facade] ?? FACADE_PALETTES.slate
   const light = LIGHTING_COLORS[b.architecture.lighting] ? b.architecture.lighting : 'warm'
   const accent = LIGHTING_COLORS[light].accent
+  // Static exterior floodlights, where the scene sets them (a brand city's Architect lighting); the legacy city never does.
+  const flood = b.floodlights !== undefined && Object.hasOwn(LIGHTING_COLORS, b.floodlights) ? LIGHTING_COLORS[b.floodlights].accent : null
   const scene = useCityScene()
   const district = sceneDistrict(scene, b.districtId)
   const name = scene.buildingLabel(b)
@@ -323,6 +346,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       data-facade={b.architecture.facade}
       data-roof={b.architecture.roof}
       data-lighting={b.architecture.lighting}
+      data-floodlights={flood && tier > 0 ? b.floodlights : undefined}
       data-selected={selected ? 'true' : 'false'}
       onClick={(e) => {
         e.stopPropagation()
@@ -352,6 +376,11 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
         const isPodium = sec.kind === 'podium'
         const windowsOn = tier > 0
         const trims = stage >= 3 && h > FLOOR_PX * 4
+        // Floodlights wash the section above the podium (the podium itself when there is none) and light the top cornice.
+        // Distance drops the wash and keeps the cornice; only near detail draws the fixtures.
+        const wash = !!flood && windowsOn && detail !== 'far' && i === Math.min(1, sections.length - 1)
+        const cornice = !!flood && windowsOn && i === sections.length - 1
+        const lights = (wash || cornice) && <Floodlight w={c.faceW} h={h} color={flood!} wash={wash} cornice={cornice} fixtures={detail === 'near'} />
         return (
           <IsoBox
             key={i}
@@ -370,6 +399,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
                 {windowsOn && !isPodium && (
                   <rect x={c.faceW * 0.3} y={FLOOR_PX + 3 + ((b.friendId * 7) % Math.max(1, h - 30))} width={4} height={6} fill={LIGHTING_COLORS[light].window} className="flicker" style={{ animationDelay: `${(b.friendId % 9) * 0.7}s` }} />
                 )}
+                {lights}
               </>
             }
             right={
@@ -380,6 +410,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
                   Array.from({ length: Math.floor(h / (FLOOR_PX * 4)) }, (_, j) => (
                     <rect key={j} x={0} y={(j + 1) * FLOOR_PX * 4 - 1} width={c.faceW} height={1.2} fill={pal.trim} opacity={0.45} />
                   ))}
+                {lights}
               </>
             }
           />

@@ -9,7 +9,7 @@ import { parsePlayCityConfig } from '../../src/brand/core/playConfig'
 import { verifyCity } from '../src/city/verify'
 import { migrate } from '../src/db/migrations'
 import { createPool } from '../src/db/pool'
-import { assetKey, type NftAsset } from '../src/engine'
+import { appearanceOf, assetKey, type NftAsset } from '../src/engine'
 import { silentLogger } from '../src/log'
 import { PlaySessionError, type OpenedPlaySession } from '../src/play/session'
 import { createConstructionService, createWorldConstructionStore, type ConstructionAuthority, type TestCreditGrant } from '../src/world/construction'
@@ -19,8 +19,9 @@ import { ADA, BEA, GUILD_A, GUILD_B, INSTALLATION_A, INSTALLATION_B } from './fa
 import { keeper, player, ticketWorld } from './ticketHarness'
 
 /**
- * ARCHITECT PROPERTY DESIGN (P1-C2-E4A, migration 0015) against a disposable Postgres, through the real launch path,
- * session service, ticket, property, construction and design stores.
+ * ARCHITECT PROPERTY DESIGN (P1-C2-E4A, migration 0015; saved from catalog v2 since P1-C2-E4B, migration 0016) against a
+ * disposable Postgres, through the real launch path, session service, ticket, property, construction and design stores.
+ * Catalog v1 history, legacy replays and the 0016 upgrade are in `propertyDesignDetails.db.test.ts`.
  *
  *   SAVE        the NFT's current (local fixture) controller saves a catalog facade and roof: one append-only revision,
  *               nothing else in the database changes (no city sequence, event, credit, construction, tier or founder);
@@ -59,9 +60,14 @@ async function refusalOf(work: Promise<unknown>): Promise<string> {
   throw err ?? new Error('expected a refusal, got success')
 }
 
-const CATALOG = 'architect-design-v1'
-const COPPER_DOME = { facade: 'copper', roof: 'dome' }
-const BRICK_SPIRE = { facade: 'brick', roof: 'spire' }
+const CATALOG = 'architect-design-v2'
+/** Whole designs of the current catalog: one with the standard treatments, one with chosen windows and lighting. */
+const COPPER_DOME = { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard' }
+const BRICK_SPIRE = { facade: 'brick', roof: 'spire', windows: 'ribbon', lighting: 'warm' }
+/** A design without a window or lighting choice is saved with the catalog's standard ones. */
+const whole = (d: { facade: string; roof: string; windows?: string; lighting?: string }) => ({ windows: 'grid', lighting: 'standard', ...d })
+/** The renderer's architecture for a design: its lighting drawn as the window glow it uses. */
+const drawnAs = (d: { facade: string; roof: string; windows: string; lighting: string }) => ({ facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting === 'cool' ? 'cool' : 'warm' })
 /** Every table a design must leave exactly as it was. */
 const UNTOUCHED = ['city', 'city_events', 'worlds', 'world_properties', 'world_property_constructions', 'world_property_control_eras', 'world_test_credit_entries', 'world_geometry_freezes', 'world_district_tickets', 'world_config_adoptions']
 
@@ -81,15 +87,15 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       const plot = city.world.districts.find((d) => d.key === ticket.districtKey)!.candidates.plotIds[0]
       return (await env.activate(o, ticket, asset, plot)).property
     }
-    const save = (o: OpenedPlaySession, propertyId: string, design: { facade: string; roof: string }, baseRevision: number, actionId: string = randomUUID(), catalog: string = CATALOG) =>
-      designer.save(o.token, env.actorOf(o), { propertyId, actionId, baseRevision, catalog, ...design })
+    const save = (o: OpenedPlaySession, propertyId: string, design: { facade: string; roof: string; windows?: string; lighting?: string }, baseRevision: number, actionId: string = randomUUID(), catalog: string = CATALOG) =>
+      designer.save(o.token, env.actorOf(o), { propertyId, actionId, baseRevision, catalog, ...whole(design) })
     const build = (o: OpenedPlaySession, propertyId: string, role: 'owner' | 'patron') => construction.construct(o.token, env.actorOf(o), { propertyId, role, actionId: randomUUID() })
     const overview = async (o: OpenedPlaySession, propertyId: string, store: WorldDesignStore = designs) => store.overview(await env.sessions.session(o.token), propertyId, source.authority)
     const cityDesigns = async (o: OpenedPlaySession, store: WorldDesignStore = designs) => store.city(await env.sessions.session(o.token))
     const revisions = (propertyId: string) =>
       t.db
-        .query<{ revision: number; facade: string; roof: string; designer_discord_user_id: string; at_city_sequence: string; action_id: string }>(
-          'SELECT revision, facade, roof, designer_discord_user_id, at_city_sequence, action_id FROM world_property_designs WHERE property_id = $1 ORDER BY revision',
+        .query<{ revision: number; facade: string; roof: string; windows: string | null; lighting: string | null; designer_discord_user_id: string; at_city_sequence: string; action_id: string }>(
+          'SELECT revision, facade, roof, windows, lighting, designer_discord_user_id, at_city_sequence, action_id FROM world_property_designs WHERE property_id = $1 ORDER BY revision',
           [propertyId],
         )
         .then((r) => r.rows)
@@ -103,14 +109,14 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       const city = await env.sessions.city(await env.sessions.session(o.token))
       const parsed = parsePlayCityConfig(city.config, o.response.world.id)
       if (!parsed.ok) throw new Error('config')
-      const mine = Object.fromEntries((await cityDesigns(o)).map((d) => [d.buildingId, { facade: d.facade, roof: d.roof }]))
+      const mine = Object.fromEntries((await cityDesigns(o)).map((d) => [d.buildingId, appearanceOf(d)]))
       return persistedBrandCityState(parsed.config, city.world.state, mine).buildings[buildingId].architecture
     }
     const violations = async () => (await verifyCity(t.db)).violations
     return { env, source, designs, place, save, build, overview, cityDesigns, revisions, snapshot, drawn, violations }
   }
 
-  it('8, 20-22. the controller saves a facade and roof as one revision; nothing else in the database moves: no sequence, event, credit, construction, tier or founder', async () => {
+  it('8, 20-22. the controller saves a facade, roof, windows and lighting as one revision; nothing else in the database moves: no sequence, event, credit, construction, tier or founder', async () => {
     const w = await world()
     const a = await w.env.open(INSTALLATION_A, ADA)
     const p = await w.place(a, keeper(1))
@@ -130,12 +136,20 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     // A never-designed property is drawn with the catalog's default.
     const o0 = await w.overview(a, p.id)
     expect(o0).toMatchObject({ saved: null, control: 'viewer', open: true, history: [], historyCount: 0, property: { propertyId: p.id, buildingId: p.buildingId } })
-    expect(o0.catalog).toMatchObject({ key: CATALOG, facades: ['slate', 'limestone', 'brick', 'copper', 'jade'], roofs: ['flat', 'terrace', 'dome', 'spire'], default: { facade: 'slate', roof: 'flat' } })
-    expect(await w.drawn(a, p.buildingId)).toMatchObject({ facade: 'slate', roof: 'flat' })
+    expect(o0.catalog).toMatchObject({
+      key: CATALOG,
+      facades: ['slate', 'limestone', 'brick', 'copper', 'jade'],
+      roofs: ['flat', 'terrace', 'dome', 'spire'],
+      windows: ['grid', 'arched', 'ribbon', 'lattice'],
+      lighting: ['standard', 'warm', 'cool'],
+      default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard' },
+    })
+    expect(await w.drawn(a, p.buildingId)).toMatchObject({ facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'warm' })
 
     const action = randomUUID()
     const saved = await w.save(a, p.id, COPPER_DOME, 0, action)
     expect(saved.fresh).toBe(true)
+    expect(saved.design).toEqual(expect.objectContaining({ windows: 'grid', lighting: 'standard' }))
     expect(saved.design).toMatchObject({ propertyId: p.id, buildingId: p.buildingId, revision: 1, actionId: action, catalog: CATALOG, ...COPPER_DOME, designer: { discordUserId: ADA.discordUserId, coreUserId: ADA.coreUserId }, atCitySequence: sequence })
 
     // 20-22: every other table exactly as it was, the city at the same sequence, the same credits, tier and Architect record.
@@ -147,23 +161,38 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     // Saved, read back and drawn: by everyone in the city, and only the designed building differs.
     const o1 = await w.overview(a, p.id)
     expect(o1).toMatchObject({ saved: { revision: 1, catalog: CATALOG, ...COPPER_DOME, atCitySequence: sequence }, historyCount: 1, history: [{ revision: 1, ...COPPER_DOME, by: 'viewer' }] })
-    expect(await w.cityDesigns(a)).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: CATALOG, ...COPPER_DOME }])
-    expect(await w.drawn(a, p.buildingId)).toMatchObject(COPPER_DOME)
+
+    // 11, 24. A second revision of all four categories at once: one row, and still nothing else moves.
+    const detailed = await w.save(a, p.id, { facade: 'jade', roof: 'terrace', windows: 'lattice', lighting: 'cool' }, 1)
+    expect(detailed.design).toMatchObject({ revision: 2, catalog: CATALOG, facade: 'jade', roof: 'terrace', windows: 'lattice', lighting: 'cool' })
+    expect(await w.drawn(a, p.buildingId)).toMatchObject({ facade: 'jade', roof: 'terrace', windows: 'lattice', lighting: 'cool' })
+    expect(await w.snapshot()).toEqual(before)
+    expect(await sequenceOf(worldId)).toBe(sequence)
+    expect(await construction.architect(session, w.source.authority)).toEqual(architectBefore)
+    // Back to revision 1's design, as revision 3: the rest of this test reads a design equal to COPPER_DOME.
+    await w.save(a, p.id, COPPER_DOME, 2)
+    expect((await w.revisions(p.id)).map((r) => [r.revision, r.facade, r.windows, r.lighting])).toEqual([
+      [1, 'copper', 'grid', 'standard'],
+      [2, 'jade', 'lattice', 'cool'],
+      [3, 'copper', 'grid', 'standard'],
+    ])
+    expect(await w.cityDesigns(a)).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 3, catalog: CATALOG, ...COPPER_DOME }])
+    expect(await w.drawn(a, p.buildingId)).toMatchObject(drawnAs(COPPER_DOME))
     const b = await w.env.open(INSTALLATION_A, BEA)
-    expect(await w.overview(b, p.id)).toMatchObject({ saved: { revision: 1, ...COPPER_DOME }, control: 'other', history: [{ by: 'other' }] })
-    expect(await w.drawn(b, p.buildingId)).toMatchObject(COPPER_DOME)
+    expect(await w.overview(b, p.id)).toMatchObject({ saved: { revision: 3, ...COPPER_DOME }, control: 'other', history: [{ by: 'other' }, { by: 'other' }, { by: 'other' }] })
+    expect(await w.drawn(b, p.buildingId)).toMatchObject(drawnAs(COPPER_DOME))
 
     // 9-10 at the store: a new pool and a new store (an application relaunch) read the same.
     const relaunched = createPool(process.env.TEST_DATABASE_URL!, silentLogger, { searchPath: (await one<{ s: string }>('SELECT current_schema() AS s')).s })
     try {
       const store = createWorldDesignStore(relaunched, { mode: 'local', log: silentLogger })
-      expect(await w.cityDesigns(a, store)).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: CATALOG, ...COPPER_DOME }])
+      expect(await w.cityDesigns(a, store)).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 3, catalog: CATALOG, ...COPPER_DOME }])
     } finally {
       await relaunched.end()
     }
     expect(await w.violations()).toEqual([])
     const report = (await verifyCity(t.db)).worlds!.find((x) => x.id === worldId)!
-    expect(report).toMatchObject({ designs: 1, designedProperties: 1, constructions: 2 })
+    expect(report).toMatchObject({ designs: 3, designedProperties: 1, constructions: 2 })
   })
 
   it('11-15. only the current controller saves: founding, patronage, an earlier control, nobody named, another world or player change nothing; a new controller inherits the design and may change it', async () => {
@@ -197,16 +226,19 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     expect(await w.overview(ada, p.id)).toMatchObject({ control: 'viewer', saved: { revision: 1, ...COPPER_DOME }, history: [{ revision: 1, by: 'other' }] })
     // Still a Tier 0 foundation (one patron step): its facade is drawn, its saved roof from Tier 1.
     expect(await w.drawn(ada, p.buildingId)).toMatchObject({ facade: 'copper', roof: 'flat' })
+    // 16-17. The founder alone, a patron, and a former controller may not change it: not even its windows or lighting.
+    expect(await refusalOf(w.save(bea, p.id, { ...COPPER_DOME, lighting: 'cool' }, 1))).toBe('not_current_controller')
+    expect(await refusalOf(w.save(cy, p.id, { ...COPPER_DOME, windows: 'arched' }, 1))).toBe('not_current_controller')
     expect(await refusalOf(w.save(bea, p.id, BRICK_SPIRE, 1))).toBe('not_current_controller')
     const second = await w.save(ada, p.id, BRICK_SPIRE, 1)
     expect(second.design).toMatchObject({ revision: 2, ...BRICK_SPIRE, designer: { discordUserId: ADA.discordUserId } })
     // The previous design can be restored by a later save: a new revision, history kept.
     const third = await w.save(ada, p.id, COPPER_DOME, 2)
     expect(third.design).toMatchObject({ revision: 3, ...COPPER_DOME })
-    expect((await w.revisions(p.id)).map((r) => [r.revision, r.facade, r.roof, r.designer_discord_user_id])).toEqual([
-      [1, 'copper', 'dome', BEA.discordUserId],
-      [2, 'brick', 'spire', ADA.discordUserId],
-      [3, 'copper', 'dome', ADA.discordUserId],
+    expect((await w.revisions(p.id)).map((r) => [r.revision, r.facade, r.roof, r.windows, r.lighting, r.designer_discord_user_id])).toEqual([
+      [1, 'copper', 'dome', 'grid', 'standard', BEA.discordUserId],
+      [2, 'brick', 'spire', 'ribbon', 'warm', ADA.discordUserId],
+      [3, 'copper', 'dome', 'grid', 'standard', ADA.discordUserId],
     ])
     expect((await w.overview(bea, p.id)).history.map((h) => [h.revision, h.by])).toEqual([
       [3, 'other'],
@@ -321,12 +353,19 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       [{ facade: '#ff0000', roof: 'flat' }, CATALOG],
       [{ facade: '<script>alert(1)</script>', roof: 'dome' }, CATALOG],
       [{ facade: 'url(https://example.com/x.png)', roof: 'dome' }, CATALOG],
-      [COPPER_DOME, 'architect-design-v2'],
+      [{ ...COPPER_DOME, windows: 'panoramic' }, CATALOG],
+      [{ ...COPPER_DOME, lighting: 'neon' }, CATALOG],
+      [{ ...COPPER_DOME, lighting: 'gold' }, CATALOG],
+      [{ ...COPPER_DOME, windows: '#fff' }, CATALOG],
+      [{ ...COPPER_DOME, lighting: 'url(x)' }, CATALOG],
+      [COPPER_DOME, 'architect-design-v3'],
+      // A v2 design named as v1 (v1 has no windows or lighting).
+      [COPPER_DOME, 'architect-design-v1'],
     ] as const)
       expect(await refusalOf(w.save(a, p.id, design, 0, randomUUID(), catalog)), JSON.stringify([design, catalog])).toBe('design_unsupported')
     // Not strings at all.
     const service = createDesignService({ sessions: w.env.sessions, store: w.designs, authority: w.source.authority })
-    for (const bad of [{ facade: 1, roof: 'dome' }, { facade: 'copper', roof: { kind: 'dome' } }, { facade: null, roof: null }])
+    for (const bad of [{ facade: 1, roof: 'dome' }, { facade: 'copper', roof: { kind: 'dome' } }, { facade: null, roof: null }, { facade: 'copper', roof: 'dome' }, { ...COPPER_DOME, windows: null }, { ...COPPER_DOME, lighting: 7 }, { ...COPPER_DOME, windows: ['grid'] }])
       expect(await refusalOf(service.save(a.token, w.env.actorOf(a), { propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: CATALOG, ...bad }))).toBe('design_unsupported')
     expect(await refusalOf(w.save(a, p.id, COPPER_DOME, -1))).toBe('design_stale')
     expect(await refusalOf(w.save(a, p.id, COPPER_DOME, 1.5))).toBe('design_stale')
@@ -342,15 +381,21 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     const insert = (over: Record<string, unknown>) => {
       const r: Record<string, unknown> = { ...row, revision: 2, action_id: randomUUID(), ...over }
       return t.db.query(
-        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-        [r.world_id, r.city_id, r.city_instance_id, r.property_id, r.revision, r.action_id, r.catalog, r.facade, r.roof, r.designer_core_user_id, r.designer_discord_user_id, r.designed_in_play_session, r.authority, r.at_city_sequence],
+        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+        [r.world_id, r.city_id, r.city_instance_id, r.property_id, r.revision, r.action_id, r.catalog, r.facade, r.roof, r.windows, r.lighting, r.designer_core_user_id, r.designer_discord_user_id, r.designed_in_play_session, r.authority, r.at_city_sequence],
       )
     }
-    await expect(insert({ facade: 'aurora' })).rejects.toThrow(/a facade and a roof of a catalog this database knows/)
-    await expect(insert({ roof: 'halo' })).rejects.toThrow(/a facade and a roof of a catalog this database knows/)
-    await expect(insert({ catalog: 'architect-design-v2' })).rejects.toThrow(/a facade and a roof of a catalog this database knows/)
-    await expect(insert({ facade: '<b>' })).rejects.toThrow(/a facade and a roof of a catalog this database knows/)
+    const KNOWN = /a facade, roof, windows and lighting of a catalog this database knows/
+    await expect(insert({ facade: 'aurora' })).rejects.toThrow(KNOWN)
+    await expect(insert({ roof: 'halo' })).rejects.toThrow(KNOWN)
+    await expect(insert({ windows: 'panoramic' })).rejects.toThrow(KNOWN)
+    await expect(insert({ lighting: 'neon' })).rejects.toThrow(KNOWN)
+    await expect(insert({ windows: null, lighting: null })).rejects.toThrow(KNOWN)
+    await expect(insert({ catalog: 'architect-design-v9' })).rejects.toThrow(/chosen from the current catalog, architect-design-v2: architect-design-v9 is read only/)
+    // v1 is read only: not even a v1 choice exactly as 0015 recorded them.
+    await expect(insert({ catalog: 'architect-design-v1', windows: null, lighting: null })).rejects.toThrow(/architect-design-v1 is read only/)
+    await expect(insert({ facade: '<b>' })).rejects.toThrow(KNOWN)
     await expect(insert({ revision: 3 })).rejects.toThrow(/numbered consecutively/)
     await expect(insert({ revision: 1 })).rejects.toThrow(/numbered consecutively/)
     await expect(insert({ authority: 'proofy-core' })).rejects.toThrow(/wpd_authority_known/)
@@ -360,17 +405,23 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     await expect(t.db.query("UPDATE world_property_designs SET facade = 'jade' WHERE property_id = $1", [p.id])).rejects.toThrow(/a saved design is permanent: it cannot be changed/)
     await expect(t.db.query('DELETE FROM world_property_designs WHERE property_id = $1', [p.id])).rejects.toThrow(/a saved design is permanent: it cannot be removed/)
     // Past the guard (replica role), the table's own shape still refuses markup and other authorities.
-    const replica = await t.db.connect()
-    try {
-      await replica.query('BEGIN')
-      await replica.query(`SET LOCAL session_replication_role = 'replica'`)
-      await expect(replica.query("UPDATE world_property_designs SET facade = '<b>x</b>' WHERE property_id = $1", [p.id])).rejects.toThrow(/wpd_choice_shape/)
-    } finally {
-      await replica.query('ROLLBACK')
-      replica.release()
+    for (const [sql, shape] of [
+      ["UPDATE world_property_designs SET facade = '<b>x</b>' WHERE property_id = $1", /wpd_choice_shape/],
+      ["UPDATE world_property_designs SET windows = 'url(x)' WHERE property_id = $1", /wpd_detail_shape/],
+      ['UPDATE world_property_designs SET lighting = NULL WHERE property_id = $1', /wpd_detail_shape/],
+    ] as const) {
+      const replica = await t.db.connect()
+      try {
+        await replica.query('BEGIN')
+        await replica.query(`SET LOCAL session_replication_role = 'replica'`)
+        await expect(replica.query(sql, [p.id])).rejects.toThrow(shape)
+      } finally {
+        await replica.query('ROLLBACK')
+        replica.release()
+      }
     }
     // A valid next revision, as the guard reads it, is accepted.
-    await insert({ facade: 'jade', roof: 'terrace' })
+    await insert({ facade: 'jade', roof: 'terrace', windows: 'arched', lighting: 'cool' })
     expect((await w.revisions(p.id)).map((r) => r.facade)).toEqual(['copper', 'jade'])
     expect(session).toBeTruthy()
   })
@@ -406,6 +457,9 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     expect(await refusalOf(w.save(a, p.id, BRICK_SPIRE, 0, action))).toBe('action_conflict')
     expect(await refusalOf(w.save(a, p.id, BRICK_SPIRE, 1, action))).toBe('action_conflict')
     expect(await refusalOf(w.save(a, p.id, COPPER_DOME, 1, action))).toBe('action_conflict')
+    // Nor the same facade and roof with other windows or lighting: a lost answer never applies a different design.
+    expect(await refusalOf(w.save(a, p.id, { ...COPPER_DOME, windows: 'ribbon' }, 0, action))).toBe('action_conflict')
+    expect(await refusalOf(w.save(a, p.id, { ...COPPER_DOME, lighting: 'warm' }, 0, action))).toBe('action_conflict')
     w.source.control(GUILD_A, keeper(1), BEA)
     expect(await refusalOf(w.save(b, p.id, COPPER_DOME, 0, action))).toBe('action_conflict')
     w.source.control(GUILD_A, keeper(1), ADA)
@@ -415,7 +469,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     expect(await w.revisions(p.id)).toHaveLength(1)
 
     // 17. Five different saves on the same revision at once: exactly one is written, the others are stale.
-    const choices = [BRICK_SPIRE, { facade: 'jade', roof: 'terrace' }, { facade: 'limestone', roof: 'dome' }, { facade: 'slate', roof: 'spire' }, { facade: 'brick', roof: 'flat' }]
+    const choices = [BRICK_SPIRE, { ...COPPER_DOME, windows: 'arched' }, { ...COPPER_DOME, lighting: 'cool' }, { facade: 'slate', roof: 'spire' }, { facade: 'brick', roof: 'flat', windows: 'lattice', lighting: 'warm' }]
     const settled = await Promise.allSettled(choices.map((c) => w.save(a, p.id, c, 1)))
     const won = settled.filter((s) => s.status === 'fulfilled')
     expect(won).toHaveLength(1)
@@ -462,8 +516,8 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     const row = await one<Record<string, unknown>>('SELECT * FROM world_property_designs WHERE property_id = $1', [p.id])
     await expect(
       t.db.query(
-        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
-         VALUES ($1, $2, $3, $4, 2, $5, $6, 'brick', 'spire', $7, $8, $9, $10, $11)`,
+        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+         VALUES ($1, $2, $3, $4, 2, $5, $6, 'brick', 'spire', 'ribbon', 'warm', $7, $8, $9, $10, $11)`,
         [row.world_id, row.city_id, row.city_instance_id, row.property_id, randomUUID(), row.catalog, row.designer_core_user_id, row.designer_discord_user_id, row.designed_in_play_session, row.authority, row.at_city_sequence],
       ),
     ).rejects.toThrow(/only a local database may record it/)
@@ -497,8 +551,11 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       }
     }
     const cases: { label: string; do: [string, unknown[]]; undo: [string, unknown[]]; expect: RegExp }[] = [
-      { label: 'a facade no catalog has', do: ["UPDATE world_property_designs SET facade = 'aurora' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET facade = 'brick' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is aurora \/ spire, which catalog architect-design-v1 does not offer/ },
-      { label: 'an unknown catalog', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v9' WHERE property_id = $1 AND revision = 1", [q.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v1' WHERE property_id = $1 AND revision = 1", [q.id]], expect: /names catalog architect-design-v9, which this build does not have/ },
+      { label: 'a facade no catalog has', do: ["UPDATE world_property_designs SET facade = 'aurora' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET facade = 'brick' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is aurora \/ spire \/ ribbon \/ warm, which catalog architect-design-v2 does not offer/ },
+      { label: 'a v2 design naming no treatment', do: ['UPDATE world_property_designs SET windows = NULL, lighting = NULL WHERE property_id = $1 AND revision = 2', [p.id]], undo: ["UPDATE world_property_designs SET windows = 'ribbon', lighting = 'warm' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is brick \/ spire \/ null \/ null, which catalog architect-design-v2 does not offer/ },
+      { label: 'a v1 design naming a treatment', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v1' WHERE property_id = $1 AND revision = 1", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v2' WHERE property_id = $1 AND revision = 1", [p.id]], expect: /is copper \/ dome \/ grid \/ standard, which catalog architect-design-v1 does not offer/ },
+      { label: 'a later revision of an older catalog', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v1', windows = NULL, lighting = NULL WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v2', windows = 'ribbon', lighting = 'warm' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /design 2 is of catalog architect-design-v1, older than the revision before it/ },
+      { label: 'an unknown catalog', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v9' WHERE property_id = $1 AND revision = 1", [q.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v2' WHERE property_id = $1 AND revision = 1", [q.id]], expect: /names catalog architect-design-v9, which this build does not have/ },
       { label: 'a revision gap', do: ['UPDATE world_property_designs SET revision = 3 WHERE property_id = $1 AND revision = 2', [p.id]], undo: ['UPDATE world_property_designs SET revision = 2 WHERE property_id = $1 AND revision = 3', [p.id]], expect: /designs are not numbered 1, 2, 3/ },
       { label: 'saved before its property existed', do: ['UPDATE world_property_designs SET at_city_sequence = 2 WHERE property_id = $1', [q.id]], undo: ['UPDATE world_property_designs SET at_city_sequence = (SELECT c.sequence FROM city c JOIN worlds w ON w.city_id = c.id WHERE w.id = world_property_designs.world_id) WHERE property_id = $1', [q.id]], expect: /outside its property's life in the city/ },
       { label: 'saved after its city\'s sequence', do: ['UPDATE world_property_designs SET at_city_sequence = 999 WHERE property_id = $1 AND revision = 2', [p.id]], undo: ['UPDATE world_property_designs SET at_city_sequence = 3 WHERE property_id = $1 AND revision = 2', [p.id]], expect: /saved at city sequence 999, outside its property's life/ },
@@ -557,13 +614,14 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     expect(await tables()).toEqual(names)
     expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(14)
 
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([15])
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([15, 16])
     // Exactly one new table, and every row of every other table as it was.
     expect(await tables()).toEqual([...names, 'world_property_designs'].sort())
     expect(await dump(names)).toEqual(before)
-    const pinned = (await t.db.query<{ proname: string; proconfig: string[] | null }>("SELECT proname, proconfig FROM pg_proc WHERE proname IN ('world_design_choice_known', 'world_property_designs_guard') AND pronamespace = current_schema()::regnamespace ORDER BY proname")).rows
+    const pinned = (await t.db.query<{ proname: string; proconfig: string[] | null }>("SELECT proname, proconfig FROM pg_proc WHERE proname IN ('world_design_choice_known', 'world_design_details_known', 'world_property_designs_guard') AND pronamespace = current_schema()::regnamespace ORDER BY proname")).rows
     expect(pinned.map((r) => [r.proname, r.proconfig?.some((c) => c.startsWith('search_path=') && c.includes('pg_temp'))])).toEqual([
       ['world_design_choice_known', true],
+      ['world_design_details_known', true],
       ['world_property_designs_guard', true],
     ])
     // The E3B city still verifies, now with no designs, and its property can be designed.

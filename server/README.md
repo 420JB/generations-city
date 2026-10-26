@@ -63,7 +63,7 @@ server/
     world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011; held by the database too, 0012)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
     world/construction.ts  LOCAL ONLY: test construction of a property (migrations 0013, 0014: Tier 2) and each player's Architect activity, paid in valueless test credits; only the local rehearsal uses it
-    world/designs.ts     LOCAL ONLY: Architect property design (migration 0015), a catalog facade and roof saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
+    world/designs.ts     LOCAL ONLY: Architect property design (migrations 0015, 0016), a catalog facade, roof, windows and lighting saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
     world/verifyTickets.ts  the district ticket half of `city:verify` (0010, claim windows and rule provenance 0011, leases and governing configuration 0012)
@@ -1269,6 +1269,13 @@ configuration and is not affected by anything here.
   or writes a city event, so an older build still reads every city exactly as before; it simply does
   not draw saved designs (every building keeps the default design) and has no design routes. 0015
   changes no row.
+  And `0016` (Architect design details): two nullable columns on `world_property_designs`
+  (`windows`, `lighting`, NULL for every 0015 row, which keeps catalog `architect-design-v1` and its
+  meaning), a shape constraint, the catalog function `world_design_details_known` and a replaced
+  guard: new designs are `architect-design-v2` only, v1 is read only. Adding nullable columns
+  rewrites no row. An E4A build cannot save on a 0016 database (its v1 rows are refused) but reads it;
+  it refuses to draw a v2 row (the appearance read fails closed, every building drawn with the
+  default), so roll the service back only together with its client.
 
 ## Tests
 

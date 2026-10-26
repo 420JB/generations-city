@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FACADE_PALETTES } from '../../config/architecture'
+import { FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
 import { tierFor, totalBuilt } from '../../game/economy'
 import { BuildingSprite } from '../../ui/city/BuildingSprite'
 import { roofHeightPx } from '../../ui/city/buildingGeometry'
 import { buildingHeightPx } from '../../ui/city/geometry'
 import { CitySceneContext, sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader } from '../../ui/common'
-import { sameDesign, type PropertyDesign } from '../../world/design'
+import { appearanceOf, ARCHITECT_DESIGN_V1, sameDesign, type DesignSlot, type PropertyDesign } from '../../world/design'
 import type { RehearsalDesign, RehearsalDesignView } from '../../protocol/playRehearsal'
 import { withPropertyDesigns } from '../core/persisted'
 import type { LoadedBrandCity } from '../load'
@@ -14,8 +14,9 @@ import type { ClaimProblem } from './claim'
 import { DESIGN_REFUSALS, designSettlementOf, type DesignSave, type DesignSaveBook } from './designPress'
 
 /**
- * ARCHITECT DESIGN (P1-C2-E4A): a property's facade finish and roof silhouette, chosen by the NFT's CURRENT controller as
- * this local server's TEST file names them, from the server's design catalog. Only the Proofy Play page passes access to
+ * ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B): a property's facade finish, roof silhouette, window treatment and exterior
+ * lighting, chosen by the NFT's CURRENT controller as this local server's TEST file names them, from the server's design
+ * catalog. Only the Proofy Play page passes access to
  * it, and only when its server runs the local rehearsal.
  *
  *   - The property panel's design card shows every viewer the saved design (or the default every new building has) and
@@ -25,8 +26,8 @@ import { DESIGN_REFUSALS, designSettlementOf, type DesignSave, type DesignSaveBo
  *     beside the saved version, both drawn by the city's own building art at the building's real tier. A preview is the
  *     page's alone: nothing is sent until Save, and leaving the view (Cancel, Back, another building) drops it, so the
  *     city shows the saved design again.
- *   - Save sends the property, the catalog, the two identifiers, the revision the choice was made on and a fresh id
- *     (`designPress.ts`): a save whose answer is not known is checked again with the same id, exactly as first sent,
+ *   - Save sends the property, the catalog, its four identifiers (one coherent revision), the revision the choice was
+ *     made on and a fresh id (`designPress.ts`): a save whose answer is not known is checked again with the same id, exactly as first sent,
  *     before anything else is saved, and the page never says it was saved until the server says so.
  *
  * Every choice is free and none is earned, unlocked, ranked or paid for. A design stays with the property when its
@@ -58,9 +59,23 @@ const ROOF_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
   dome: { name: 'Dome', note: 'A rounded dome and finial' },
   spire: { name: 'Spire', note: 'A tall pointed spire' },
 }
-const facadeName = (id: string) => FACADE_LABELS[id]?.name ?? id
-const roofName = (id: string) => ROOF_LABELS[id]?.name ?? id
-const designName = (d: PropertyDesign) => `${facadeName(d.facade)} · ${roofName(d.roof)}`
+const WINDOW_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
+  grid: { name: 'Standard grid', note: 'The city’s usual punched windows' },
+  arched: { name: 'Classic arched', note: 'Tall arched openings' },
+  ribbon: { name: 'Ribbon glass', note: 'Continuous horizontal glass bands' },
+  lattice: { name: 'Industrial lattice', note: 'Four-pane factory windows' },
+}
+const LIGHTING_LABELS: Readonly<Record<string, { name: string; note: string }>> = {
+  standard: { name: 'Standard lighting', note: 'The city’s usual warm glow, no floodlights' },
+  warm: { name: 'Warm floodlights', note: 'Amber uplights and a lit cornice' },
+  cool: { name: 'Cool floodlights', note: 'Blue-white uplights, cool glow, lit cornice' },
+}
+const LABELS: Readonly<Record<DesignSlot, Readonly<Record<string, { name: string; note: string }>>>> = { facade: FACADE_LABELS, roof: ROOF_LABELS, windows: WINDOW_LABELS, lighting: LIGHTING_LABELS }
+const SLOT_NAMES: Readonly<Record<DesignSlot, string>> = { facade: 'Facade', roof: 'Roof', windows: 'Windows', lighting: 'Lighting' }
+const nameOf = (slot: DesignSlot, id: string) => LABELS[slot][id]?.name ?? id
+const designName = (d: PropertyDesign) => `${nameOf('facade', d.facade)} · ${nameOf('roof', d.roof)} · ${nameOf('windows', d.windows)} · ${nameOf('lighting', d.lighting)}`
+/** A saved design from catalog v1, which chose no windows or lighting: said as such. */
+const V1_NOTE = 'chosen before windows and lighting could be chosen: standard windows and lighting'
 
 const UNCONFIRMED = 'We could not confirm this save. It may already have been saved. Check it with the same save: one save is never applied twice, and never as a different design.'
 const UNCONFIRMED_ELSEWHERE = 'We could not confirm your last design save, on another of this city’s properties. Check it before saving anything else: one save is never applied twice.'
@@ -75,7 +90,7 @@ function DesignThumb({ city, buildingId, design, caption, testId }: { city: Load
   const total = totalBuilt(b)
   const top = buildingHeightPx(total) + roofHeightPx(design.roof, 1) + 46
   return (
-    <figure className="design-thumb" data-testid={testId} data-facade={design.facade} data-roof={design.roof}>
+    <figure className="design-thumb" data-testid={testId} data-facade={design.facade} data-roof={design.roof} data-windows={design.windows} data-lighting={design.lighting}>
       {/* Paint ids resolve against the map's own <defs>. Inert, and drawn without its label (detail "mid", unselected), so
           nothing in it can be focused, clicked or referenced in place of the city's own building. */}
       <div className="design-thumb-art" inert aria-hidden="true">
@@ -93,11 +108,8 @@ function DesignThumb({ city, buildingId, design, caption, testId }: { city: Load
 }
 const noop = () => {}
 
-/** A view's saved design (or the catalog's default), as a design: its two identifiers and nothing else. */
-const savedOf = (view: RehearsalDesignView): PropertyDesign => {
-  const d = view.saved ?? view.catalog.default
-  return { facade: d.facade, roof: d.roof }
-}
+/** A view's saved design (or the catalog's default), as it is drawn: its four identifiers and nothing else (a v1 design with the standard windows and lighting it was saved with). */
+const savedOf = (view: RehearsalDesignView): PropertyDesign => appearanceOf(view.saved ?? view.catalog.default)
 
 /** The saved design of a property, as every viewer may see it, and the one way in to change it (its named controller only). */
 export function DesignCard({ propertyId, tier, founder, access, onDesign }: { propertyId: string; tier: number; founder: boolean; access: DesignAccess; onDesign: () => void }) {
@@ -110,10 +122,21 @@ export function DesignCard({ propertyId, tier, founder, access, onDesign }: { pr
     }
   }, [access, propertyId])
   const view = answer?.ok ? answer.view : null
-  const design = view?.saved ?? view?.catalog.default ?? null
+  const design = view ? savedOf(view) : null
   const editable = !!view && view.open && view.control === 'viewer'
   return (
-    <div className="fund-box design-card" data-testid="design-card" data-state={view ? 'ready' : answer ? 'unavailable' : 'loading'} data-control={view?.control ?? ''} data-revision={view?.saved?.revision ?? 0} data-facade={design?.facade ?? ''} data-roof={design?.roof ?? ''}>
+    <div
+      className="fund-box design-card"
+      data-testid="design-card"
+      data-state={view ? 'ready' : answer ? 'unavailable' : 'loading'}
+      data-control={view?.control ?? ''}
+      data-revision={view?.saved?.revision ?? 0}
+      data-catalog={view?.saved?.catalog ?? ''}
+      data-facade={design?.facade ?? ''}
+      data-roof={design?.roof ?? ''}
+      data-windows={design?.windows ?? ''}
+      data-lighting={design?.lighting ?? ''}
+    >
       <div className="row-between">
         <h3>Architect design</h3>
         <span className="sim-tag" data-testid="design-test-tag">
@@ -129,10 +152,11 @@ export function DesignCard({ propertyId, tier, founder, access, onDesign }: { pr
           <p className="small" data-testid="design-saved">
             <b>{designName(design)}</b>
             {view.saved ? ` · saved design, revision ${view.saved.revision}` : ' · the design every new building starts with'}
+            {view.saved?.catalog === ARCHITECT_DESIGN_V1.key && ` (${V1_NOTE})`}
           </p>
           {tier === 0 && (
             <p className="muted small" data-testid="design-tier0-note">
-              Tier 0 foundation: the facade shows now; the roof appears once the building reaches Tier 1.
+              Tier 0 foundation: the facade shows now; the roof, windows and lighting appear once the building reaches Tier 1.
             </p>
           )}
           <p className="muted small" data-testid="design-control" data-control={view.control}>
@@ -162,8 +186,8 @@ export function DesignCard({ propertyId, tier, founder, access, onDesign }: { pr
 }
 
 /**
- * THE ARCHITECT DESIGN VIEW: choose a facade and a roof, see them on the city and beside the saved version, then save or
- * cancel. `onPreview` is called with each choice that differs from the saved design (and null when it no longer does);
+ * THE ARCHITECT DESIGN VIEW: choose a facade, a roof, windows and lighting, see them on the city and beside the saved
+ * version (and which categories change), then save them as one revision or cancel. `onPreview` is called with each choice that differs from the saved design (and null when it no longer does);
  * the page draws it on the city for as long as this view is open. `onSaved` hands the page the design the server saved.
  */
 export function ArchitectDesignPanel({
@@ -223,6 +247,8 @@ export function ArchitectDesignPanel({
 
   const saved = useMemo(() => (view ? savedOf(view) : null), [view])
   const changed = !!choice && !!saved && !sameDesign(choice, saved)
+  /** The categories the preview changes, in the order the view lists them. */
+  const changes = choice && saved ? (['facade', 'roof', 'windows', 'lighting'] as const).filter((slot) => choice[slot] !== saved[slot]) : []
   // The city draws the choice while it differs from the saved design: never anything once this view is gone.
   useEffect(() => {
     onPreview(changed && choice ? choice : null)
@@ -237,7 +263,7 @@ export function ArchitectDesignPanel({
     sending.current = true
     const book = access.saves()
     // An unresolved save is sent again exactly as it was first sent, whatever is chosen now.
-    const sent = book.next({ propertyId, baseRevision: view.saved?.revision ?? 0, catalog: view.catalog.key, facade: choice.facade, roof: choice.roof })
+    const sent = book.next({ propertyId, baseRevision: view.saved?.revision ?? 0, catalog: view.catalog.key, facade: choice.facade, roof: choice.roof, windows: choice.windows, lighting: choice.lighting })
     const elsewhere = sent.propertyId !== propertyId
     setBusy(true)
     setProblem(null)
@@ -252,8 +278,9 @@ export function ArchitectDesignPanel({
     } else if (settled === 'conflict') setProblem({ message: CONFLICT, kind: 'retry', code: 'action_conflict' })
     else if (settled === 'settled') setProblem(elsewhere ? { ...r.problem, message: `Your earlier save, on another property, was not made: ${r.problem.message}` } : r.problem)
     else setProblem({ ...r.problem, message: elsewhere ? UNCONFIRMED_ELSEWHERE : UNCONFIRMED, kind: 'retry' })
-    // This property as saved now. After a save here, or a refusal that moved it on, the choice follows the saved design.
-    const reset = (r.ok && !elsewhere) || (!r.ok && r.problem.code === 'design_stale')
+    // This property as saved now. After a save here, or a refusal that moved it on (or an earlier editor's save that was
+    // never made), the choice follows the saved design.
+    const reset = (r.ok && !elsewhere) || (!r.ok && (r.problem.code === 'design_stale' || r.problem.code === 'design_retired'))
     if (r.ok && r.view && !elsewhere) {
       setView(r.view)
       setChoice(savedOf(r.view))
@@ -271,10 +298,10 @@ export function ArchitectDesignPanel({
   const outcome = done ? (done.fresh ? 'saved' : 'repeat') : problem ? (unresolved ? 'unconfirmed' : problem.code === 'action_conflict' ? 'conflict' : problem.kind) : unresolved ? 'unconfirmed' : ''
   const said = done
     ? done.elsewhere
-      ? `Your earlier save is confirmed: revision ${done.design.revision} (${designName(done.design)}) on another property. You can save here now.`
+      ? `Your earlier save is confirmed: revision ${done.design.revision} (${designName(appearanceOf(done.design))}) on another property. You can save here now.`
       : done.fresh
-        ? `Saved: ${designName(done.design)}, revision ${done.design.revision}. The city shows it now, for everyone.`
-        : `Already saved by this save: ${designName(done.design)}, revision ${done.design.revision}. Nothing more was saved.`
+        ? `Saved: ${designName(appearanceOf(done.design))}, revision ${done.design.revision}. The city shows it now, for everyone.`
+        : `Already saved by this save: ${designName(appearanceOf(done.design))}, revision ${done.design.revision}. Nothing more was saved.`
     : problem
       ? problem.message
       : ''
@@ -284,7 +311,7 @@ export function ArchitectDesignPanel({
       <PanelHeader kicker="ARCHITECT DESIGN" title={scene.buildingLabel(b)} onBack={cancel} onClose={onClose} />
       <div className="row-between architect-tagline">
         <p className="small home-lede">
-          {d.title} · Tier {tier}. Choose a facade and a roof: the city shows your choice on this building as you go. Nothing is saved until you save.
+          {d.title} · Tier {tier}. Choose a facade, roof, windows and lighting: the city shows your choice on this building as you go. Nothing is saved until you save.
         </p>
         <span className="sim-tag" data-testid="design-panel-test-tag">
           LOCAL TEST
@@ -300,9 +327,14 @@ export function ArchitectDesignPanel({
             <DesignThumb city={city} buildingId={buildingId} design={saved} caption={view.saved ? `Saved · revision ${view.saved.revision}` : 'Saved · default'} testId="design-thumb-saved" />
             <DesignThumb city={city} buildingId={buildingId} design={choice} caption={changed ? 'Preview' : 'Preview · same as saved'} testId="design-thumb-preview" />
           </div>
+          <p className="small design-changes" data-testid="design-changes" data-count={changes.length}>
+            {changes.length === 0
+              ? 'Preview matches the saved design.'
+              : `Preview changes ${changes.map((slot) => `${SLOT_NAMES[slot].toLowerCase()} (${nameOf(slot, saved[slot])} → ${nameOf(slot, choice[slot])})`).join(', ')}. Not saved yet.`}
+          </p>
           {tier === 0 && (
             <p className="muted small" data-testid="design-tier0-note">
-              Tier 0 foundation: the facade shows now; the roof is drawn once the building reaches Tier 1, and keeps growing with it.
+              Tier 0 foundation: the facade shows now; the roof, windows and lighting are drawn once the building reaches Tier 1, and keep growing with it.
             </p>
           )}
           <fieldset className="design-options" disabled={!editable || busy} data-testid="design-facades">
@@ -336,6 +368,32 @@ export function ArchitectDesignPanel({
                 <span className="design-option-text">
                   <b>{ROOF_LABELS[id]?.name ?? id}</b>
                   <span className="muted small">{ROOF_LABELS[id]?.note}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <fieldset className="design-options" disabled={!editable || busy} data-testid="design-windows">
+            <legend>Windows</legend>
+            {view.catalog.windows.map((id) => (
+              <label key={id} className={`design-option${choice.windows === id ? ' on' : ''}`} data-testid={`design-windows-${id}`}>
+                <input type="radio" name="design-windows" value={id} checked={choice.windows === id} onChange={() => setChoice({ ...choice, windows: id })} />
+                <WindowGlyph kind={id} />
+                <span className="design-option-text">
+                  <b>{nameOf('windows', id)}</b>
+                  <span className="muted small">{WINDOW_LABELS[id]?.note}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <fieldset className="design-options" disabled={!editable || busy} data-testid="design-lighting">
+            <legend>Exterior lighting</legend>
+            {view.catalog.lighting.map((id) => (
+              <label key={id} className={`design-option${choice.lighting === id ? ' on' : ''}`} data-testid={`design-lighting-${id}`}>
+                <input type="radio" name="design-lighting" value={id} checked={choice.lighting === id} onChange={() => setChoice({ ...choice, lighting: id })} />
+                <LightingGlyph kind={id} />
+                <span className="design-option-text">
+                  <b>{nameOf('lighting', id)}</b>
+                  <span className="muted small">{LIGHTING_LABELS[id]?.note}</span>
                 </span>
               </label>
             ))}
@@ -374,9 +432,9 @@ export function ArchitectDesignPanel({
               <p className="muted small home-sub">Design history, newest first</p>
               <ul className="patron-list" data-testid="design-history" data-count={view.historyCount}>
                 {view.history.slice(0, 5).map((h) => (
-                  <li key={h.revision} data-testid="design-history-entry" data-revision={h.revision} data-by={h.by} data-facade={h.facade} data-roof={h.roof}>
+                  <li key={h.revision} data-testid="design-history-entry" data-revision={h.revision} data-by={h.by} data-catalog={h.catalog} data-facade={h.facade} data-roof={h.roof} data-windows={h.windows ?? ''} data-lighting={h.lighting ?? ''}>
                     <span className="grow">
-                      {designName(h)} · {h.by === 'viewer' ? 'You' : 'Another player'}
+                      {h.catalog === ARCHITECT_DESIGN_V1.key ? `${nameOf('facade', h.facade)} · ${nameOf('roof', h.roof)} (${V1_NOTE})` : designName(appearanceOf(h))} · {h.by === 'viewer' ? 'You' : 'Another player'}
                     </span>
                     <span className="muted small">#{h.revision}</span>
                   </li>
@@ -388,6 +446,49 @@ export function ArchitectDesignPanel({
         </>
       )}
     </section>
+  )
+}
+
+/** A small elevation of each window treatment, for the option list only (the previews above draw the real one). */
+function WindowGlyph({ kind }: { kind: string }) {
+  const glow = LIGHTING_COLORS.warm.window
+  const cells = [-5, 1]
+  return (
+    <svg className="design-swatch" viewBox="-10 -12 20 24" width="28" height="28" aria-hidden="true">
+      <rect x={-9} y={-11} width={18} height={22} fill="#3b475e" />
+      {kind === 'ribbon' && [-8, -1, 6].map((y) => <rect key={y} x={-8} y={y} width={16} height={3} fill={glow} />)}
+      {kind === 'arched' &&
+        cells.flatMap((x) => [-9, 1].map((y) => <path key={`${x}${y}`} d={`M${x} ${y + 8} V${y + 3} A2 2 0 0 1 ${x + 4} ${y + 3} V${y + 8} Z`} fill={glow} />))}
+      {kind === 'lattice' &&
+        cells.flatMap((x) =>
+          [-9, 1].map((y) => (
+            <g key={`${x}${y}`} fill={glow}>
+              <rect x={x} y={y} width={1.8} height={3.4} />
+              <rect x={x + 2.2} y={y} width={1.8} height={3.4} />
+              <rect x={x} y={y + 3.9} width={1.8} height={3.4} />
+              <rect x={x + 2.2} y={y + 3.9} width={1.8} height={3.4} />
+            </g>
+          )),
+        )}
+      {kind === 'grid' && cells.flatMap((x) => [-9, -3, 3].map((y) => <rect key={`${x}${y}`} x={x + 0.5} y={y} width={3} height={4.4} fill={glow} />))}
+    </svg>
+  )
+}
+
+/** A small elevation of each lighting treatment, for the option list only. */
+function LightingGlyph({ kind }: { kind: string }) {
+  const lit = kind === 'cool' ? LIGHTING_COLORS.cool : LIGHTING_COLORS.warm
+  return (
+    <svg className="design-swatch" viewBox="-10 -12 20 24" width="28" height="28" aria-hidden="true">
+      <rect x={-9} y={-11} width={18} height={22} fill="#3b475e" />
+      {[-5, 1].flatMap((x) => [-7, -1, 5].map((y) => <rect key={`${x}${y}`} x={x + 0.5} y={y} width={3} height={3.6} fill={lit.window} opacity={0.85} />))}
+      {kind !== 'standard' && (
+        <>
+          <rect x={-9} y={-11} width={18} height={1.4} fill={lit.accent} />
+          <path d="M-5.5 11 L-4 11 L-1.5 -2 L-8 -2 Z M4 11 L5.5 11 L8 -2 L1.5 -2 Z" fill={lit.accent} opacity={0.35} />
+        </>
+      )}
+    </svg>
   )
 }
 

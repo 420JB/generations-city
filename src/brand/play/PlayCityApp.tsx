@@ -14,7 +14,7 @@ import type { ArchitectLoad } from '../preview/architect'
 import type { DesignAccess, DesignLoad, DesignOutcome } from '../preview/design'
 import { DESIGN_REFUSALS, designBook, type DesignSave } from '../preview/designPress'
 import { withPropertyDesigns } from '../core/persisted'
-import type { PropertyDesign } from '../../world/design'
+import { appearanceOf, type PropertyDesign } from '../../world/design'
 import { AssignedDistrict, ClaimAnnouncer, ClaimCountdown, RehearsalFlag, type AssignedTicket, type PlacementRehearsal, type RehearsalNft, type RehearsalResult, type TicketResult } from '../preview/rehearsal'
 import { wardName } from '../../game/allocation'
 import { sceneDistrict } from '../../ui/city/scene'
@@ -189,7 +189,9 @@ const REHEARSAL_REFUSALS: Record<RehearsalErrorCode | 'invalid_request', string>
   action_conflict: 'This press’s id is already recorded for a construction that does not match this request, so nothing more was built or spent for it. That construction may be this build, recorded earlier: check this property’s history before you press again.',
   construction_unconfirmed: 'We could not confirm this build. It may already have been built and paid for. Check it with the same press: one press is never built or paid twice.',
   design_not_open: 'Property design is not open in this city on this local server. Nothing was saved.',
-  design_unsupported: 'That facade or roof is not one this city offers. Nothing was saved.',
+  design_unsupported: 'That design is not one this city offers. Nothing was saved.',
+  design_retired:
+    'That unsaved design was chosen in an earlier version of the Architect design view, which no longer saves, so nothing was saved. This property’s saved design is shown now: choose again on it.',
   design_stale: 'This property’s design changed after you opened it, so nothing was saved. The latest saved design is shown now: choose again on it.',
   design_unchanged: 'That is already this property’s saved design. Nothing was saved.',
   design_unconfirmed: 'We could not confirm this save. It may already have been saved. Check it with the same save: one save is never applied twice, and never as a different design.',
@@ -602,7 +604,9 @@ export function PlayCityApp() {
    * with the city's saved designs as the server has them now.
    */
   async function saveDesign(drawn: PlayCityResponse, save: DesignSave): Promise<DesignOutcome> {
-    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof }
+    // Exactly the save as kept: one an earlier page kept (no windows or lighting) is sent without them.
+    const details = save.windows !== undefined && save.lighting !== undefined ? { windows: save.windows, lighting: save.lighting } : {}
+    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof, ...details }
     const answer = await post(PLAY_REHEARSAL_DESIGNS_ENDPOINT, request)
     if (!answer) return { ok: false, problem: { message: REHEARSAL_REFUSALS.design_unconfirmed, kind: 'retry', code: null } }
     const refused = (answer.body as { error?: unknown } | null)?.error
@@ -616,10 +620,10 @@ export function PlayCityApp() {
     }
     const saved = answer.response.ok ? parseRehearsalDesignResponse(answer.body) : null
     const d = saved?.design
-    if (!saved || d!.actionId !== save.actionId || d!.propertyId !== save.propertyId || d!.revision !== save.baseRevision + 1 || d!.catalog !== save.catalog || d!.facade !== save.facade || d!.roof !== save.roof)
+    if (!saved || d!.actionId !== save.actionId || d!.propertyId !== save.propertyId || d!.revision !== save.baseRevision + 1 || d!.catalog !== save.catalog || d!.facade !== save.facade || d!.roof !== save.roof || d!.windows !== (save.windows ?? null) || d!.lighting !== (save.lighting ?? null))
       return { ok: false, problem: designProblemOf(answer.response.ok ? null : refused) }
     // Drawn at once, unless the page already has a later revision of it; then as the server has every design now.
-    const mine: RehearsalCityDesign = { propertyId: d!.propertyId, buildingId: d!.buildingId, revision: d!.revision, catalog: d!.catalog, facade: d!.facade, roof: d!.roof }
+    const mine: RehearsalCityDesign = { propertyId: d!.propertyId, buildingId: d!.buildingId, revision: d!.revision, catalog: d!.catalog, facade: d!.facade, roof: d!.roof, windows: d!.windows, lighting: d!.lighting }
     setPhase((p) => (p.kind === 'ready' && p.designs && (p.designs.byBuilding[mine.buildingId]?.revision ?? 0) < mine.revision ? { ...p, designs: { ...p.designs, byBuilding: { ...p.designs.byBuilding, [mine.buildingId]: mine } } } : p))
     const now = await readDesigns()
     if (!now.unread) setPhase((p) => (p.kind === 'ready' && p.city.world.id === drawn.world.id ? { ...p, designs: now } : p))
@@ -777,7 +781,8 @@ function PlayCity({
   const { play, viewer, world } = response
   const ticket: AssignedTicket | null = held.ticket
   // The city as stored, drawn with its saved designs: only the designed buildings differ from the stored drawing.
-  const choices = useMemo<Record<string, PropertyDesign>>(() => Object.fromEntries(Object.entries(designs?.byBuilding ?? {}).map(([id, d]) => [id, { facade: d.facade, roof: d.roof }])), [designs])
+  // Each as its catalog draws it: a v1 design with the standard windows and lighting it was saved with.
+  const choices = useMemo<Record<string, PropertyDesign>>(() => Object.fromEntries(Object.entries(designs?.byBuilding ?? {}).map(([id, d]) => [id, appearanceOf(d)])), [designs])
   const designed = useMemo<LoadedBrandCity>(() => ({ ...city, state: withPropertyDesigns(city.state, choices) }), [city, choices])
   /** The player's test NFTs of this city's collections: those not placed yet, and how many are. */
   const mine = useMemo<{ nfts: RehearsalNft[]; placed: number } | null>(() => {

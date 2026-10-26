@@ -1,5 +1,5 @@
 import { parseAssetKey } from '../world/asset'
-import { DESIGN_CATALOGS, isCatalogDesign, type DesignCatalog } from '../world/design'
+import { DESIGN_CATALOGS, isCatalogChoice, type DesignCatalog, type DesignChoice, type PropertyDesign } from '../world/design'
 import type { PlayErrorCode } from './play'
 
 /**
@@ -66,9 +66,11 @@ import type { PlayErrorCode } from './play'
  * property does not make its founder its owner here, and the local file's controller is TEST DATA,
  * never verified NFT ownership.
  *
- * ARCHITECT DESIGN (P1-C2-E4A). FREE, LOCAL TEST CONTROL ONLY: a property's facade finish and roof
- * silhouette, two identifiers from a versioned catalog (`src/world/design.ts`), each one the standard
- * renderer already draws. Never a color, markup, URL or upload.
+ * ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B). FREE, LOCAL TEST CONTROL ONLY: a property's facade finish,
+ * roof silhouette, window treatment and exterior lighting treatment, identifiers from a versioned
+ * catalog (`src/world/design.ts`), each one the standard renderer already draws. Never a color,
+ * markup, URL or upload. Every design names its catalog and carries all four slots: `windows` and
+ * `lighting` are null for a design of `architect-design-v1`, which chose neither.
  *
  *   `GET  /v1/play/rehearsal/appearance`   the saved design of every property of this session's city
  *                                          that has one (the rest are drawn with the catalog's default)
@@ -76,7 +78,10 @@ import type { PlayErrorCode } from './play'
  *                                          it: the saved revision, its history (no other player is
  *                                          named), and whom the local file names as its controller
  *   `POST /v1/play/rehearsal/designs`      `{ sessionRef, worldId, discordUserId, propertyId, actionId,
- *                                          baseRevision, catalog, facade, roof }`
+ *                                          baseRevision, catalog, facade, roof, windows, lighting }`
+ *                                          (an earlier page's save, without windows and lighting, is
+ *                                          answered as exactly that save if it was recorded, and
+ *                                          refused `design_retired` if it was not)
  *
  * Only the player the local file names as the NFT's CURRENT controller may save; founding the property,
  * a patron's construction or an earlier control authorize nothing. A save names the revision it was
@@ -334,17 +339,17 @@ export interface RehearsalDesignCatalog {
   key: string
   facades: string[]
   roofs: string[]
-  default: { facade: string; roof: string }
+  windows: string[]
+  lighting: string[]
+  default: PropertyDesign
 }
 
-/** One property's saved design, as the whole city draws it. */
-export interface RehearsalCityDesign {
+/** One property's saved design, as the whole city draws it (`windows` and `lighting` null for a v1 design). */
+export interface RehearsalCityDesign extends DesignChoice {
   propertyId: string
   buildingId: string
   revision: number
   catalog: string
-  facade: string
-  roof: string
 }
 
 /** `GET /v1/play/rehearsal/appearance`: every saved design of this city, in activation order. A property not listed is drawn with the catalog's default. */
@@ -361,13 +366,13 @@ export interface RehearsalDesignView {
   catalog: RehearsalDesignCatalog
   property: { propertyId: string; buildingId: string }
   /** The latest saved revision, or null: drawn with the catalog's default. */
-  saved: { revision: number; catalog: string; facade: string; roof: string; atCitySequence: number; at: string } | null
+  saved: (DesignChoice & { revision: number; catalog: string; atCitySequence: number; at: string }) | null
   /** Whom the local file names as the NFT's current controller: this player, someone else, or nobody. Never verified. */
   control: 'viewer' | 'other' | 'unknown'
   /** Whether this local server's file has any data for this city (without it nobody can save). */
   open: boolean
   /** Newest first. `by` says only whether it was this player. */
-  history: { revision: number; catalog: string; facade: string; roof: string; by: 'viewer' | 'other'; at: string }[]
+  history: (DesignChoice & { revision: number; catalog: string; by: 'viewer' | 'other'; at: string })[]
   historyCount: number
 }
 
@@ -381,17 +386,18 @@ export interface RehearsalDesignRequest extends RehearsalActorRequest {
   catalog: string
   facade: string
   roof: string
+  /** Absent only in a save an earlier page (catalog v1) kept: sent again exactly as it was first sent. */
+  windows?: string
+  lighting?: string
 }
 
 /** A saved design as the route answers with it. No session and no player. */
-export interface RehearsalDesign {
+export interface RehearsalDesign extends DesignChoice {
   propertyId: string
   buildingId: string
   revision: number
   actionId: string
   catalog: string
-  facade: string
-  roof: string
   atCitySequence: number
   designedAt: string
 }
@@ -469,8 +475,10 @@ export type RehearsalErrorCode =
   | 'construction_unconfirmed'
   /** Property design is not open in this city: this local server's file has no test data for its Discord server. */
   | 'design_not_open'
-  /** Not a facade and roof of the current design catalog. Nothing was saved. */
+  /** Not exactly a design of a catalog this server has. Nothing was saved. */
   | 'design_unsupported'
+  /** A design of an earlier catalog that was never saved: new designs are chosen from the current catalog. Nothing was saved. */
+  | 'design_retired'
   /** The property's design changed after the revision this save was made on. Nothing was saved. */
   | 'design_stale'
   /** The save is exactly the property's current design. Nothing was saved. */
@@ -705,17 +713,21 @@ export function parseRehearsalConstructionResponse(body: unknown): RehearsalCons
 
 /** A catalog this build has, exactly as it has it, or null: the page never draws a choice it does not know. */
 function parseDesignCatalog(v: unknown): DesignCatalog | null {
-  if (!isRecord(v) || !exact(v, 'default,facades,key,roofs') || typeof v.key !== 'string' || !Object.hasOwn(DESIGN_CATALOGS, v.key)) return null
+  if (!isRecord(v) || !exact(v, 'default,facades,key,lighting,roofs,windows') || typeof v.key !== 'string' || !Object.hasOwn(DESIGN_CATALOGS, v.key)) return null
   const known = DESIGN_CATALOGS[v.key]
   const d = v.default
   const same = (a: unknown, b: readonly string[]) => Array.isArray(a) && a.length === b.length && a.every((x, i) => x === b[i])
-  if (!same(v.facades, known.facades) || !same(v.roofs, known.roofs) || !isRecord(d) || d.facade !== known.default.facade || d.roof !== known.default.roof || !exact(d, 'facade,roof')) return null
+  if (!same(v.facades, known.facades) || !same(v.roofs, known.roofs) || !same(v.windows, known.windows) || !same(v.lighting, known.lighting)) return null
+  if (!isRecord(d) || !exact(d, 'facade,lighting,roof,windows') || d.facade !== known.default.facade || d.roof !== known.default.roof || d.windows !== known.default.windows || d.lighting !== known.default.lighting) return null
   return known
 }
 
-const catalogAnswer = (c: DesignCatalog): RehearsalDesignCatalog => ({ key: c.key, facades: [...c.facades], roofs: [...c.roofs], default: { ...c.default } })
-/** A facade and roof of a catalog this build has. */
-const knownChoice = (catalog: unknown, facade: unknown, roof: unknown) => typeof catalog === 'string' && Object.hasOwn(DESIGN_CATALOGS, catalog) && isCatalogDesign(DESIGN_CATALOGS[catalog], { facade, roof })
+const catalogAnswer = (c: DesignCatalog): RehearsalDesignCatalog => ({ key: c.key, facades: [...c.facades], roofs: [...c.roofs], windows: [...c.windows], lighting: [...c.lighting], default: { ...c.default } })
+/** Exactly a choice of a catalog this build has: every slot it chooses, and null for the slots it does not have. */
+const knownChoice = (r: Record<string, unknown>) =>
+  typeof r.catalog === 'string' && Object.hasOwn(DESIGN_CATALOGS, r.catalog) && isCatalogChoice(DESIGN_CATALOGS[r.catalog], { facade: r.facade, roof: r.roof, windows: r.windows, lighting: r.lighting })
+/** A record's choice, once `knownChoice` holds. */
+const choiceIn = (r: Record<string, unknown>): DesignChoice => ({ facade: r.facade as string, roof: r.roof as string, windows: r.windows as string | null, lighting: r.lighting as string | null })
 const revision = (v: unknown): v is number => count(v, 1_000_000) && v >= 1
 
 /** The city's saved designs, exactly, or null. One per property, and each a choice of a catalog this build has. */
@@ -726,10 +738,10 @@ export function parseRehearsalAppearanceResponse(body: unknown): RehearsalAppear
   const designs: RehearsalCityDesign[] = []
   const seen = new Set<string>()
   for (const d of body.designs) {
-    if (!isRecord(d) || !exact(d, 'buildingId,catalog,facade,propertyId,revision,roof') || typeof d.propertyId !== 'string' || !UUID.test(d.propertyId) || d.buildingId !== `b-${d.propertyId}` || seen.has(d.propertyId)) return null
-    if (!revision(d.revision) || !knownChoice(d.catalog, d.facade, d.roof)) return null
+    if (!isRecord(d) || !exact(d, 'buildingId,catalog,facade,lighting,propertyId,revision,roof,windows') || typeof d.propertyId !== 'string' || !UUID.test(d.propertyId) || d.buildingId !== `b-${d.propertyId}` || seen.has(d.propertyId)) return null
+    if (!revision(d.revision) || !knownChoice(d)) return null
     seen.add(d.propertyId)
-    designs.push({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog as string, facade: d.facade as string, roof: d.roof as string })
+    designs.push({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog as string, ...choiceIn(d) })
   }
   return { rehearsal: REHEARSAL_MARK, catalog: catalogAnswer(catalog), designs }
 }
@@ -744,14 +756,14 @@ export function parseRehearsalDesignView(body: unknown): RehearsalDesignView | n
   let saved: RehearsalDesignView['saved'] = null
   if (body.saved !== null) {
     const s = body.saved
-    if (!isRecord(s) || !exact(s, 'at,atCitySequence,catalog,facade,revision,roof') || !revision(s.revision) || !knownChoice(s.catalog, s.facade, s.roof) || !count(s.atCitySequence) || s.atCitySequence < 2 || !isInstant(s.at)) return null
-    saved = { revision: s.revision, catalog: s.catalog as string, facade: s.facade as string, roof: s.roof as string, atCitySequence: s.atCitySequence, at: s.at }
+    if (!isRecord(s) || !exact(s, 'at,atCitySequence,catalog,facade,lighting,revision,roof,windows') || !revision(s.revision) || !knownChoice(s) || !count(s.atCitySequence) || s.atCitySequence < 2 || !isInstant(s.at)) return null
+    saved = { revision: s.revision, catalog: s.catalog as string, ...choiceIn(s), atCitySequence: s.atCitySequence, at: s.at }
   }
   if (!Array.isArray(body.history) || body.history.length > 100 || !count(body.historyCount) || body.historyCount < body.history.length) return null
   const history: RehearsalDesignView['history'] = []
   for (const h of body.history) {
-    if (!isRecord(h) || !exact(h, 'at,by,catalog,facade,revision,roof') || !revision(h.revision) || !knownChoice(h.catalog, h.facade, h.roof) || (h.by !== 'viewer' && h.by !== 'other') || !isInstant(h.at)) return null
-    history.push({ revision: h.revision, catalog: h.catalog as string, facade: h.facade as string, roof: h.roof as string, by: h.by, at: h.at })
+    if (!isRecord(h) || !exact(h, 'at,by,catalog,facade,lighting,revision,roof,windows') || !revision(h.revision) || !knownChoice(h) || (h.by !== 'viewer' && h.by !== 'other') || !isInstant(h.at)) return null
+    history.push({ revision: h.revision, catalog: h.catalog as string, ...choiceIn(h), by: h.by, at: h.at })
   }
   // The newest revision is the saved one, and there is history exactly when there is a saved design.
   if ((saved === null) !== (body.historyCount === 0) || (saved && history[0]?.revision !== saved.revision) || (saved && body.historyCount !== saved.revision)) return null
@@ -764,14 +776,14 @@ export function parseRehearsalDesignResponse(body: unknown): RehearsalDesignResp
   const view = body.view === null ? null : parseRehearsalDesignView(body.view)
   if (body.view !== null && !view) return null
   const d = body.design
-  if (!isRecord(d) || !exact(d, 'actionId,atCitySequence,buildingId,catalog,designedAt,facade,propertyId,revision,roof')) return null
+  if (!isRecord(d) || !exact(d, 'actionId,atCitySequence,buildingId,catalog,designedAt,facade,lighting,propertyId,revision,roof,windows')) return null
   if (typeof d.propertyId !== 'string' || !UUID.test(d.propertyId) || d.buildingId !== `b-${d.propertyId}` || typeof d.actionId !== 'string' || !UUID.test(d.actionId)) return null
-  if (!revision(d.revision) || !knownChoice(d.catalog, d.facade, d.roof) || !count(d.atCitySequence) || d.atCitySequence < 2 || !isInstant(d.designedAt)) return null
+  if (!revision(d.revision) || !knownChoice(d) || !count(d.atCitySequence) || d.atCitySequence < 2 || !isInstant(d.designedAt)) return null
   if (view && view.property.propertyId !== d.propertyId) return null
   return {
     rehearsal: REHEARSAL_MARK,
     fresh: body.fresh,
-    design: { propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, actionId: d.actionId, catalog: d.catalog as string, facade: d.facade as string, roof: d.roof as string, atCitySequence: d.atCitySequence, designedAt: d.designedAt },
+    design: { propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, actionId: d.actionId, catalog: d.catalog as string, ...choiceIn(d), atCitySequence: d.atCitySequence, designedAt: d.designedAt },
     view,
   }
 }

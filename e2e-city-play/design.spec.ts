@@ -54,7 +54,7 @@ test('preview on the city does not save; Cancel restores the saved design; Save 
   await expect(card).toHaveAttribute('data-state', 'ready')
   await expect(card).toHaveAttribute('data-control', 'viewer')
   await expect(card).toHaveAttribute('data-revision', '0')
-  await expect(card.getByTestId('design-saved')).toHaveText('Slate · Flat deck · the design every new building starts with')
+  await expect(card.getByTestId('design-saved')).toHaveText('Slate · Flat deck · Standard grid · Standard lighting · the design every new building starts with')
   await expect(card.getByTestId('design-test-tag')).toHaveText('LOCAL TEST')
   await expect(card.getByTestId('design-tier0-note')).toBeVisible()
   await expect(card.getByTestId('design-basis-note')).toHaveText('LOCAL TEST control: this local server’s test file names the NFT’s current controller. Proofy has not verified who holds the NFT. The design stays with the property if the NFT changes hands.')
@@ -103,13 +103,13 @@ test('preview on the city does not save; Cancel restores the saved design; Save 
   await panel.getByTestId('design-roof-dome').click()
   await panel.getByTestId('design-save').click()
   await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'saved')
-  await expect(panel.getByTestId('design-feedback')).toHaveText('Saved: Copper · Dome, revision 1. The city shows it now, for everyone.')
+  await expect(panel.getByTestId('design-feedback')).toHaveText('Saved: Copper · Dome · Standard grid · Standard lighting, revision 1. The city shows it now, for everyone.')
   await expect(panel.getByTestId('design-thumb-saved')).toHaveAttribute('data-facade', 'copper')
   await expect(panel.getByTestId('design-save')).toBeDisabled()
   await expect(onMap(ada.page)).toHaveAttribute('data-facade', 'copper')
   expect(sent).toHaveLength(1)
-  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'propertyId', 'roof', 'sessionRef', 'worldId'])
-  expect(sent[0]).toMatchObject({ propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v1', facade: 'copper', roof: 'dome' })
+  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
+  expect(sent[0]).toMatchObject({ propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v2', facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard' })
   expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, facade: 'copper', roof: 'dome', designer: REHEARSAL_ADA }])
   await expect(panel.getByTestId('design-history-entry')).toHaveCount(1)
   await ada.page.screenshot({ path: `${SHOTS}/design-2-saved-tier0.png` })
@@ -117,7 +117,7 @@ test('preview on the city does not save; Cancel restores the saved design; Save 
   // Back to the property: its card shows the saved design. 20-22: no credit, unit or tier moved.
   await panel.getByRole('button', { name: 'Back' }).click()
   await expect(ada.page.getByTestId('design-card')).toHaveAttribute('data-revision', '1')
-  await expect(ada.page.getByTestId('design-card').getByTestId('design-saved')).toHaveText('Copper · Dome · saved design, revision 1')
+  await expect(ada.page.getByTestId('design-card').getByTestId('design-saved')).toHaveText('Copper · Dome · Standard grid · Standard lighting · saved design, revision 1')
   await expect(ada.page.getByTestId('construction-card')).toHaveAttribute('data-built', '0')
   await expect(credits).toHaveText(String(CONSTRUCTION_CREDITS.ada))
   const { constructionsOf, ledger } = records(db)
@@ -222,7 +222,7 @@ test('1-5, 23. a saved design grows with the building: the roof appears at Tier 
   await panel.getByTestId('design-facade-limestone').click()
   await panel.getByTestId('design-roof-terrace').click()
   await panel.getByTestId('design-save').click()
-  await expect(panel.getByTestId('design-feedback')).toHaveText('Saved: Limestone · Roof terrace, revision 2. The city shows it now, for everyone.')
+  await expect(panel.getByTestId('design-feedback')).toHaveText('Saved: Limestone · Roof terrace · Standard grid · Standard lighting, revision 2. The city shows it now, for everyone.')
   await panel.getByRole('button', { name: 'Back' }).click()
   await still(ada.page)
   await ada.page.screenshot({ path: `${SHOTS}/design-4-tier2-terrace.png` })
@@ -263,7 +263,7 @@ test('13-14. the founder who is not the controller, and a patron, cannot change 
       const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return [res.status, await res.json()]
     },
-    [DESIGNS, { ...actor, propertyId: placed.propertyId, actionId: crypto.randomUUID(), baseRevision: 0, catalog: 'architect-design-v1', facade: 'brick', roof: 'dome' }] as const,
+    [DESIGNS, { ...actor, propertyId: placed.propertyId, actionId: crypto.randomUUID(), baseRevision: 0, catalog: 'architect-design-v2', facade: 'brick', roof: 'dome', windows: 'grid', lighting: 'standard' }] as const,
   )
   expect(asked).toEqual([403, { error: 'not_current_controller' }])
   // A patron contributes, and still has no design view.
@@ -324,7 +324,7 @@ test('18-19. a save whose answer was lost is checked as exactly the same save, e
   // It was saved; the page never said so.
   expect(await revisionsOf(placed.propertyId)).toHaveLength(1)
   const kept = JSON.parse((await ada.page.evaluate(() => localStorage.getItem('rare-city-design-saves')))!) as Record<string, unknown>[]
-  expect(kept).toEqual([{ actionId: sent[0].actionId, worldId: sent[0].worldId, discordUserId: REHEARSAL_ADA, propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v1', facade: 'copper', roof: 'terrace' }])
+  expect(kept).toEqual([{ actionId: sent[0].actionId, worldId: sent[0].worldId, discordUserId: REHEARSAL_ADA, propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v2', facade: 'copper', roof: 'terrace', windows: 'grid', lighting: 'standard' }])
 
   // A reload, then another choice: the check still sends exactly the first request, and is answered with what it saved.
   await ada.page.reload()
@@ -334,7 +334,7 @@ test('18-19. a save whose answer was lost is checked as exactly the same save, e
   await panel.getByTestId('design-facade-jade').click()
   await panel.getByTestId('design-save').click()
   await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'repeat')
-  await expect(panel.getByTestId('design-feedback')).toHaveText('Already saved by this save: Copper · Roof terrace, revision 1. Nothing more was saved.')
+  await expect(panel.getByTestId('design-feedback')).toHaveText('Already saved by this save: Copper · Roof terrace · Standard grid · Standard lighting, revision 1. Nothing more was saved.')
   expect(sent).toHaveLength(2)
   expect(sent[1]).toEqual(sent[0])
   expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, facade: 'copper', roof: 'terrace', designer: REHEARSAL_ADA }])
@@ -367,6 +367,8 @@ test('the design view works by keyboard and on a phone-sized screen, and is labe
   await expect(panel).toHaveAccessibleName(/^Architect design of /)
   await expect(panel.getByRole('group', { name: 'Facade' })).toBeVisible()
   await expect(panel.getByRole('group', { name: 'Roof' })).toBeVisible()
+  await expect(panel.getByRole('group', { name: 'Windows' })).toBeVisible()
+  await expect(panel.getByRole('group', { name: 'Exterior lighting' })).toBeVisible()
   // Arrow keys move through each choice, as a radio group does.
   await panel.getByRole('radio', { name: /^Slate/ }).focus()
   await page.keyboard.press('ArrowDown')
@@ -377,7 +379,7 @@ test('the design view works by keyboard and on a phone-sized screen, and is labe
   await expect(panel.getByRole('radio', { name: /^Roof terrace/ })).toBeChecked()
   await panel.getByRole('button', { name: 'Save design' }).focus()
   await page.keyboard.press('Enter')
-  await expect(panel.getByRole('status').filter({ hasText: 'Saved:' })).toHaveText('Saved: Limestone · Roof terrace, revision 1. The city shows it now, for everyone.')
+  await expect(panel.getByRole('status').filter({ hasText: 'Saved:' })).toHaveText('Saved: Limestone · Roof terrace · Standard grid · Standard lighting, revision 1. The city shows it now, for everyone.')
   // Nothing on the page scrolls sideways at phone width; the drawer stays inside the screen.
   const overflow = await page.evaluate(() => ({ page: document.documentElement.scrollWidth - window.innerWidth, drawer: (document.querySelector('[data-testid="drawer"]') as HTMLElement).getBoundingClientRect().right - window.innerWidth }))
   expect(overflow.page).toBeLessThanOrEqual(0)

@@ -151,6 +151,7 @@ const REHEARSAL_KINDS: Record<RehearsalErrorCode | 'invalid_request', ProblemKin
   // Architect design (P1-C2-E4A): a stale design is read again and chosen on; the rest change only with the city or the local file.
   design_not_open: 'refused',
   design_unsupported: 'refused',
+  design_retired: 'renew',
   design_stale: 'renew',
   design_unchanged: 'refused',
   design_unconfirmed: 'retry',

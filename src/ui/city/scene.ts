@@ -70,6 +70,11 @@ export type StatueArt =
 /** A building as the renderer reads it: the legacy building with any district key. */
 export interface SceneBuilding extends Omit<Building, 'districtId'> {
   districtId: string
+  /**
+   * Static exterior floodlights in this lighting color (a `LIGHTING_COLORS` key), or none when absent: a brand city's
+   * Architect lighting (P1-C2-E4B). The legacy city never sets it, and draws exactly as before.
+   */
+  floodlights?: string
 }
 
 /** The parts of a city's state the renderer draws. A legacy `GameState` is one. */

@@ -145,8 +145,8 @@ export {
   type PropertyConstructedEvent,
   type PropertyConstructionRefusal,
 } from '../../src/world/construction'
-// Architect property design, pure: the versioned catalog of facade and roof identifiers a save may name (server/src/world/designs.ts).
-export { CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogDesign, sameDesign, type DesignCatalog, type PropertyDesign } from '../../src/world/design'
+// Architect property design, pure: the versioned catalogs of facade, roof, window and lighting identifiers a save may name (server/src/world/designs.ts).
+export { appearanceOf, CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogChoice, sameDesign, type DesignCatalog, type DesignChoice, type PropertyDesign } from '../../src/world/design'
 // Persistent city gameplay, pure: discover plots, validate and propose a property activation on an exact plot, replay a city.
 export {
   PROPERTY_ACTIVATED_EVENT,
