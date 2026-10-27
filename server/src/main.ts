@@ -18,6 +18,7 @@ import { createFriendsReader } from './ownership/reader'
 import { createPlayClient } from './play/client'
 import { createPlayLaunchService } from './play/launch'
 import { createPlaySessionService, createPlaySessionStore } from './play/session'
+import { assertPreviewDatabase, PreviewStartupError } from './preview'
 import { loadStaticSite } from './static'
 import { createWorldPropertyStore } from './world/properties'
 import { createWorldConstructionStore } from './world/construction'
@@ -31,6 +32,8 @@ const RPC_TIMEOUT_MS = 10_000
 
 /** `npm run build:app` puts the server-mode client here; without it the service is API only. */
 const CLIENT_DIR = resolve(process.cwd(), 'dist-server/public')
+/** `npm run build:preview` puts the Districts Play client here: the only page a hosted preview serves. */
+const PREVIEW_CLIENT_DIR = resolve(process.cwd(), 'dist-server/play')
 
 async function main() {
   const log = createLogger()
@@ -44,7 +47,19 @@ async function main() {
   }
 
   const db = config.databaseUrl ? createPool(config.databaseUrl, log) : null
-  const site = await loadStaticSite(CLIENT_DIR)
+  const preview = config.hostedPreview !== null
+  // HOSTED PREVIEW: the built Play client, behind the access gate, never cached by anything shared; and nothing is served
+  // without it or from a database that is not a migrated, local-stamped one.
+  const site = preview ? await loadStaticSite(PREVIEW_CLIENT_DIR, { privateCache: true }) : await loadStaticSite(CLIENT_DIR)
+  if (preview) {
+    try {
+      if (!site) throw new PreviewStartupError('the Districts Play client is not built (npm run build:preview).')
+      await assertPreviewDatabase(db!, defaultMigrationsDir())
+    } catch (err) {
+      log.error(`hosted preview refused to start: ${err instanceof PreviewStartupError ? err.message : 'the preview database could not be checked.'}`)
+      process.exit(1)
+    }
+  }
   // Ownership is read from the chain. The fixture is a labelled stand-in that config only allows in local mode.
   const ownership =
     config.ownership === 'fixture' ? createFixtureOwnershipProvider() : createGenerationsOwnershipProvider({ transport: http(config.rpcUrl, { timeout: RPC_TIMEOUT_MS, retryCount: 1, retryDelay: 250 }) })
@@ -85,11 +100,12 @@ async function main() {
       migrationsDir: defaultMigrationsDir(),
       log,
       city: db ? createCityReader(db) : null,
-      auth: db ? createAuthService({ db, publicOrigin: config.publicOrigin }) : null,
-      friends: createFriendsReader(ownership),
+      // Never in a hosted preview (the app ignores them there too): no wallet sign-in, owned-Friends read or activation.
+      auth: db && !preview ? createAuthService({ db, publicOrigin: config.publicOrigin }) : null,
+      friends: preview ? null : createFriendsReader(ownership),
       // Built whenever there is a database, and inert unless ACTIVATION_ENABLED=true: the routes and the service both refuse first.
-      activation: db ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
-      properties: db ? createPropertyReader(db) : null,
+      activation: db && !preview ? createActivationService({ db, ownership, publicOrigin: config.publicOrigin, enabled: config.activationEnabled, log }) : null,
+      properties: db && !preview ? createPropertyReader(db) : null,
       playLaunch: config.play && play && worlds ? createPlayLaunchService({ play, environment: config.play.environment, gameKey: config.play.gameKey, worlds }) : null,
       playSessions,
       rehearsal,
@@ -100,12 +116,13 @@ async function main() {
   server.headersTimeout = 15_000
   server.requestTimeout = 30_000
 
+  if (preview) log.warn('HOSTED PREVIEW: a local rehearsal reachable from the internet behind its access gate. Synthetic NFTs, controllers and valueless TEST credits only; no wallet sign-in or activation.', { origin: config.publicOrigin })
   // Allowed, because a deployment may truly have nothing in front of it. Behind a proxy it would make every visitor one client.
   if (config.mode !== 'local' && config.trustedProxy === 'none') log.warn('TRUSTED_PROXY=none: the client network is the socket peer. If a proxy is in front, every visitor shares one rate-limit bucket.', { mode: config.mode })
 
   server.listen(config.port, config.host, () => {
     // The RPC endpoint is deliberately absent: it may carry provider credentials.
-    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, play: config.play ? `${config.play.environment}/${config.play.gameKey}` : 'not-connected', localRehearsal: rehearsal ? 'enabled' : 'off', commit: config.commit })
+    log.info('listening', { service: SERVICE_NAME, mode: config.mode, host: config.host, port: config.port, origin: config.publicOrigin, database: db ? 'configured' : 'not-configured', ownership: ownership.source, client: site ? `${site.size} files` : 'none', trustedProxy: config.trustedProxy, rateLimits: config.rateLimits ? 'on' : 'off', frameAncestors: config.frameAncestors.length, activationEnabled: config.activationEnabled, play: config.play ? `${config.play.environment}/${config.play.gameKey}` : 'not-connected', localRehearsal: rehearsal ? 'enabled' : 'off', hostedPreview: preview ? 'on (access gate: basic)' : 'off', commit: config.commit })
   })
 
   let stopping = false

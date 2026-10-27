@@ -6,7 +6,7 @@ import { ActivationError, type ActivationService } from './activation/service'
 import { AuthError, hashSessionToken, type AuthService, type LiveSession } from './auth/service'
 import type { CityReader } from './city/store'
 import { clientKey, type ClientKey } from './clientKey'
-import type { ServerConfig } from './config'
+import { secureTransport, type ServerConfig } from './config'
 import { databaseStatus, type DatabaseStatus } from './db/migrations'
 import type { Database } from './db/pool'
 import {
@@ -52,6 +52,7 @@ import { OwnershipError } from './ownership/provider'
 import type { FriendsReader } from './ownership/reader'
 import { PlayLaunchError, type PlayLaunchService } from './play/launch'
 import { PlaySessionError, type PlaySessionService } from './play/session'
+import { createPreviewGate, isPublicProbe, PREVIEW_CHALLENGE } from './previewGate'
 import { createRateLimiter, LIMITS, unlimited, type RateLimiter, type RateRule } from './rateLimit'
 import { buildSecurityHeaders } from './securityHeaders'
 import type { StaticFile, StaticSite } from './static'
@@ -200,12 +201,21 @@ interface PostRoute {
  * city's world, see `world/store.ts`).
  */
 export function createApp(deps: AppDeps): RequestListener {
-  const { config, log, city = null, site = null, auth = null, friends = null, activation = null, properties = null, playLaunch = null, playSessions = null } = deps
+  const { config, log, city = null, site = null, playLaunch = null, playSessions = null } = deps
+  // HOSTED PREVIEW: the Play game only. No wallet sign-in, owned-Friends read or activation, whatever the caller built:
+  // their routes answer as they do without a database (`auth_unavailable`, anonymous, `activation_disabled`).
+  const walletSurface = config.hostedPreview === null
+  const auth = walletSurface ? (deps.auth ?? null) : null
+  const friends = walletSurface ? (deps.friends ?? null) : null
+  const activation = walletSurface ? (deps.activation ?? null) : null
+  const properties = walletSurface ? (deps.properties ?? null) : null
+  const gate = config.hostedPreview ? createPreviewGate(config.hostedPreview) : null
   // Local mode, and the rehearsal file, or the rehearsal routes do not exist.
   const rehearsal = config.mode === 'local' && playSessions ? (deps.rehearsal ?? null) : null
-  const cookie = sessionCookie(config.mode)
-  const playCookie = playSessionCookie(config.mode)
-  const security = buildSecurityHeaders(config)
+  const secure = secureTransport(config)
+  const cookie = sessionCookie(config.mode, secure)
+  const playCookie = playSessionCookie(config.mode, secure)
+  const security = buildSecurityHeaders({ ...config, secure })
   const limiter = deps.limiter ?? (config.rateLimits ? createRateLimiter() : unlimited)
   /** Keys the client tag in the request log. Random per process, so a tag cannot be turned back into an address. */
   const tagKey = randomBytes(32)
@@ -697,6 +707,22 @@ export function createApp(deps: AppDeps): RequestListener {
     return sendDocument(req, res, site.index)
   }
 
+  /**
+   * THE HOSTED PREVIEW GATE, before any route is looked at: true when the request may go on. A refusal is the same 401
+   * for a missing and a wrong credential, closes the connection unless the request was a plain read, and says nothing
+   * of what is behind it. Wrong credentials, never their absence, count against the client network's limit, so a
+   * browser asking for the first time is never limited and a correct credential is never refused for others' guesses.
+   */
+  function admitted(req: IncomingMessage, res: ServerResponse, path: string, client: ClientKey): boolean {
+    if (!gate || isPublicProbe(req.method, path)) return true
+    const verdict = gate.check(req)
+    if (verdict === 'allowed') return true
+    const read = req.method === 'GET' || req.method === 'HEAD'
+    if (verdict === 'invalid' && !withinClientLimit(res, 'preview-access', client, LIMITS.previewAccess.client, !read)) return false
+    send(res, 401, { error: 'preview_access_required' }, { 'www-authenticate': PREVIEW_CHALLENGE, ...(read ? {} : { connection: 'close' }) })
+    return false
+  }
+
   return (req, res) => {
     const started = performance.now()
     // Before anything can answer: every response carries the restrictive policy unless it is the app shell.
@@ -706,7 +732,11 @@ export function createApp(deps: AppDeps): RequestListener {
     try {
       path = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
     } catch {
-      return send(res, 400, { error: 'bad_request' })
+      return send(res, 400, { error: 'bad_request' }, gate ? { connection: 'close' } : {})
+    }
+    if (!admitted(req, res, path, client)) {
+      log.info('request', { method: req.method, path, status: res.statusCode, ms: Math.round(performance.now() - started), client: clientTag(client), clientSource: client.source })
+      return
     }
     route(req, res, path, client)
       .catch((err: unknown) => {

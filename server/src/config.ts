@@ -5,6 +5,11 @@
  * - `local`      a developer machine; the database is optional.
  * - `staging`    the shared, non-canonical environment; the database is required.
  * - `production` the canonical city; the database is required.
+ *
+ * LOCAL_HOSTED_PREVIEW=true is not a mode: it is a profile of `local` for one private, internet-reachable
+ * preview of the Districts Play game (`hosted-preview/README.md`). It forces the deployed transport rules
+ * (https origin, Railway proxy trust, Secure `__Host-` cookies, HSTS, rate limits) and an access gate, and
+ * refuses everything a public local process must not have (`readHostedPreview`).
  */
 import { TRUSTED_PROXIES, type TrustedProxy } from './clientKey'
 import { PLAY_GAME_KEY, RARE_FRIENDS_CHAIN, type PlayEnvironment } from './engine'
@@ -58,6 +63,20 @@ export interface ServerConfig {
    * It lists TEST NFTs per Discord player: rehearsal data, never verified holdings.
    */
   localRehearsalFile: string | null
+  /**
+   * The HOSTED PREVIEW profile (LOCAL_HOSTED_PREVIEW=true), or null. When set, every request but the two
+   * health probes must pass the preview access gate (`previewGate.ts`) before it is routed, and this local
+   * process behaves on the wire as a deployed one does. It authorizes nothing in the game: a play session is
+   * still the only game authority.
+   */
+  hostedPreview: HostedPreviewConfig | null
+}
+
+export interface HostedPreviewConfig {
+  /** The one HTTP Basic user name the gate accepts. Not a secret, but never logged. */
+  accessUser: string
+  /** SHA-256 of the gate password, from PREVIEW_ACCESS_PASSWORD_SHA256. The password itself is never configured. */
+  accessPasswordSha256: Buffer
 }
 
 /**
@@ -250,9 +269,9 @@ const MAX_HSTS_SECONDS = 2 * 365 * DAY_SECONDS
  * How long a browser insists on https:// for this host. Production starts at one day, so a
  * mistake is short-lived, and is raised with HSTS_MAX_AGE once it has held.
  */
-function readHstsMaxAge(env: Record<string, string | undefined>, mode: AppMode): number {
+function readHstsMaxAge(env: Record<string, string | undefined>, mode: AppMode, hostedPreview: boolean): number {
   const raw = clean(env.HSTS_MAX_AGE)
-  if (raw === undefined) return mode === 'production' ? DAY_SECONDS : mode === 'staging' ? 365 * DAY_SECONDS : 0
+  if (raw === undefined) return mode === 'production' ? DAY_SECONDS : mode === 'staging' || hostedPreview ? 365 * DAY_SECONDS : 0
   const seconds = Number(raw)
   if (!/^\d+$/.test(raw) || seconds > MAX_HSTS_SECONDS) throw new ConfigError(`HSTS_MAX_AGE must be a whole number of seconds between 0 and ${MAX_HSTS_SECONDS}.`)
   return seconds
@@ -318,16 +337,83 @@ function refuseTicketTtl(env: Record<string, string | undefined>, rehearsal: str
     throw new ConfigError(`District tickets last exactly ${LOCKED_TICKET_LEASE_SECONDS} seconds (locked policy D2); LOCAL_DISTRICT_TICKET_TTL_SECONDS cannot change that. Unset it.`)
 }
 
+/** Exactly `true` or `false`, off when unset, like ACTIVATION_ENABLED: a public profile is never switched by a guess. */
+function readHostedPreviewFlag(env: Record<string, string | undefined>): boolean {
+  const raw = clean(env.LOCAL_HOSTED_PREVIEW)
+  if (raw === undefined || raw === 'false') return false
+  if (raw === 'true') return true
+  throw new ConfigError('LOCAL_HOSTED_PREVIEW must be true or false.')
+}
+
+/** Environment variables only Railway sets. A process that sees one is reachable from the internet. */
+const RAILWAY_MARKERS = ['RAILWAY_ENVIRONMENT_ID', 'RAILWAY_PROJECT_ID', 'RAILWAY_SERVICE_ID'] as const
+const PREVIEW_ACCESS_VARIABLES = ['PREVIEW_ACCESS_USER', 'PREVIEW_ACCESS_PASSWORD_SHA256', 'PREVIEW_ACCESS_PASSWORD'] as const
+const ACCESS_USER = /^[A-Za-z0-9._-]{1,64}$/
+const SHA256_HEX = /^[0-9a-f]{64}$/
+/** SHA-256 of the empty string: a gate whose password is nothing. */
+const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost'])
+
+/**
+ * The HOSTED PREVIEW profile. Off, it may leave no trace: a gate variable without the flag would be a gate that is not
+ * there, and APP_MODE=local on Railway without the flag would be a developer process on the internet. On, every rule
+ * below is checked against what the rest of the configuration already decided, so a contradiction stops start-up
+ * instead of being resolved either way. The database stamp is checked again at start-up (`preview.ts`), and none of
+ * these rules depends on it.
+ */
+const previewRefusal = (rule: string) => new ConfigError(`LOCAL_HOSTED_PREVIEW=true: ${rule}`)
+
+/** The profile is a local one: the rehearsal writes it serves exist only in local mode, on a database stamped local. Checked first. */
+function refuseUnstatedPreviewMode(env: Record<string, string | undefined>, previewFlag: boolean): void {
+  if (previewFlag && clean(env.APP_MODE) !== 'local') throw previewRefusal('APP_MODE must be set to local (the profile is of local mode; a dedicated mode needs its own audited design).')
+}
+
+function readHostedPreview(env: Record<string, string | undefined>, base: Omit<ServerConfig, 'hostedPreview'>): HostedPreviewConfig | null {
+  if (!readHostedPreviewFlag(env)) {
+    const stray = PREVIEW_ACCESS_VARIABLES.find((name) => clean(env[name]) !== undefined)
+    if (stray) throw new ConfigError(`${stray} is set but LOCAL_HOSTED_PREVIEW is not true: the preview access gate is only ever on with the hosted preview profile.`)
+    if (base.mode === 'local' && RAILWAY_MARKERS.some((name) => clean(env[name]) !== undefined))
+      throw new ConfigError('APP_MODE=local is running on Railway: a local process reachable from the internet must use LOCAL_HOSTED_PREVIEW=true, or use APP_MODE=staging or production.')
+    return null
+  }
+  const refuse = previewRefusal
+  if (clean(env.PUBLIC_ORIGIN) === undefined || !base.publicOrigin.startsWith('https://')) throw refuse('PUBLIC_ORIGIN must be set to the preview\'s https:// origin.')
+  if (clean(env.TRUSTED_PROXY) !== 'railway') throw refuse('TRUSTED_PROXY must be railway: the preview is reached only through Railway\'s edge, which reports the client in X-Real-IP.')
+  if (!base.rateLimits) throw refuse('RATE_LIMITS must be on.')
+  if (base.hstsMaxAge === 0) throw refuse('HSTS_MAX_AGE must be greater than 0.')
+  if (base.frameAncestors.length > 0) throw refuse('FRAME_ANCESTORS is not supported: the preview is opened directly, never framed.')
+  if (base.activationEnabled) throw refuse('ACTIVATION_ENABLED must not be true: permanent Friend activation never runs in a preview.')
+  // Legacy wallet-fixture ownership (B) is a different thing from the rehearsal file's synthetic NFT controllers (A), which the preview needs.
+  if (base.ownership === 'fixture') throw refuse('OWNERSHIP_PROVIDER=fixture is refused: legacy wallet-fixture authentication stays off in a preview.')
+  if (!base.play) throw refuse('PLAY_API_URL and PLAY_SERVICE_CREDENTIAL must name a DEV or TEST Proofy Play.')
+  const playUrl = new URL(base.play.apiUrl)
+  // Railway's private network (`*.railway.internal`) is not the internet; a loopback Play is for running the profile on one machine.
+  if (playUrl.protocol !== 'https:' && !playUrl.hostname.endsWith('.railway.internal') && !LOOPBACK_HOSTS.has(playUrl.hostname))
+    throw refuse('PLAY_API_URL must be https://, or http:// only to a *.railway.internal or loopback host.')
+  if (!base.localRehearsalFile) throw refuse('LOCAL_PROPERTY_REHEARSAL_FILE must name the synthetic preview world (hosted-preview/).')
+  if (clean(env.PREVIEW_ACCESS_PASSWORD) !== undefined) throw refuse('PREVIEW_ACCESS_PASSWORD is refused: configure only its SHA-256, PREVIEW_ACCESS_PASSWORD_SHA256, never the password.')
+  const accessUser = clean(env.PREVIEW_ACCESS_USER)
+  const hash = clean(env.PREVIEW_ACCESS_PASSWORD_SHA256)?.toLowerCase()
+  if (accessUser === undefined || hash === undefined) throw refuse('PREVIEW_ACCESS_USER and PREVIEW_ACCESS_PASSWORD_SHA256 must both be set: the preview never runs without its access gate.')
+  if (!ACCESS_USER.test(accessUser)) throw refuse('PREVIEW_ACCESS_USER must be 1-64 letters, digits, dots, dashes or underscores.')
+  // Never echoed: a hash of a weak password is as good as the password.
+  if (!SHA256_HEX.test(hash) || hash === EMPTY_SHA256) throw refuse('PREVIEW_ACCESS_PASSWORD_SHA256 must be the 64-hex-digit SHA-256 of a non-empty, randomly generated password.')
+  return { accessUser, accessPasswordSha256: Buffer.from(hash, 'hex') }
+}
+
 export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
   const mode = readMode(env)
+  const previewFlag = readHostedPreviewFlag(env)
+  refuseUnstatedPreviewMode(env, previewFlag)
   const port = readPort(env)
-  const host = clean(env.HOST) ?? (mode === 'local' ? '127.0.0.1' : '0.0.0.0')
+  // A preview is reached through Railway's edge, so it listens on every interface, as a deployed mode does.
+  const host = clean(env.HOST) ?? (mode === 'local' && !previewFlag ? '127.0.0.1' : '0.0.0.0')
   const databaseUrl = readDatabaseUrl(env, mode)
   const play = readPlay(env, mode)
   if (play && !databaseUrl) throw new ConfigError('PLAY_API_URL needs DATABASE_URL: a Play launch opens the installation\'s persistent city.')
   const localRehearsalFile = readLocalRehearsal(env, mode, play)
   refuseTicketTtl(env, localRehearsalFile)
-  return {
+  const base: Omit<ServerConfig, 'hostedPreview'> = {
     mode,
     port,
     host,
@@ -339,9 +425,16 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
     trustedProxy: readTrustedProxy(env, mode),
     rateLimits: readRateLimits(env, mode),
     frameAncestors: readFrameAncestors(env),
-    hstsMaxAge: readHstsMaxAge(env, mode),
+    hstsMaxAge: readHstsMaxAge(env, mode, previewFlag),
     activationEnabled: readActivationEnabled(env),
     play,
     localRehearsalFile,
   }
+  return { ...base, hostedPreview: readHostedPreview(env, base) }
 }
+
+/**
+ * Whether browsers reach this process over https://, and so get Secure `__Host-` cookies, HSTS and
+ * upgrade-insecure-requests: every deployed mode, and a local process in the hosted preview profile.
+ */
+export const secureTransport = (config: Pick<ServerConfig, 'mode' | 'hostedPreview'>): boolean => config.mode !== 'local' || config.hostedPreview !== null

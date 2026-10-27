@@ -61,8 +61,14 @@ async function listFiles(root: string, prefix = ''): Promise<string[]> {
   return out
 }
 
-/** Load the site from `dir`. Returns null when there is no built client there. */
-export async function loadStaticSite(dir: string): Promise<StaticSite | null> {
+/**
+ * Load the site from `dir`. Returns null when there is no built client there.
+ *
+ * `privateCache`: the site is behind an access gate (the hosted preview), so no shared cache may keep a copy.
+ * `public` would let one store a response to a request that carried credentials; `private` keeps it in the browser.
+ */
+export async function loadStaticSite(dir: string, options: { privateCache?: boolean } = {}): Promise<StaticSite | null> {
+  const scope = options.privateCache ? 'private' : 'public'
   let paths: string[]
   try {
     paths = await listFiles(dir)
@@ -80,7 +86,7 @@ export async function loadStaticSite(dir: string): Promise<StaticSite | null> {
       body,
       gzip: COMPRESSIBLE.has(ext) && body.length > 1_024 ? gzipSync(body) : null,
       contentType: CONTENT_TYPES[ext] ?? 'application/octet-stream',
-      cacheControl: path === '/index.html' ? 'no-cache' : HASHED_ASSET.test(path) ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
+      cacheControl: path === '/index.html' ? (options.privateCache ? 'private, no-cache' : 'no-cache') : HASHED_ASSET.test(path) ? `${scope}, max-age=31536000, immutable` : `${scope}, max-age=3600`,
       etag: `"${createHash('sha256').update(body).digest('base64url').slice(0, 27)}"`,
     })
   }

@@ -24,12 +24,16 @@ export interface SecurityHeaderOptions {
   frameAncestors: readonly string[]
   /** `Strict-Transport-Security` lifetime in seconds. Not sent in local mode. */
   hstsMaxAge: number
+  /** Reached over https:// although the mode is local (the hosted preview profile): the deployed rules apply. */
+  secure?: boolean
 }
+
+const isSecure = (options: Pick<SecurityHeaderOptions, 'mode' | 'secure'>) => options.secure ?? options.mode !== 'local'
 
 export const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=()'
 
 /** The app shell's Content-Security-Policy. */
-export function documentCsp(options: Pick<SecurityHeaderOptions, 'mode' | 'frameAncestors'>): string {
+export function documentCsp(options: Pick<SecurityHeaderOptions, 'mode' | 'frameAncestors' | 'secure'>): string {
   const directives = [
     "default-src 'self'",
     "script-src 'self'",
@@ -45,7 +49,7 @@ export function documentCsp(options: Pick<SecurityHeaderOptions, 'mode' | 'frame
     ["frame-ancestors 'self'", ...options.frameAncestors].join(' '),
   ]
   // Local mode is served over plain http://, where upgrading every request to https:// would break the page.
-  if (options.mode !== 'local') directives.push('upgrade-insecure-requests')
+  if (isSecure(options)) directives.push('upgrade-insecure-requests')
   return directives.join('; ')
 }
 
@@ -60,7 +64,7 @@ export function buildSecurityHeaders(options: SecurityHeaderOptions): SecurityHe
   }
   // HSTS over plain http is ignored by browsers, and a developer machine must stay reachable on http://.
   // No includeSubDomains and no preload: both commit hosts this service does not control.
-  if (options.mode !== 'local') common['strict-transport-security'] = `max-age=${options.hstsMaxAge}`
+  if (isSecure(options)) common['strict-transport-security'] = `max-age=${options.hstsMaxAge}`
 
   const document: Record<string, string> = { ...common, 'content-security-policy': documentCsp(options) }
   // X-Frame-Options cannot name an allowed parent, so it is sent only while there is none to allow.

@@ -1,0 +1,63 @@
+{
+  "cityName": "Preview Harbor",
+  "brand": {
+    "name": "Districts Preview (synthetic)",
+    "logo": "/brand-media/samples/harborlight-logo.svg"
+  },
+  "capital": {
+    "name": "Preview Hall",
+    "crest": "/brand-media/samples/harborlight-logo.svg"
+  },
+  "collections": [
+    {
+      "key": "preview-keepers",
+      "chain": "eip155:8453",
+      "contract": "0x000000000000000000000000000000000000d101",
+      "displayName": "Preview Keepers"
+    },
+    {
+      "key": "preview-pass",
+      "chain": "eip155:1",
+      "contract": "0x000000000000000000000000000000000000d102",
+      "displayName": "Preview Pass"
+    }
+  ],
+  "districts": [
+    {
+      "key": "lantern-quay",
+      "name": "Lantern Quay",
+      "accent": "#ff9f43",
+      "monument": {
+        "collection": "preview-keepers",
+        "tokenId": "1004",
+        "artwork": "/brand-media/samples/harbor-keeper-1004.svg"
+      },
+      "proofyRule": null
+    },
+    {
+      "key": "tidewater",
+      "name": "Tidewater",
+      "accent": "#2ec4b6",
+      "monument": {
+        "collection": "preview-pass",
+        "tokenId": "2002",
+        "artwork": "/brand-media/samples/tide-pass-2002.svg"
+      },
+      "proofyRule": null
+    },
+    {
+      "key": "saltmarsh",
+      "name": "Saltmarsh",
+      "accent": "#7bd389",
+      "monument": null,
+      "proofyRule": null
+    },
+    {
+      "key": "compass-row",
+      "name": "Compass Row",
+      "accent": "#5aa9ff",
+      "monument": null,
+      "proofyRule": null
+    }
+  ]
+}

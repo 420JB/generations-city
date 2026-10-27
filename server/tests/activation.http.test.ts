@@ -287,6 +287,7 @@ describe('activation routes: rate limits', () => {
       playCity: { client: [{ limit: 60, windowMs: 60_000 }], user: [{ limit: 30, windowMs: 60_000 }] },
       playRehearsal: { client: [{ limit: 30, windowMs: 60_000 }], user: [{ limit: 12, windowMs: 60_000 }] },
       playRehearsalTicket: { client: [{ limit: 60, windowMs: 60_000 }], user: [{ limit: 30, windowMs: 60_000 }] },
+      previewAccess: { client: [{ limit: 20, windowMs: 60_000 }, { limit: 120, windowMs: 3_600_000 }] },
     })
   })
 

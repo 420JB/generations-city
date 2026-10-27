@@ -138,4 +138,6 @@ export const LIMITS = {
   playRehearsal: { client: [perMinute(30)], user: [perMinute(12)] },
   /** Its district tickets (local deployments only): entering, selecting an NFT, leaving, reading. Short transactions, no Play read beyond requireActor's. */
   playRehearsalTicket: { client: [perMinute(60)], user: [perMinute(30)] },
+  /** Wrong hosted preview access credentials (LOCAL_HOSTED_PREVIEW only), per client network. A correct one is never counted. */
+  previewAccess: { client: [perMinute(20), perHour(120)] },
 } as const satisfies Record<string, { client: readonly RateRule[]; user?: readonly RateRule[] }>

@@ -17,6 +17,7 @@
     "build:server": "tsc -p server/tsconfig.json && vite build --config server/vite.config.ts",
     "build:app:client": "tsc -b && VITE_APP_MODE=server vite build --outDir dist-server/public --emptyOutDir",
     "build:app": "npm run build:server && npm run build:app:client",
+    "build:preview": "npm run build:server && tsc -b && vite build --config proofy-city-play/vite.config.ts --outDir ../dist-server/play --emptyOutDir",
     "start:server": "node dist-server/main.js",
     "db:migrate": "node dist-server/migrate.js",
     "db:migrate:dev": "tsx --env-file-if-exists=.env server/src/migrate-cli.ts",
