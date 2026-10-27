@@ -28,7 +28,7 @@ import { keeper, player, ticketWorld } from './ticketHarness'
  *
  * 0016 rewrites no row and rolls back whole when it cannot finish; v1 designs read and draw exactly as before; a v1 save
  * already recorded replays its original receipt, one never recorded is refused (`design_retired`), and the database takes
- * no new v1 row; a save of the current catalog (v2 when E4B shipped; v3, after 0017, since P1-C2-E4C) inherits the
+ * no new v1 row; a save of the current catalog (v2 when E4B shipped; v3, after 0017, since P1-C2-E4C; v4, after 0018, since P1-E6) inherits the
  * retained choices, the new controller may make it and the former one may not; the standard treatments are no redesign;
  * nothing else moves; installations stay apart; a restart and city:verify agree. The 0017 upgrade of v2 designs is in
  * `propertyDesignStreet.db.test.ts`.
@@ -62,6 +62,7 @@ async function refusalOf(work: Promise<unknown>): Promise<string> {
 const V1 = 'architect-design-v1'
 const V2 = 'architect-design-v2'
 const V3 = 'architect-design-v3'
+const V4 = 'architect-design-v4'
 /** Every table a design must leave exactly as it was. */
 const UNTOUCHED = ['city', 'city_events', 'worlds', 'world_properties', 'world_property_constructions', 'world_property_control_eras', 'world_test_credit_entries', 'world_geometry_freezes', 'world_district_tickets', 'world_config_adoptions']
 
@@ -192,10 +193,10 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     // The guard 0016 installed takes no new v1 row (the v1 receipts are answered below, by this build's store).
     await expect(legacy(ada, pC.id, 'brick', 'spire', 2)).rejects.toThrow(/architect-design-v2: architect-design-v1 is read only/)
 
-    // This build's store reads the columns 0017 adds (a deployment migrates before it serves), so the database takes 0017
-    // next, and every row is still exactly as E4A wrote it.
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([17])
-    expect(await dump(names, "to_jsonb(x) - 'windows' - 'lighting' - 'entrance' - 'landscaping'")).toEqual(before)
+    // This build's store reads the columns 0017 and 0018 add (a deployment migrates before it serves), so the database takes
+    // them next, and every row is still exactly as E4A wrote it.
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([17, 18])
+    expect(await dump(names, "to_jsonb(x) - 'windows' - 'lighting' - 'entrance' - 'landscaping' - 'color'")).toEqual(before)
 
     // C. Read as v1, exactly, and drawn exactly as E4A drew them: the facade and roof over the default architecture, no floodlights.
     const designs = createWorldDesignStore(t.db, { mode: 'local', log: silentLogger })
@@ -251,7 +252,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     await expect(legacy(ada, pC.id, 'brick', 'spire', 2)).rejects.toThrow(/architect-design-v1 is read only/)
     const v1Rows = await dump(['world_property_designs'], 'to_jsonb(x)')
 
-    // E. Saves of the current catalog (v3, since 0017). The standard treatments on a v1 design are that design: no revision,
+    // E. Saves of the current catalog (v4, since 0018). The standard treatments on a v1 design are that design: no revision,
     // no accidental redesign.
     const snapshot = async () => {
       const out: Record<string, string[]> = {}
@@ -260,18 +261,18 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design details (migration 0016) aga
     }
     const untouched = await snapshot()
     const save = (o: OpenedPlaySession, propertyId: string, design: { facade: string; roof: string; windows: string; lighting: string }, baseRevision: number) =>
-      designer.save(o.token, env.actorOf(o), { propertyId, actionId: randomUUID(), baseRevision, catalog: V3, ...design, entrance: 'standard', landscaping: 'standard' })
+      designer.save(o.token, env.actorOf(o), { propertyId, actionId: randomUUID(), baseRevision, catalog: V4, ...design, entrance: 'standard', landscaping: 'standard', color: 'natural' })
     expect(await refusalOf(save(ada, pC.id, { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard' }, 1))).toBe('design_unchanged')
     expect(await dump(['world_property_designs'], 'to_jsonb(x)')).toEqual(v1Rows)
     const c2 = await save(ada, pC.id, { facade: 'copper', roof: 'dome', windows: 'arched', lighting: 'warm' }, 1)
-    expect(c2).toMatchObject({ fresh: true, design: { revision: 2, catalog: V3, facade: 'copper', roof: 'dome', windows: 'arched', lighting: 'warm' } })
+    expect(c2).toMatchObject({ fresh: true, design: { revision: 2, catalog: V4, facade: 'copper', roof: 'dome', windows: 'arched', lighting: 'warm' } })
     // F. The new controller inherits D's design and may change it; the former controller (and founder), and a patron, may not.
     expect(await overview(bea, pD.id)).toMatchObject({ control: 'viewer', saved: { revision: 2, catalog: V1, facade: 'limestone', roof: 'spire' } })
     expect(await refusalOf(save(ada, pD.id, { facade: 'limestone', roof: 'spire', windows: 'ribbon', lighting: 'cool' }, 2))).toBe('not_current_controller')
     const cy = await env.open(INSTALLATION_A, player(3, 'Cy'))
     expect(await refusalOf(save(cy, pD.id, { facade: 'limestone', roof: 'spire', windows: 'ribbon', lighting: 'cool' }, 2))).toBe('not_current_controller')
     const d3 = await save(bea, pD.id, { facade: 'limestone', roof: 'spire', windows: 'lattice', lighting: 'cool' }, 2)
-    expect(d3.design).toMatchObject({ revision: 3, catalog: V3, windows: 'lattice', lighting: 'cool', designer: { discordUserId: BEA.discordUserId } })
+    expect(d3.design).toMatchObject({ revision: 3, catalog: V4, windows: 'lattice', lighting: 'cool', designer: { discordUserId: BEA.discordUserId } })
     // B's facade-only v1 design, on a Tier 0 foundation: a later catalog adds windows and lighting it keeps until Tier 1.
     expect((await save(ada, pB.id, { facade: 'brick', roof: 'flat', windows: 'ribbon', lighting: 'standard' }, 1)).design).toMatchObject({ revision: 2 })
     // Nothing else moved: no credit, construction, tier, era, founder, ticket, sequence or event.

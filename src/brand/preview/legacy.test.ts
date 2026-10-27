@@ -85,10 +85,10 @@ const legacy: RehearsalPropertyLegacy = {
   unattributed: { patronUnits: 50, actions: 1 },
   contributors: { owners: 2, patrons: 2 },
   designs: [
-    { revision: 4, catalog: 'architect-design-v3', facade: 'jade', roof: 'terrace', windows: 'grid', lighting: 'standard', entrance: 'portico', landscaping: 'courtyard', by: 'other', savedBy: 'current-controller', atCitySequence: 12, at: AT },
-    { revision: 3, catalog: 'architect-design-v3', facade: 'jade', roof: 'terrace', windows: 'grid', lighting: 'standard', entrance: 'portico', landscaping: 'garden', by: 'viewer', savedBy: 'earlier-controller', atCitySequence: 9, at: AT },
-    { revision: 2, catalog: 'architect-design-v2', facade: 'copper', roof: 'spire', windows: 'arched', lighting: 'warm', entrance: null, landscaping: null, by: 'viewer', savedBy: 'earlier-controller', atCitySequence: 8, at: AT },
-    { revision: 1, catalog: 'architect-design-v1', facade: 'brick', roof: 'dome', windows: null, lighting: null, entrance: null, landscaping: null, by: 'viewer', savedBy: 'earlier-controller', atCitySequence: 7, at: AT },
+    { revision: 4, catalog: 'architect-design-v3', facade: 'jade', roof: 'terrace', windows: 'grid', lighting: 'standard', entrance: 'portico', landscaping: 'courtyard', color: null, by: 'other', savedBy: 'current-controller', atCitySequence: 12, at: AT },
+    { revision: 3, catalog: 'architect-design-v3', facade: 'jade', roof: 'terrace', windows: 'grid', lighting: 'standard', entrance: 'portico', landscaping: 'garden', color: null, by: 'viewer', savedBy: 'earlier-controller', atCitySequence: 9, at: AT },
+    { revision: 2, catalog: 'architect-design-v2', facade: 'copper', roof: 'spire', windows: 'arched', lighting: 'warm', entrance: null, landscaping: null, color: null, by: 'viewer', savedBy: 'earlier-controller', atCitySequence: 8, at: AT },
+    { revision: 1, catalog: 'architect-design-v1', facade: 'brick', roof: 'dome', windows: null, lighting: null, entrance: null, landscaping: null, color: null, by: 'viewer', savedBy: 'earlier-controller', atCitySequence: 7, at: AT },
   ],
   designCount: 4,
 }
@@ -208,7 +208,9 @@ describe('the property legacy is said as the server answered it (P1-C2-E5A)', ()
       ['2', 'architect-design-v2', 'viewer', 'earlier-controller'],
       ['1', 'architect-design-v1', 'viewer', 'earlier-controller'],
     ])
-    expect(said).toContain('Revision 4 · saved design · Jade · Roof terrace · Standard grid · Standard lighting · Grand portico · Stone courtyard Saved by the player named test controller now, while test controller')
+    expect(said).toContain(
+      'Revision 4 · saved design · Jade · Roof terrace · Standard grid · Standard lighting · Grand portico · Stone courtyard (chosen before exterior colors could be chosen: its facade material’s own color) Saved by the player named test controller now, while test controller',
+    )
     expect([...html.matchAll(/data-testid="legacy-design-by">([^<]+)</g)].map((m) => m[1])).toEqual([
       'Saved by the player named test controller now, while test controller',
       'Saved by you while test controller',
@@ -434,8 +436,8 @@ describe('the Architect portfolio groups the server\'s record by relationship, n
     ],
     propertyCount: 3,
   }
-  const { facade, roof, windows, lighting, entrance, landscaping } = legacy.designs[0]
-  const designs: Record<string, RehearsalCityDesign> = { [ids[2]]: { propertyId: pid(ids[2]), buildingId: ids[2], revision: 4, catalog: 'architect-design-v3', facade, roof, windows, lighting, entrance, landscaping } }
+  const { facade, roof, windows, lighting, entrance, landscaping, color } = legacy.designs[0]
+  const designs: Record<string, RehearsalCityDesign> = { [ids[2]]: { propertyId: pid(ids[2]), buildingId: ids[2], revision: 4, catalog: 'architect-design-v3', facade, roof, windows, lighting, entrance, landscaping, color } }
   const render = (v: RehearsalArchitectView, d: Record<string, RehearsalCityDesign> | null = designs) =>
     renderToStaticMarkup(createElement(ArchitectRecord, { city: loaded, view: v, designs: d, onView: () => {}, onDesign: () => {}, onLegacy: () => {} }))
 

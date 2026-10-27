@@ -28,9 +28,10 @@ import { keeper, player, ticketWorld } from './ticketHarness'
  *
  * 0017 rewrites no row (the same tuples, the same storage) and rolls back whole when it cannot finish; v1 and v2 designs read
  * and draw exactly as before; a v2 save already recorded replays its original receipt, one never recorded is refused
- * (`design_retired`), and the database takes no new v2 row; a v3 save inherits the retained choices, the new controller may
- * make it and the founder, a patron and the former controller may not; the standard entrance and grounds are no redesign;
- * nothing else moves; installations stay apart; a restart and city:verify agree.
+ * (`design_retired`), and the database takes no new v2 row; a save of the current catalog (v3 when E4C shipped; v4, after
+ * 0018, since P1-E6) inherits the retained choices, the new controller may make it and the founder, a patron and the former
+ * controller may not; the standard entrance and grounds are no redesign; nothing else moves; installations stay apart; a
+ * restart and city:verify agree. The 0018 upgrade of v3 designs is in `propertyDesignColor.db.test.ts`.
  */
 
 function testAuthority() {
@@ -61,6 +62,7 @@ async function refusalOf(work: Promise<unknown>): Promise<string> {
 const V1 = 'architect-design-v1'
 const V2 = 'architect-design-v2'
 const V3 = 'architect-design-v3'
+const V4 = 'architect-design-v4'
 /** Every table a design must leave exactly as it was. */
 const UNTOUCHED = ['city', 'city_events', 'worlds', 'world_properties', 'world_property_constructions', 'world_property_control_eras', 'world_test_credit_entries', 'world_geometry_freezes', 'world_district_tickets', 'world_config_adoptions']
 type Details = { facade: string; roof: string; windows: string; lighting: string }
@@ -77,7 +79,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     return out
   }
 
-  it('27-31. 0017 upgrades a populated 0016 database without changing a design: v1 and v2 history is kept, replayed and drawn as before; v3 saves build on it', async () => {
+  it('27-31. 0017 upgrades a populated 0016 database without changing a design: v1 and v2 history is kept, replayed and drawn as before; later saves build on it', async () => {
     // A. A database as E4A left it (0015), with its v1 designs; then as E4B left it (0016), with its v2 designs.
     expect((await migrate(t.db, { dir: await through(15), environment: 'local' })).current).toBe(15)
     const env = await setup({ migrated: true })
@@ -207,7 +209,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     expect(await t.db.query("SELECT prosrc LIKE '%architect-design-v3%' AS v3 FROM pg_proc WHERE proname = 'world_property_designs_guard' AND pronamespace = current_schema()::regnamespace").then((r) => r.rows[0])).toEqual({ v3: false })
 
     // C. 0017 applies, once, as checked in.
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([17])
+    expect((await migrate(t.db, { dir: await through(17), environment: 'local' })).applied).toEqual([17])
     const shipped = (await loadMigrations(MIGRATIONS_DIR)).find((m) => m.version === 17)!
     expect(await one<{ name: string; checksum: string }>('SELECT name, checksum FROM schema_migrations WHERE version = 17')).toEqual({ name: 'architect_entrances_landscaping', checksum: shipped.checksum })
     expect(await columns()).toEqual([...columns16, 'entrance', 'landscaping'])
@@ -231,6 +233,11 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
       await writeFile(join(edited, name), `${await readFile(join(edited, name), 'utf8')}\n-- edited\n`)
       await expect(migrate(t.db, { dir: edited, environment: 'local' }), version).rejects.toThrow(new RegExp(`Migration ${Number(version)} \\(\\w+\\) was edited after it was applied`))
     }
+    // This build's store reads the column 0018 adds (a deployment migrates before it serves), so the database takes 0018
+    // next, and every row is still exactly as E4A and E4B wrote it.
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([18])
+    expect(await dump(names, "to_jsonb(x) - 'entrance' - 'landscaping' - 'color'")).toEqual(before)
+    expect(await tuples()).toEqual(tuplesBefore)
 
     // D. Read as v1 and v2, exactly, and drawn exactly as E4B drew them: no entrance or grounds of their own.
     const designs = createWorldDesignStore(t.db, { mode: 'local', log: silentLogger })
@@ -285,17 +292,19 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     })
     // Even by Ada, who no longer controls D: a replay is a receipt of what was saved, never a new save.
     expect((await v2Save(ada, pC.id, C_DESIGN, 0, cSaved)).design).toMatchObject({ revision: 1, catalog: V2 })
-    // Under a recorded id, nothing else: another choice, the same as v3 (even with the standard street level), or another player.
+    // Under a recorded id, nothing else: another choice, the same as v3 or v4 (even with the standard street level), or another player.
     expect(await refusalOf(v2Save(ada, pC.id, { ...C_DESIGN, lighting: 'cool' }, 0, cSaved))).toBe('action_conflict')
     expect(await refusalOf(designer.save(ada.token, env.actorOf(ada), { propertyId: pC.id, actionId: cSaved, baseRevision: 0, catalog: V3, ...C_DESIGN, entrance: 'standard', landscaping: 'standard' }))).toBe('action_conflict')
+    expect(await refusalOf(designer.save(ada.token, env.actorOf(ada), { propertyId: pC.id, actionId: cSaved, baseRevision: 0, catalog: V4, ...C_DESIGN, entrance: 'standard', landscaping: 'standard', color: 'natural' }))).toBe('action_conflict')
     const bea = await env.open(INSTALLATION_A, BEA)
     expect(await refusalOf(v2Save(bea, pD.id, D_DESIGN, 1, dSecond))).toBe('action_conflict')
-    // A v2 save that was never recorded is refused, never applied as a v3 design; and the database takes no new v2 row.
+    // A v2 save that was never recorded is refused, never applied as a later design; and the database takes no new v2 row.
     expect(await refusalOf(v2Save(ada, pC.id, { ...C_DESIGN, windows: 'ribbon' }, 1))).toBe('design_retired')
-    await expect(written(ada, pC.id, 2, { ...C_DESIGN, windows: 'ribbon' })).rejects.toThrow(/architect-design-v3: architect-design-v2 is read only/)
+    await expect(written(ada, pC.id, 2, { ...C_DESIGN, windows: 'ribbon' })).rejects.toThrow(/architect-design-v4: architect-design-v2 is read only/)
     const kept = await dump(['world_property_designs'])
 
-    // F. v3 saves. The standard entrance and grounds on a v2 design are that design: no revision, no accidental redesign.
+    // F. Saves of the current catalog (v4, since 0018). The standard entrance and grounds (and the material's own color) on a v2
+    // design are that design: no revision, no accidental redesign.
     const snapshot = async () => {
       const out: Record<string, string[]> = {}
       for (const table of UNTOUCHED) out[table] = (await t.db.query<{ r: string }>(`SELECT to_jsonb(x)::text AS r FROM ${table} x ORDER BY 1`)).rows.map((r) => r.r)
@@ -304,11 +313,11 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     const untouched = await snapshot()
     const sequence = await sequenceOf(ada.response.world.id)
     const save = (o: OpenedPlaySession, propertyId: string, design: Details & { entrance: string; landscaping: string }, baseRevision: number) =>
-      designer.save(o.token, env.actorOf(o), { propertyId, actionId: randomUUID(), baseRevision, catalog: V3, ...design })
+      designer.save(o.token, env.actorOf(o), { propertyId, actionId: randomUUID(), baseRevision, catalog: V4, color: 'natural', ...design })
     expect(await refusalOf(save(ada, pC.id, { ...C_DESIGN, entrance: 'standard', landscaping: 'standard' }, 1))).toBe('design_unchanged')
     expect(await dump(['world_property_designs'])).toEqual(kept)
     const c2 = await save(ada, pC.id, { ...C_DESIGN, entrance: 'portico', landscaping: 'garden' }, 1)
-    expect(c2).toMatchObject({ fresh: true, design: { revision: 2, catalog: V3, ...C_DESIGN, entrance: 'portico', landscaping: 'garden', atCitySequence: sequence } })
+    expect(c2).toMatchObject({ fresh: true, design: { revision: 2, catalog: V4, ...C_DESIGN, entrance: 'portico', landscaping: 'garden', color: 'natural', atCitySequence: sequence } })
     // 18-21. The new controller inherits D's whole design and history and may change it; the founder and former controller,
     // and a patron, may not.
     expect(await overview(bea, pD.id)).toMatchObject({ control: 'viewer', saved: { revision: 2, catalog: V2, ...D_DESIGN }, historyCount: 2, history: [{ by: 'other' }, { by: 'other' }] })
@@ -316,23 +325,23 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     expect(await refusalOf(save(cy, pD.id, { ...D_DESIGN, entrance: 'canopy', landscaping: 'courtyard' }, 2))).toBe('not_current_controller')
     expect(await refusalOf(save(cy, pC.id, { ...C_DESIGN, entrance: 'arched', landscaping: 'courtyard' }, 2))).toBe('not_current_controller')
     const d3 = await save(bea, pD.id, { ...D_DESIGN, entrance: 'canopy', landscaping: 'courtyard' }, 2)
-    expect(d3.design).toMatchObject({ revision: 3, catalog: V3, ...D_DESIGN, entrance: 'canopy', landscaping: 'courtyard', designer: { discordUserId: BEA.discordUserId } })
+    expect(d3.design).toMatchObject({ revision: 3, catalog: V4, ...D_DESIGN, entrance: 'canopy', landscaping: 'courtyard', designer: { discordUserId: BEA.discordUserId } })
     // Historical attribution stays: Ada designed revisions 1 and 2.
     expect((await overview(ada, pD.id)).history.map((h) => [h.revision, h.catalog, h.by])).toEqual([
-      [3, V3, 'other'],
+      [3, V4, 'other'],
       [2, V2, 'viewer'],
       [1, V1, 'viewer'],
     ])
-    // B's v1 design, on a Tier 0 foundation: a v3 entrance and landscaping are kept until Tier 1.
-    expect((await save(ada, pB.id, { facade: 'brick', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'arched', landscaping: 'garden' }, 1)).design).toMatchObject({ revision: 2, catalog: V3 })
+    // B's v1 design, on a Tier 0 foundation: an entrance and landscaping are kept until Tier 1.
+    expect((await save(ada, pB.id, { facade: 'brick', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'arched', landscaping: 'garden' }, 1)).design).toMatchObject({ revision: 2, catalog: V4 })
     // 29-31. Nothing else moved: no credit, construction, tier, era, founder, plot, NFT, ticket, sequence or event.
     expect(await snapshot()).toEqual(untouched)
     expect(await sequenceOf(ada.response.world.id)).toBe(sequence)
     // The v1 and v2 history is exactly as it was; only new revisions were appended.
     const after = (await dump(['world_property_designs'])).world_property_designs
-    expect(after.filter((r) => JSON.parse(r).catalog !== V3)).toEqual(kept.world_property_designs)
+    expect(after.filter((r) => JSON.parse(r).catalog !== V4)).toEqual(kept.world_property_designs)
     expect(after).toHaveLength(kept.world_property_designs.length + 3)
-    // A v2 replay still answers after v3 revisions, and still writes nothing.
+    // A v2 replay still answers after later revisions, and still writes nothing.
     expect((await v2Save(ada, pD.id, D_DESIGN, 1, dSecond)).design).toMatchObject({ revision: 2, catalog: V2 })
     expect((await dump(['world_property_designs'])).world_property_designs).toEqual(after)
 
@@ -364,9 +373,9 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     expect(verified.worlds!.find((x) => x.id === ada.response.world.id)).toMatchObject({ designs: 7, designedProperties: 3 })
   })
 
-  it('a clean database takes 0001 to 0017 in one go and saves a v3 design at once; the guard holds its new rules', async () => {
+  it('a clean database takes every migration in one go and saves a design of the current catalog at once; the guard still holds 0017\'s entrance and landscaping rules', async () => {
     const env = await setup()
-    expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(17)
+    expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(18)
     const source = testAuthority()
     const designer = createDesignService({ sessions: env.sessions, store: createWorldDesignStore(t.db, { mode: 'local', log: silentLogger }), authority: source.authority })
     const ada = await env.open(INSTALLATION_A, ADA)
@@ -374,22 +383,24 @@ describe.skipIf(NO_TEST_DATABASE)('Architect entrances and landscaping (migratio
     const city = await env.sessions.city(await env.sessions.session(ada.token))
     const p = (await env.activate(ada, ticket, keeper(1), city.world.districts.find((d) => d.key === ticket.districtKey)!.candidates.plotIds[0])).property
     source.control(GUILD_A, keeper(1), ADA)
-    const saved = await designer.save(ada.token, env.actorOf(ada), { propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: V3, facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'canopy', landscaping: 'courtyard' })
-    expect(saved.design).toMatchObject({ revision: 1, catalog: V3, entrance: 'canopy', landscaping: 'courtyard' })
-    // The service never saves a v1 or v2 design now, and the database refuses one written directly.
+    const saved = await designer.save(ada.token, env.actorOf(ada), { propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: V4, facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'canopy', landscaping: 'courtyard', color: 'natural' })
+    expect(saved.design).toMatchObject({ revision: 1, catalog: V4, entrance: 'canopy', landscaping: 'courtyard' })
+    // The service never saves a v1, v2 or v3 design now, and the database refuses one written directly.
     expect(await refusalOf(designer.save(ada.token, env.actorOf(ada), { propertyId: p.id, actionId: randomUUID(), baseRevision: 1, catalog: V2, facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'warm' }))).toBe('design_retired')
+    expect(await refusalOf(designer.save(ada.token, env.actorOf(ada), { propertyId: p.id, actionId: randomUUID(), baseRevision: 1, catalog: V3, facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'warm', entrance: 'canopy', landscaping: 'courtyard' }))).toBe('design_retired')
     const row = await one<Record<string, unknown>>('SELECT * FROM world_property_designs WHERE property_id = $1', [p.id])
     const insert = (over: Record<string, unknown>) => {
       const r: Record<string, unknown> = { ...row, revision: 2, action_id: randomUUID(), ...over }
       return t.db.query(
-        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-        [r.world_id, r.city_id, r.city_instance_id, r.property_id, r.revision, r.action_id, r.catalog, r.facade, r.roof, r.windows, r.lighting, r.entrance, r.landscaping, r.designer_core_user_id, r.designer_discord_user_id, r.designed_in_play_session, r.authority, r.at_city_sequence],
+        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, color, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+        [r.world_id, r.city_id, r.city_instance_id, r.property_id, r.revision, r.action_id, r.catalog, r.facade, r.roof, r.windows, r.lighting, r.entrance, r.landscaping, r.color, r.designer_core_user_id, r.designer_discord_user_id, r.designed_in_play_session, r.authority, r.at_city_sequence],
       )
     }
-    await expect(insert({ catalog: V2, entrance: null, landscaping: null })).rejects.toThrow(/architect-design-v2 is read only/)
-    await expect(insert({ entrance: 'grand-portico' })).rejects.toThrow(/entrance and landscaping of a catalog this database knows/)
-    await expect(insert({ landscaping: 'none' })).rejects.toThrow(/entrance and landscaping of a catalog this database knows/)
+    await expect(insert({ catalog: V2, entrance: null, landscaping: null, color: null })).rejects.toThrow(/architect-design-v2 is read only/)
+    await expect(insert({ catalog: V3, color: null })).rejects.toThrow(/architect-design-v3 is read only/)
+    await expect(insert({ entrance: 'grand-portico' })).rejects.toThrow(/entrance, landscaping and color of a catalog this database knows/)
+    await expect(insert({ landscaping: 'none' })).rejects.toThrow(/entrance, landscaping and color of a catalog this database knows/)
     await insert({ entrance: 'portico', landscaping: 'garden' })
     expect((await t.db.query('SELECT revision, entrance, landscaping FROM world_property_designs WHERE property_id = $1 ORDER BY revision', [p.id])).rows).toEqual([
       { revision: 1, entrance: 'canopy', landscaping: 'courtyard' },

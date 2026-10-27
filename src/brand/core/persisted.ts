@@ -1,4 +1,4 @@
-import { DEFAULT_ARCHITECTURE } from '../../config/architecture'
+import { DEFAULT_ARCHITECTURE, EXTERIOR_COLORS } from '../../config/architecture'
 import { LANDSCAPE_MAX_SLOTS, TIER_THRESHOLDS } from '../../config/economy'
 import { MONUMENTS } from '../../config/monuments'
 import { capitalHolderIn, computeMonumentHoldersIn, tallestBuilding } from '../../game/competition'
@@ -30,10 +30,10 @@ import type { BrandBuilding, BrandCityState, SampleNft } from './sampleCity'
  *     they are all vacant, as with nothing built. Whether real construction will ever count is not
  *     decided here.
  *
- *   - A property's saved Architect design (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, `designs`, by building id) is drawn through
- *     the same art the renderer always reads: its facade finish, roof silhouette, windows and lighting replace the
- *     default architecture's, and its entrance and landscaping are drawn on its podium and paved lot; nothing else is
- *     (`withPropertyDesigns`). Tier, height, plot, district and the NFT's label stay the stored city's.
+ *   - A property's saved Architect design (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, P1-E6, `designs`, by building id) is drawn
+ *     through the same art the renderer always reads: its facade finish, roof silhouette, windows and lighting replace the
+ *     default architecture's, its entrance and landscaping are drawn on its podium and paved lot, and its exterior color
+ *     finishes its facade material; nothing else is (`withPropertyDesigns`). Tier, height, plot, district and the NFT's label stay the stored city's.
  *
  * The civic world (plaza, squares, monument pads, roads) is drawn from the configuration, so an
  * empty city is still a whole city.
@@ -121,20 +121,26 @@ const ENTRANCE_DRAWN: Readonly<Record<string, string>> = Object.freeze({ standar
 const LANDSCAPING_DRAWN: Readonly<Record<string, string>> = Object.freeze({ standard: 'none', garden: 'garden', courtyard: 'courtyard' })
 
 /**
+ * How the renderer draws each Architect exterior color (P1-E6): the named `EXTERIOR_COLORS` palette the facade material is
+ * finished in. `natural` is the material's own palette, exactly as every building was drawn before: no exterior key at all.
+ */
+const colorDrawn = (color: string): string | undefined | null => (color === 'natural' ? undefined : Object.hasOwn(EXTERIOR_COLORS, color) ? color : null)
+
+/**
  * A city's buildings with Architect designs applied (by building id): each designed building is a NEW object with that
- * facade, roof, windows, lighting, entrance and landscaping, every other building is the very object it was, so the
+ * facade, roof, windows, lighting, entrance, landscaping and exterior color, every other building is the very object it was, so the
  * renderer redraws only what changed (a preview of one choice redraws one building). A design is applied only when it is
  * exactly an appearance a catalog this build has draws (`isDrawableDesign`), and only to a building of the city; anything
- * else leaves the building as it was drawn. A building drawn with the standard treatments carries no floodlights and no
- * street level at all, exactly as before.
+ * else leaves the building as it was drawn. A building drawn with the standard treatments carries no floodlights, no
+ * street level and no exterior color at all, exactly as before.
  *
  * A Tier 0 foundation has no roof to draw, so its saved roof is drawn from Tier 1: until then the building keeps the
  * default's (the renderer places a building's label and hit area by its roof's height, even where it draws none). Its
  * windows, lighting, entrance and landscaping are applied, and drawn once it has storeys (Tier 1): a foundation has no
- * door and no finished grounds to show.
+ * door and no finished grounds to show. Its exterior color is drawn at once, on the foundation's facade, as its material is.
  */
 export function withPropertyDesigns<T extends Pick<BrandCityState, 'buildings'>>(state: T, designs: Readonly<Record<string, PropertyDesign>>): T {
-  const drawable = (d: PropertyDesign) => isDrawableDesign(d) && Object.hasOwn(LIGHTING_DRAWN, d.lighting) && Object.hasOwn(ENTRANCE_DRAWN, d.entrance) && Object.hasOwn(LANDSCAPING_DRAWN, d.landscaping)
+  const drawable = (d: PropertyDesign) => isDrawableDesign(d) && Object.hasOwn(LIGHTING_DRAWN, d.lighting) && Object.hasOwn(ENTRANCE_DRAWN, d.entrance) && Object.hasOwn(LANDSCAPING_DRAWN, d.landscaping) && colorDrawn(d.color) !== null
   const ids = Object.keys(designs).filter((id) => Object.hasOwn(state.buildings, id) && drawable(designs[id]))
   if (ids.length === 0) return state
   const buildings = { ...state.buildings }
@@ -147,14 +153,27 @@ export function withPropertyDesigns<T extends Pick<BrandCityState, 'buildings'>>
     const grounds = LANDSCAPING_DRAWN[designs[id].landscaping]
     // Only a street level other than the standard one is drawn as one: the standard door and bare paving are the building as it was.
     const street = entrance === DEFAULT_ARCHITECTURE.entrance && grounds === 'none' ? undefined : { entrance, grounds }
+    const exterior = colorDrawn(designs[id].color) ?? undefined
     const a = b.architecture
-    if (a.facade === facade && a.roof === roof && a.windows === windows && a.lighting === lighting && b.floodlights === floodlights && b.street?.entrance === street?.entrance && b.street?.grounds === street?.grounds) continue
+    if (
+      a.facade === facade &&
+      a.roof === roof &&
+      a.windows === windows &&
+      a.lighting === lighting &&
+      b.floodlights === floodlights &&
+      b.street?.entrance === street?.entrance &&
+      b.street?.grounds === street?.grounds &&
+      b.exterior === exterior
+    )
+      continue
     const next: BrandBuilding = { ...b, architecture: { ...a, facade, roof, windows, lighting } }
     // A building drawn with the standard lighting carries no floodlights key at all, exactly as before; so too the street level.
     if (floodlights) next.floodlights = floodlights
     else delete next.floodlights
     if (street) next.street = street
     else delete next.street
+    if (exterior) next.exterior = exterior
+    else delete next.exterior
     buildings[id] = next
   }
   return { ...state, buildings }

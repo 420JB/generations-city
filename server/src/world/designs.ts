@@ -10,12 +10,13 @@ import type { ConstructionAuthority } from './construction'
 import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldScope } from './store'
 
 /**
- * ARCHITECT PROPERTY DESIGN, AUTHORITATIVE PERSISTENCE (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C). LOCAL ONLY, LOCAL TEST CONTROL
- * ONLY, FREE.
+ * ARCHITECT PROPERTY DESIGN, AUTHORITATIVE PERSISTENCE (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, P1-E6). LOCAL ONLY, LOCAL TEST
+ * CONTROL ONLY, FREE.
  *
  * What a property's current NFT controller can CHOOSE about how its building is drawn: a facade finish, a roof
- * silhouette, a window treatment, an exterior lighting treatment, an entrance treatment and a landscaping treatment from
- * the engine's current design catalog (`CURRENT_DESIGN_CATALOG`, `src/world/design.ts`; migrations 0015 to 0017).
+ * silhouette, a window treatment, an exterior lighting treatment, an entrance treatment, a landscaping treatment and an
+ * exterior color (a NAME the catalog lists, never a color value) from the engine's current design catalog
+ * (`CURRENT_DESIGN_CATALOG`, `src/world/design.ts`; migrations 0015 to 0018).
  * Identifiers only, each one the standard renderer already draws. Nothing here spends a test credit, builds a unit,
  * changes a tier, a founder, a plot, a district or a city sequence, or touches RF, Proofy Points or any economy. The one caller outside tests is the
  * local rehearsal (`rehearsal.ts`), whose routes exist only in a local deployment started with an explicit rehearsal
@@ -50,12 +51,13 @@ import { lockWorldForChange, WorldRefusal, type ActivatorIdentity, type WorldSco
  * different design under it.
  *
  * CATALOG VERSIONS. Every saved design is read by the catalog it names, forever: an `architect-design-v1` design (a facade
- * and a roof, no other treatment) and an `architect-design-v2` design (no entrance or landscaping treatment) are answered
- * exactly as they were saved, and drawn with the treatments they were saved with. New designs are chosen from the current
+ * and a roof, no other treatment), an `architect-design-v2` design (no entrance or landscaping treatment) and an
+ * `architect-design-v3` design (no exterior color: its material's own) are answered exactly as they were saved, and drawn
+ * with the treatments they were saved with. New designs are chosen from the current
  * catalog only. A save named in an earlier catalog is still answered from its row if it was recorded (the same id,
  * exactly as first sent: its original receipt); if it never was, it is refused (`design_retired`) and nothing is written,
- * so a page left open on an earlier editor never saves a different design than the one it showed (a v2 save would
- * otherwise drop the property's current entrance and landscaping unseen).
+ * so a page left open on an earlier editor never saves a different design than the one it showed (a v3 save would
+ * otherwise drop the property's current exterior color unseen).
  */
 export type WorldDesignRefusalCode =
   /** This deployment does not save designs (anything but a local database). */
@@ -108,9 +110,11 @@ export interface DesignInput {
   /** Absent in a save of a catalog without an entrance or landscaping (v1, v2): exactly what such a save names. */
   entrance?: unknown
   landscaping?: unknown
+  /** Absent in a save of a catalog without an exterior color (v1, v2, v3): exactly what such a save names. */
+  color?: unknown
 }
 
-/** A saved design, as stored: null for each slot its catalog does not have (v1: all four treatments; v2: entrance and landscaping). */
+/** A saved design, as stored: null for each slot its catalog does not have (v1: all four treatments and the color; v2: entrance, landscaping and color; v3: color). */
 export interface DesignRecord extends DesignChoice {
   propertyId: string
   buildingId: string
@@ -197,6 +201,7 @@ export interface DesignRow {
   lighting: string | null
   entrance: string | null
   landscaping: string | null
+  color: string | null
   designer_core_user_id: string
   designer_discord_user_id: string
   at_city_sequence: string
@@ -204,16 +209,17 @@ export interface DesignRow {
 }
 
 const DESIGN_COLUMNS =
-  'd.property_id, p.building_id, d.revision, d.action_id, d.catalog, d.facade, d.roof, d.windows, d.lighting, d.entrance, d.landscaping, d.designer_core_user_id, d.designer_discord_user_id, d.at_city_sequence, d.designed_at'
+  'd.property_id, p.building_id, d.revision, d.action_id, d.catalog, d.facade, d.roof, d.windows, d.lighting, d.entrance, d.landscaping, d.color, d.designer_core_user_id, d.designer_discord_user_id, d.at_city_sequence, d.designed_at'
 
-/** A stored row's choice, exactly: its six identifiers (null for a slot its catalog does not have). */
-export const choiceOf = (r: Pick<DesignRow, 'facade' | 'roof' | 'windows' | 'lighting' | 'entrance' | 'landscaping'>): DesignChoice => ({
+/** A stored row's choice, exactly: its seven identifiers (null for a slot its catalog does not have). */
+export const choiceOf = (r: Pick<DesignRow, 'facade' | 'roof' | 'windows' | 'lighting' | 'entrance' | 'landscaping' | 'color'>): DesignChoice => ({
   facade: r.facade,
   roof: r.roof,
   windows: r.windows,
   lighting: r.lighting,
   entrance: r.entrance,
   landscaping: r.landscaping,
+  color: r.color,
 })
 
 /** A stored row this build can read: its catalog one this build has, and its choices exactly that catalog's. Anything else is a world this build did not write. */
@@ -278,7 +284,15 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
     // a color, markup or anything the browser made up. A save of a catalog without a slot names none for it.
     const named = typeof input.catalog === 'string' && Object.hasOwn(DESIGN_CATALOGS, input.catalog) ? DESIGN_CATALOGS[input.catalog] : null
     const slot = (v: unknown) => (v === undefined ? null : v)
-    const choice = { facade: input.facade, roof: input.roof, windows: slot(input.windows), lighting: slot(input.lighting), entrance: slot(input.entrance), landscaping: slot(input.landscaping) }
+    const choice = {
+      facade: input.facade,
+      roof: input.roof,
+      windows: slot(input.windows),
+      lighting: slot(input.lighting),
+      entrance: slot(input.entrance),
+      landscaping: slot(input.landscaping),
+      color: slot(input.color),
+    }
     if (!named || !isCatalogChoice(named, choice)) throw new WorldDesignRefusal('design_unsupported', `That is not a design of ${catalog.key}.`)
     const base = baseRevision as number
     const where = { guildId: actor.scope.discordGuildId }
@@ -340,10 +354,10 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
 
       const row = (
         await client.query<Omit<DesignRow, 'building_id'>>(
-          `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping,
+          `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, color,
                                               designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'local-fixture-controller', $17)
-           RETURNING property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, designer_core_user_id, designer_discord_user_id, at_city_sequence, designed_at`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'local-fixture-controller', $18)
+           RETURNING property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, color, designer_core_user_id, designer_discord_user_id, at_city_sequence, designed_at`,
           [
             actor.scope.worldId,
             read.cityId,
@@ -358,6 +372,7 @@ export function createWorldDesignStore(db: Database, { mode, log, onStep }: Worl
             choice.lighting,
             choice.entrance,
             choice.landscaping,
+            choice.color,
             designer.coreUserId,
             designer.discordUserId,
             actor.id,

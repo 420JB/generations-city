@@ -9,8 +9,11 @@ import { nftAsset } from '../../world/asset'
 import { worldProperty } from '../../world/property'
 import { mayAct, previewClaimAccess, type ClaimAccess, type PreviewMember } from '../core/eligibility'
 import { districtPlots, type LoadedBrandCity } from '../load'
-import { ConstructionCard, type ConstructionAccess } from './construction'
-import { DesignCard, type DesignAccess } from './design'
+import { ConstructionCard, ConstructionRecords, type ConstructionAccess } from './construction'
+import { constructionActionOf, useConstruction, type ConstructionState } from './constructionState'
+import { DesignCard, type DesignAccess, type DesignLoad } from './design'
+import { designEditable, useDesignAnswer } from './designAnswer'
+import { buildReason, CONTROL_LINES, controlStatusOf, designReason, type ControlStatus } from './propertyStatus'
 import { ConstructionNote } from './home'
 import type { Placement } from './PreviewApp'
 import { StoredPropertyCard, type StoredProperty } from './rehearsal'
@@ -319,112 +322,275 @@ export function BuildingPreviewPanel({
   const access = accessFor(city, b.districtId, member)
   const allowed = mayAct(access)
   const isCrown = state.crown.holder === b.id
+  const header = (
+    <PanelHeader
+      kicker={
+        <>
+          <button type="button" className="link-btn" onClick={() => onDistrict(d.id)} data-testid="building-district">
+            <SceneDistrictChip district={d} small />
+          </button>{' '}
+          {isCrown && <span className="crown-tag">♔ CITY CROWN</span>}
+        </>
+      }
+      title={scene.buildingLabel(b)}
+      onBack={onBack}
+      onClose={onClose}
+    />
+  )
+  const address = (
+    <div className="address small muted" data-testid="building-address">
+      {d.title} · {wardName(b.ward)}
+      {isFoundingWard(b.ward) && <span className="founding-tag"> Founding Ward</span>} · Plot {b.plot + 1} · <code>{`${b.districtId}-w${b.ward}-p${b.plot}`}</code>
+    </div>
+  )
+  const medal = (
+    <div className="tier-medal" style={{ ['--dc' as string]: d.color }} data-testid="panel-tier">
+      <span>TIER</span>
+      <b>{tier}</b>
+    </div>
+  )
+  const identifiers = (
+    <dl className="stat-grid" data-testid="property-identifiers">
+      <div>
+        <dt>Collection</dt>
+        <dd>{collection?.displayName ?? '—'}</dd>
+      </div>
+      <div>
+        <dt>Token</dt>
+        <dd>#{nft?.tokenId}</dd>
+      </div>
+      <div>
+        <dt>Chain</dt>
+        <dd>{collection?.chain}</dd>
+      </div>
+      <div>
+        <dt>Property id</dt>
+        <dd className="mono" title="Permanent world-scoped property id (engine V2)" data-testid="property-id">
+          {property?.propertyId.slice(0, 8)}…
+        </dd>
+      </div>
+    </dl>
+  )
+  if (stored)
+    return (
+      <section className="panel building-panel property-panel" aria-label={`${scene.buildingLabel(b)} details`} data-testid="building-panel" data-building={b.id}>
+        {header}
+        <StoredPropertyBody
+          key={stored.propertyId}
+          stored={stored}
+          tier={tier}
+          color={d.color}
+          cityName={config.cityName}
+          address={address}
+          medal={medal}
+          identifiers={identifiers}
+          context={context}
+          construction={construction}
+          design={design}
+          onDesign={onDesign}
+          onLegacy={onLegacy}
+          onArchitect={onArchitect}
+        />
+      </section>
+    )
   return (
     <section className="panel building-panel" aria-label={`${scene.buildingLabel(b)} details`} data-testid="building-panel" data-building={b.id}>
-      <PanelHeader
-        kicker={
-          <>
-            <button type="button" className="link-btn" onClick={() => onDistrict(d.id)} data-testid="building-district">
-              <SceneDistrictChip district={d} small />
-            </button>{' '}
-            {isCrown && <span className="crown-tag">♔ CITY CROWN</span>}
-          </>
-        }
-        title={scene.buildingLabel(b)}
-        onBack={onBack}
-        onClose={onClose}
-      />
+      {header}
       <div className="owner-row">
-        {stored ? (
-          <>
-            <div>
-              <div className="muted small">Founded by</div>
-              <div className="strong" data-testid="property-founder" data-activator={stored.activator}>
-                {stored.activator === 'viewer' ? 'You' : stored.activator === 'other' ? 'Recorded privately' : 'Not recorded'}
-              </div>
-            </div>
-            <div className="grow">
-              <div className="muted small">Current holder</div>
-              <div className="strong" data-testid="property-holder" title="Who holds the NFT now is not checked by this page.">
-                Not verified
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <Avatar user={owner} size={30} />
-            <div>
-              <div className="muted small">Owner (sample member)</div>
-              <div className="strong">@{owner?.handle ?? 'unknown'}</div>
-            </div>
-          </>
-        )}
-        <div className="tier-medal" style={{ ['--dc' as string]: d.color }} data-testid="panel-tier">
-          <span>TIER</span>
-          <b>{tier}</b>
+        <Avatar user={owner} size={30} />
+        <div>
+          <div className="muted small">Owner (sample member)</div>
+          <div className="strong">@{owner?.handle ?? 'unknown'}</div>
         </div>
+        {medal}
       </div>
-      <div className="address small muted" data-testid="building-address">
-        {d.title} · {wardName(b.ward)}
-        {isFoundingWard(b.ward) && <span className="founding-tag"> Founding Ward</span>} · Plot {b.plot + 1} · <code>{`${b.districtId}-w${b.ward}-p${b.plot}`}</code>
+      {address}
+      <div className="tier-progress">
+        <div className="row-between small">
+          <span>{tier >= MAX_TIER ? 'Max tier' : `Progress to Tier ${tier + 1}`}</span>
+          <span>{heightMeters(total)} m</span>
+        </div>
+        <ProgressBar value={tierProgress(total)} color={d.color} label="Progress to next tier" />
       </div>
-      {/* A stored property's progress is what the server stored, shown only by its construction card: no preview bar promises any. */}
-      {!stored && (
-        <div className="tier-progress">
-          <div className="row-between small">
-            <span>{tier >= MAX_TIER ? 'Max tier' : `Progress to Tier ${tier + 1}`}</span>
-            <span>{heightMeters(total)} m</span>
+      {identifiers}
+      <div className={`fund-box access-box ${access.kind}`} data-testid="build-access" data-access={access.kind}>
+        <div className="row-between">
+          <h3>Build here</h3>
+          <SimTag>PREVIEW</SimTag>
+        </div>
+        <AccessNote access={access} district={d} />
+        <RuleRequirement access={access} />
+        <button type="button" className="btn primary" onClick={onBuild} disabled={!allowed} data-testid="build-action">
+          Build · preview only
+        </button>
+        <p className="muted small">Building will spend the shared Proofy community points. That economy is not connected: nothing is spent and no balance exists here.</p>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * A STORED property's panel, below its title (P1-E6): what the viewer can do with the building first, its records after.
+ *
+ *   A. Its address, tier and who the local file names as its current controller (and whether the viewer controlled it before).
+ *   B. The two things a player does here: build (or contribute, as a patron) and customize its Architect design, each
+ *      offered only as the server's answer allows, with the reason when it is not.
+ *   C. Its construction: progress, next tier, the cost of one step, the viewer's test credits and the construction action.
+ *   D. Its Architect design: the saved design and the way into the design view.
+ *   E. Everything else, unchanged: the city and district around it, its founder, its identifiers and founding record, who
+ *      invested and the construction history, and its legacy.
+ *
+ * Every action is the cards' own (one construction state, one press book, one design answer): nothing here is a new route,
+ * permission or request, and nothing is offered that the server's answer does not allow.
+ */
+function StoredPropertyBody({
+  stored,
+  tier,
+  color,
+  cityName,
+  address,
+  medal,
+  identifiers,
+  context,
+  construction: constructionAccess,
+  design: designAccess,
+  onDesign,
+  onLegacy,
+  onArchitect,
+}: {
+  stored: StoredProperty
+  tier: number
+  color: string
+  cityName: string
+  address: ReactNode
+  medal: ReactNode
+  identifiers: ReactNode
+  context?: ReactNode
+  construction?: ConstructionAccess | null
+  design?: DesignAccess | null
+  onDesign?: () => void
+  onLegacy?: () => void
+  onArchitect?: () => void
+}) {
+  // The design is read only where the view can be opened from here (as the design card always was).
+  const designs = designAccess && onDesign ? designAccess : null
+  const construction = useConstruction(constructionAccess ?? null, stored.propertyId)
+  const answer = useDesignAnswer(designs, stored.propertyId)
+  const rehearsal = !!constructionAccess || !!designs
+  const control = controlStatusOf(designs ? answer : undefined, constructionAccess ? construction : null)
+  // The viewer built here as its controller, or saved its design, while someone else (or nobody) is named now.
+  const earlier =
+    control !== 'viewer' &&
+    ((construction.view?.history.some((h) => h.by === 'viewer' && h.role === 'owner') ?? false) || (answer?.ok === true && answer.view.history.some((h) => h.by === 'viewer')))
+  const pendingSave = designs?.saves().unresolved() ?? null
+  const pending = pendingSave ? (pendingSave.propertyId === stored.propertyId ? 'here' : 'elsewhere') : null
+  return (
+    <>
+      <div className="property-head" data-testid="property-head">
+        <div className="grow">
+          {address}
+          <div className="property-control" data-testid="property-control" data-control={control} data-earlier={String(earlier)}>
+            <span className={`control-dot ${control}`} aria-hidden="true" />
+            <span className="strong">{CONTROL_LINES[control]}</span>
+            {rehearsal && control !== 'unchecked' && control !== 'checking' && control !== 'closed' && <span className="sim-tag">LOCAL TEST</span>}
+            {earlier && (
+              <span className="small muted property-control-earlier" data-testid="property-control-earlier">
+                You controlled it earlier: your contributions stay in its records, and you can no longer change it.
+              </span>
+            )}
           </div>
-          <ProgressBar value={tierProgress(total)} color={d.color} label="Progress to next tier" />
         </div>
+        {medal}
+      </div>
+      {rehearsal && (
+        <PropertyActions construction={constructionAccess ? construction : null} answer={answer} control={control} earlier={earlier} founder={stored.activator === 'viewer'} onDesign={designs ? onDesign : undefined} />
       )}
-      <dl className="stat-grid">
-        <div>
-          <dt>Collection</dt>
-          <dd>{collection?.displayName ?? '—'}</dd>
+      {constructionAccess ? <ConstructionCard construction={construction} tier={tier} color={color} /> : <ConstructionNote tier={tier} />}
+      {/* Keyed apart from its sibling construction card: a shared key made React keep stale copies of this card (found in P1-C2-E4B). */}
+      {designs && onDesign && <DesignCard key={`design-${stored.propertyId}`} answer={answer} tier={tier} founder={stored.activator === 'viewer'} pending={pending} onDesign={onDesign} />}
+      <div className="property-records" data-testid="property-records">
+        <h3 className="property-records-title">Property records</h3>
+        {context}
+        <div className="owner-row">
+          <div>
+            <div className="muted small">Founded by</div>
+            <div className="strong" data-testid="property-founder" data-activator={stored.activator}>
+              {stored.activator === 'viewer' ? 'You' : stored.activator === 'other' ? 'Recorded privately' : 'Not recorded'}
+            </div>
+          </div>
+          <div className="grow">
+            <div className="muted small">Current holder</div>
+            <div className="strong" data-testid="property-holder" title="Who holds the NFT now is not checked by this page.">
+              Not verified
+            </div>
+          </div>
         </div>
-        <div>
-          <dt>Token</dt>
-          <dd>#{nft?.tokenId}</dd>
-        </div>
-        <div>
-          <dt>Chain</dt>
-          <dd>{collection?.chain}</dd>
-        </div>
-        <div>
-          <dt>Property id</dt>
-          <dd className="mono" title="Permanent world-scoped property id (engine V2)" data-testid="property-id">
-            {property?.propertyId.slice(0, 8)}…
-          </dd>
-        </div>
-      </dl>
-      {stored && <StoredPropertyCard stored={stored} cityName={config.cityName} />}
-      {stored && onLegacy && (
-        <button type="button" className="btn home-claim" onClick={onLegacy} data-testid="property-legacy-open">
-          Property legacy · founding, control eras and design history
+        {identifiers}
+        <StoredPropertyCard stored={stored} cityName={cityName} />
+        {constructionAccess && <ConstructionRecords construction={construction} onArchitect={onArchitect} />}
+        {onLegacy && (
+          <button type="button" className="btn home-claim" onClick={onLegacy} data-testid="property-legacy-open">
+            Property legacy · founding, control eras and design history
+          </button>
+        )}
+      </div>
+    </>
+  )
+}
+
+/**
+ * B of a stored property's panel: build (or contribute) and customize, right under its title. The build button is the
+ * construction card's own action (the same state, press book and guard: one press, however many buttons show it); the
+ * customize button opens the Architect design view, offered only where the design answer says the viewer is the NFT's named
+ * controller. Each disabled action says why.
+ */
+function PropertyActions({
+  construction,
+  answer,
+  control,
+  earlier,
+  founder,
+  onDesign,
+}: {
+  construction: ConstructionState | null
+  answer: DesignLoad | null
+  control: ControlStatus
+  earlier: boolean
+  founder: boolean
+  onDesign?: () => void
+}) {
+  const build = construction && constructionActionOf(construction)
+  const editable = !!onDesign && designEditable(answer)
+  const insufficient = !!construction && !!build && !construction.unresolved && construction.view?.standing.kind === 'insufficient'
+  const notes = [
+    construction && !build ? buildReason(construction) : insufficient ? `Not enough test credits for one step (${construction.view!.credits.available} held).` : null,
+    onDesign && !editable ? designReason(answer, control, earlier, founder) : null,
+  ].filter((n): n is string => !!n)
+  return (
+    <div className="property-actions" role="group" aria-label="What you can do here" data-testid="property-actions">
+      {construction && (
+        <button
+          type="button"
+          className="btn primary"
+          disabled={!build || build.disabled}
+          onClick={() => build && void construction.build(build.role)}
+          data-testid="property-action-build"
+          data-role={build?.role ?? ''}
+          aria-describedby={notes.length ? 'property-actions-note' : undefined}
+        >
+          {build?.short ?? 'Build'}
         </button>
       )}
-      {/* Keyed apart from its sibling construction card: a shared key made React keep stale copies of this card (found in P1-C2-E4B). */}
-      {stored && design && onDesign && <DesignCard key={`design-${stored.propertyId}`} propertyId={stored.propertyId} tier={tier} founder={stored.activator === 'viewer'} access={design} onDesign={onDesign} />}
-      {stored && context}
-      {stored && construction ? (
-        <ConstructionCard key={stored.propertyId} propertyId={stored.propertyId} tier={tier} access={construction} color={d.color} onArchitect={onArchitect} />
-      ) : stored ? (
-        <ConstructionNote tier={tier} />
-      ) : (
-        <div className={`fund-box access-box ${access.kind}`} data-testid="build-access" data-access={access.kind}>
-          <div className="row-between">
-            <h3>Build here</h3>
-            <SimTag>PREVIEW</SimTag>
-          </div>
-          <AccessNote access={access} district={d} />
-          <RuleRequirement access={access} />
-          <button type="button" className="btn primary" onClick={onBuild} disabled={!allowed} data-testid="build-action">
-            Build · preview only
-          </button>
-          <p className="muted small">Building will spend the shared Proofy community points. That economy is not connected: nothing is spent and no balance exists here.</p>
-        </div>
+      {onDesign && (
+        <button type="button" className={`btn${construction ? '' : ' primary'}`} disabled={!editable} onClick={onDesign} data-testid="property-action-design" aria-describedby={notes.length ? 'property-actions-note' : undefined}>
+          Customize · Architect
+        </button>
       )}
-    </section>
+      {notes.length > 0 && (
+        <p className="muted small property-actions-note" id="property-actions-note" data-testid="property-actions-note">
+          {notes.join(' ')}
+        </p>
+      )}
+    </div>
   )
 }

@@ -1,15 +1,16 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_ARCHITECTURE, FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
+import { DEFAULT_ARCHITECTURE, EXTERIOR_COLORS, exteriorPalette, FACADE_PALETTES, LIGHTING_COLORS, SURFACE_MATERIALS } from '../../config/architecture'
 import { tierFor, totalBuilt } from '../../game/economy'
 import { parseRehearsalAppearanceResponse, parseRehearsalDesignResponse, parseRehearsalDesignView, REHEARSAL_MARK } from '../../protocol/playRehearsal'
 import { BuildingSprite } from '../../ui/city/BuildingSprite'
+import { CityDefs } from '../../ui/city/Defs'
 import { CitySceneContext, sceneDistrict } from '../../ui/city/scene'
 import { nftAsset } from '../../world/asset'
 import { emptyWorldCityState, worldBuildingId, type WorldCityState } from '../../world/cityState'
 import { LOCAL_TEST_CONSTRUCTION_RECIPE, proposePropertyConstruction } from '../../world/construction'
-import { appearanceOf, ARCHITECT_DESIGN_V1, ARCHITECT_DESIGN_V2, ARCHITECT_DESIGN_V3, CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogChoice, isDrawableDesign, LEGACY_DETAILS, sameDesign, type PropertyDesign } from '../../world/design'
+import { appearanceOf, ARCHITECT_DESIGN_V1, ARCHITECT_DESIGN_V2, ARCHITECT_DESIGN_V3, ARCHITECT_DESIGN_V4, CURRENT_DESIGN_CATALOG, DESIGN_CATALOGS, isCatalogChoice, isDrawableDesign, LEGACY_DETAILS, sameDesign, type PropertyDesign } from '../../world/design'
 import { proposePropertyActivation } from '../../world/gameplay'
 import { worldProperty } from '../../world/property'
 import { parseBrandCityConfig } from '../core/config'
@@ -18,6 +19,7 @@ import { persistedBrandCityState, withPropertyDesigns } from '../core/persisted'
 import { loadPersistedBrandCity, type LoadedBrandCity } from '../load'
 import { HARBORLIGHT } from '../samples'
 import { pressBook } from './constructionPress'
+import { catalogNote, designName, revisionName } from './designNames'
 import { DESIGN_REFUSALS, designBook, designSettlementOf } from './designPress'
 
 const WORLD = '0199f1a2-7c3d-7e4f-8a5b-6c7d8e9f0a1b'
@@ -66,10 +68,11 @@ function draw(loaded: LoadedBrandCity, id: string, design: PropertyDesign | null
   )
 }
 /** A whole design: the given slots, the catalog default for the rest. */
-const D = (d: Partial<PropertyDesign>): PropertyDesign => ({ ...ARCHITECT_DESIGN_V3.default, ...d })
-/** A v1 and a v2 choice as their rows record them: null for every slot their catalog does not have. */
-const V1C = (facade: string, roof: string) => ({ facade, roof, windows: null, lighting: null, entrance: null, landscaping: null })
-const V2C = (facade: string, roof: string, windows: string, lighting: string) => ({ facade, roof, windows, lighting, entrance: null, landscaping: null })
+const D = (d: Partial<PropertyDesign>): PropertyDesign => ({ ...ARCHITECT_DESIGN_V4.default, ...d })
+/** A v1, v2 and v3 choice as their rows record them: null for every slot their catalog does not have. */
+const V1C = (facade: string, roof: string) => ({ facade, roof, windows: null, lighting: null, entrance: null, landscaping: null, color: null })
+const V2C = (facade: string, roof: string, windows: string, lighting: string) => ({ facade, roof, windows, lighting, entrance: null, landscaping: null, color: null })
+const V3C = (d: Omit<PropertyDesign, 'color'>) => ({ ...d, color: null })
 
 describe('the Architect design catalog draws through the city\'s own art (P1-C2-E4A)', () => {
   it('is a versioned catalog of identifiers the renderer already draws; its default is how every new building is drawn', () => {
@@ -156,7 +159,7 @@ describe('the Architect design catalog draws through the city\'s own art (P1-C2-
 
 describe('Architect windows and exterior lighting (P1-C2-E4B)', () => {
   it('catalog v2 (read only since v3): v1\'s facades and roofs, plus windows and lighting the renderer already draws; v1 stays readable', () => {
-    expect(Object.keys(DESIGN_CATALOGS)).toEqual(['architect-design-v1', 'architect-design-v2', 'architect-design-v3'])
+    expect(Object.keys(DESIGN_CATALOGS)).toEqual(['architect-design-v1', 'architect-design-v2', 'architect-design-v3', 'architect-design-v4'])
     expect(ARCHITECT_DESIGN_V2.slots).toEqual(['facade', 'roof', 'windows', 'lighting'])
     expect(ARCHITECT_DESIGN_V2.facades).toEqual(ARCHITECT_DESIGN_V1.facades)
     expect(ARCHITECT_DESIGN_V2.roofs).toEqual(ARCHITECT_DESIGN_V1.roofs)
@@ -165,7 +168,7 @@ describe('Architect windows and exterior lighting (P1-C2-E4B)', () => {
     // The default is exactly how every building was drawn before v2: the renderer's default windows and warm glow.
     expect(ARCHITECT_DESIGN_V2.default).toEqual(ARCHITECT_DESIGN_V1.default)
     expect(DEFAULT_ARCHITECTURE).toMatchObject({ windows: ARCHITECT_DESIGN_V2.default.windows, lighting: 'warm' })
-    expect(isCatalogChoice(ARCHITECT_DESIGN_V2, { ...ARCHITECT_DESIGN_V2.default, entrance: null, landscaping: null })).toBe(true)
+    expect(isCatalogChoice(ARCHITECT_DESIGN_V2, { ...ARCHITECT_DESIGN_V2.default, entrance: null, landscaping: null, color: null })).toBe(true)
     // A v2 choice names its four; a v1 choice names no treatment; neither accepts the other's shape.
     const v2 = V2C('brick', 'dome', 'ribbon', 'cool')
     expect(isCatalogChoice(ARCHITECT_DESIGN_V2, v2)).toBe(true)
@@ -174,7 +177,7 @@ describe('Architect windows and exterior lighting (P1-C2-E4B)', () => {
     for (const bad of [{ ...v2, windows: 'panoramic' }, { ...v2, lighting: 'neon' }, { ...v2, lighting: 'gold' }, { ...v2, windows: null }, { ...v2, lighting: '#ffcc00' }, { facade: 'brick', roof: 'dome' }, { ...v2, glow: 'x' }])
       expect(isCatalogChoice(ARCHITECT_DESIGN_V2, bad), JSON.stringify(bad)).toBe(false)
     // A v1 choice is drawn with the treatments it was saved with.
-    expect(appearanceOf(V1C('jade', 'spire'))).toEqual({ facade: 'jade', roof: 'spire', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' })
+    expect(appearanceOf(V1C('jade', 'spire'))).toEqual({ facade: 'jade', roof: 'spire', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' })
     expect(isDrawableDesign(appearanceOf(V1C('jade', 'spire')))).toBe(true)
     expect(sameDesign(appearanceOf(V1C('jade', 'spire')), D({ facade: 'jade', roof: 'spire' }))).toBe(true)
   })
@@ -258,8 +261,8 @@ describe('Architect entrances and landscaping (P1-C2-E4C)', () => {
   const hit = (html: string) => /<rect[^>]*fill="transparent"[^>]*>/.exec(html)![0]
   const label = (html: string) => /<g id="bl-[^"]*" transform="[^"]*"/.exec(html)?.[0] ?? ''
 
-  it('catalog v3 is current: v2\'s four categories, plus entrances and landscaping the renderer already draws; v1 and v2 stay readable', () => {
-    expect(CURRENT_DESIGN_CATALOG).toBe(ARCHITECT_DESIGN_V3)
+  it('catalog v3 (read only since v4): v2\'s four categories, plus entrances and landscaping the renderer already draws; v1 and v2 stay readable', () => {
+    expect(CURRENT_DESIGN_CATALOG).not.toBe(ARCHITECT_DESIGN_V3)
     expect(ARCHITECT_DESIGN_V3.slots).toEqual(['facade', 'roof', 'windows', 'lighting', 'entrance', 'landscaping'])
     for (const k of ['facades', 'roofs', 'windows', 'lighting'] as const) expect(ARCHITECT_DESIGN_V3[k]).toEqual(ARCHITECT_DESIGN_V2[k])
     expect(ARCHITECT_DESIGN_V3.entrances).toEqual(['standard', 'canopy', 'arched', 'portico'])
@@ -267,9 +270,9 @@ describe('Architect entrances and landscaping (P1-C2-E4C)', () => {
     // The default is exactly how every building was drawn before v3: the standard door, bare paving.
     expect(ARCHITECT_DESIGN_V3.default).toEqual(ARCHITECT_DESIGN_V2.default)
     expect(LEGACY_DETAILS).toMatchObject({ entrance: 'standard', landscaping: 'standard' })
-    expect(isCatalogChoice(ARCHITECT_DESIGN_V3, ARCHITECT_DESIGN_V3.default)).toBe(true)
-    // A v3 choice names all six; earlier catalogs' choices are not v3's, nor the reverse.
-    const v3 = { facade: 'jade', roof: 'dome', windows: 'arched', lighting: 'warm', entrance: 'portico', landscaping: 'garden' }
+    expect(isCatalogChoice(ARCHITECT_DESIGN_V3, { ...ARCHITECT_DESIGN_V3.default, color: null })).toBe(true)
+    // A v3 choice names all six (and no color); earlier catalogs' choices are not v3's, nor the reverse.
+    const v3 = V3C({ facade: 'jade', roof: 'dome', windows: 'arched', lighting: 'warm', entrance: 'portico', landscaping: 'garden' })
     expect(isCatalogChoice(ARCHITECT_DESIGN_V3, v3)).toBe(true)
     expect(isCatalogChoice(ARCHITECT_DESIGN_V2, v3)).toBe(false)
     expect(isCatalogChoice(ARCHITECT_DESIGN_V3, V2C('jade', 'dome', 'arched', 'warm'))).toBe(false)
@@ -282,6 +285,7 @@ describe('Architect entrances and landscaping (P1-C2-E4C)', () => {
       { ...v3, landscaping: null },
       { ...v3, entrance: '<a href=x>' },
       { ...v3, pieces: [{ x: 1, y: 2 }] },
+      { ...v3, color: 'navy' },
       { facade: 'jade', roof: 'dome', windows: 'arched', lighting: 'warm' },
     ])
       expect(isCatalogChoice(ARCHITECT_DESIGN_V3, bad), JSON.stringify(bad)).toBe(false)
@@ -389,6 +393,145 @@ describe('Architect entrances and landscaping (P1-C2-E4C)', () => {
   })
 })
 
+describe('Architect exterior color, chosen apart from the facade material (P1-E6)', () => {
+  const COLORS = ARCHITECT_DESIGN_V4.colors.filter((c) => c !== 'natural')
+  const hit = (html: string) => /<rect[^>]*fill="transparent"[^>]*>/.exec(html)![0]
+  const label = (html: string) => /<g id="bl-[^"]*" transform="[^"]*"/.exec(html)?.[0] ?? ''
+
+  it('catalog v4 is current: v3\'s six categories and thirteen named colors, natural first; every color is one the renderer draws, and nothing else is', () => {
+    expect(CURRENT_DESIGN_CATALOG).toBe(ARCHITECT_DESIGN_V4)
+    expect(ARCHITECT_DESIGN_V4.slots).toEqual(['facade', 'roof', 'windows', 'lighting', 'entrance', 'landscaping', 'color'])
+    for (const k of ['facades', 'roofs', 'windows', 'lighting', 'entrances', 'landscaping'] as const) expect(ARCHITECT_DESIGN_V4[k]).toEqual(ARCHITECT_DESIGN_V3[k])
+    expect(ARCHITECT_DESIGN_V4.colors).toEqual(['natural', 'ivory', 'sand', 'terracotta', 'rose', 'crimson', 'copper-orange', 'forest-green', 'sage', 'ocean-blue', 'navy', 'lavender', 'charcoal'])
+    // The renderer draws exactly the catalog's named colors (natural is the material's own palette): no color is offered that is not drawn, nor drawn that is not offered.
+    expect(Object.keys(EXTERIOR_COLORS).sort()).toEqual([...COLORS].sort())
+    for (const pal of Object.values(EXTERIOR_COLORS)) for (const v of Object.values(pal)) expect(v).toMatch(/^#[0-9a-f]{6}$/)
+    // Its default is v3's: the natural color, so no building looks different until its controller saves another.
+    expect(ARCHITECT_DESIGN_V4.default).toEqual({ ...ARCHITECT_DESIGN_V3.default, color: 'natural' })
+    expect(LEGACY_DETAILS.color).toBe('natural')
+    expect(isCatalogChoice(ARCHITECT_DESIGN_V4, ARCHITECT_DESIGN_V4.default)).toBe(true)
+    expect(isCatalogChoice(ARCHITECT_DESIGN_V4, { ...ARCHITECT_DESIGN_V4.default, color: null })).toBe(false)
+    for (const bad of ['teal', '#ff0000', 'Navy', 'url(x)', '', 7, null]) expect(isCatalogChoice(ARCHITECT_DESIGN_V4, { ...ARCHITECT_DESIGN_V4.default, color: bad }), String(bad)).toBe(false)
+    // A v3 choice (no color) is drawn in its material's own color, as it was saved.
+    const v3 = V3C({ facade: 'brick', roof: 'dome', windows: 'arched', lighting: 'cool', entrance: 'portico', landscaping: 'garden' })
+    expect(appearanceOf(v3)).toEqual({ ...v3, color: 'natural' })
+    expect(isDrawableDesign(appearanceOf(v3))).toBe(true)
+    expect(isDrawableDesign({ ...appearanceOf(v3), color: 'teal' })).toBe(false)
+  })
+
+  it('the natural color, and every v1, v2 and v3 design, draw a building exactly as before: no exterior color, no surface', () => {
+    const { loaded, ids } = city()
+    for (const id of ids) {
+      expect(withPropertyDesigns(loaded.state, { [id]: ARCHITECT_DESIGN_V4.default }).buildings[id]).toBe(loaded.state.buildings[id])
+      for (const facade of ARCHITECT_DESIGN_V4.facades) {
+        const natural = withPropertyDesigns(loaded.state, { [id]: D({ facade }) }).buildings[id]
+        expect(natural).not.toHaveProperty('exterior')
+        for (const detail of ['far', 'mid', 'near'] as const) {
+          const html = draw(loaded, id, D({ facade }), detail)
+          expect(html).not.toMatch(/data-exterior|url\(#surface-/)
+          // A v1 and a v3 design of that facade draw exactly as the natural v4 one.
+          expect(draw(loaded, id, appearanceOf(V1C(facade, 'flat')), detail)).toBe(html)
+          expect(draw(loaded, id, appearanceOf(V3C({ ...D({ facade }) })), detail)).toBe(html)
+        }
+      }
+    }
+  })
+
+  it('every color draws on every material, distinctly, keeping the material\'s surface; the building keeps its tier, label, hit area, district and NFT', () => {
+    const { loaded, ids } = city()
+    for (const id of ids) {
+      const plain = draw(loaded, id, D({}))
+      const seen = new Set<string>()
+      for (const facade of ARCHITECT_DESIGN_V4.facades)
+        for (const color of COLORS) {
+          const html = draw(loaded, id, D({ facade, color }))
+          expect(seen.has(html), `${facade}/${color}`).toBe(false)
+          seen.add(html)
+          const pal = exteriorPalette(facade, color)!
+          for (const tone of [pal.left, pal.right, pal.top]) expect(html, `${facade}/${color}`).toContain(tone)
+          expect(html).toContain(`data-exterior="${color}"`)
+          expect(html).toContain(`data-facade="${facade}"`)
+          // The material's own surface is drawn over the color, on both faces of every section.
+          expect(html).toContain(`url(#surface-${facade})`)
+          for (const other of ARCHITECT_DESIGN_V4.facades.filter((f) => f !== facade)) expect(html).not.toContain(`url(#surface-${other})`)
+          // Only the facade's paint changes: the building's tier, label, hit area and identity are the city's.
+          expect(hit(html)).toBe(hit(plain))
+          expect(label(html)).toBe(label(plain))
+          for (const attr of ['data-tier', 'data-total', 'data-testid', 'aria-label', 'data-roof']) expect(new RegExp(`${attr}="[^"]*"`).exec(html)![0]).toBe(new RegExp(`${attr}="[^"]*"`).exec(plain)![0])
+        }
+    }
+  })
+
+  it('material and color are independent: either changes alone, a color reads differently on each material, and a material keeps its character in any color', () => {
+    const { loaded, ids } = city()
+    const id = ids[2]
+    // The same color on brick and on slate: different tones (each material carries the color its own way), different surfaces.
+    const brick = exteriorPalette('brick', 'ocean-blue')!
+    const slate = exteriorPalette('slate', 'ocean-blue')!
+    const limestone = exteriorPalette('limestone', 'ocean-blue')!
+    expect(brick).not.toEqual(slate)
+    expect(limestone.right > slate.right).toBe(true)
+    expect(draw(loaded, id, D({ facade: 'brick', color: 'ocean-blue' }))).toContain('url(#surface-brick)')
+    expect(draw(loaded, id, D({ facade: 'slate', color: 'ocean-blue' }))).toContain('url(#surface-slate)')
+    // Copper keeps its verdigris trim in any color: it is still copper.
+    for (const color of COLORS) expect(exteriorPalette('copper', color)!.trim).toBe(FACADE_PALETTES.copper.trim)
+    // Changing the color keeps the material; changing the material keeps the color.
+    const blue = withPropertyDesigns(loaded.state, { [id]: D({ facade: 'brick', color: 'ocean-blue' }) }).buildings[id]
+    const red = withPropertyDesigns(loaded.state, { [id]: D({ facade: 'brick', color: 'crimson' }) }).buildings[id]
+    const jade = withPropertyDesigns(loaded.state, { [id]: D({ facade: 'jade', color: 'ocean-blue' }) }).buildings[id]
+    expect([blue.architecture.facade, blue.exterior]).toEqual(['brick', 'ocean-blue'])
+    expect([red.architecture.facade, red.exterior]).toEqual(['brick', 'crimson'])
+    expect([jade.architecture.facade, jade.exterior]).toEqual(['jade', 'ocean-blue'])
+    // Only the facade and its color: nothing else about the building moves.
+    for (const k of ['id', 'districtId', 'ward', 'plot', 'friendId', 'ownerBuilt', 'patrons', 'fixtures', 'landscapeSlots', 'landscapeInventory', 'billboard'] as const) expect(blue[k]).toEqual(loaded.state.buildings[id][k])
+    expect(blue.architecture).toEqual({ ...loaded.state.buildings[id].architecture, facade: 'brick' })
+    // Back to the natural color: the key goes, exactly as before.
+    expect(withPropertyDesigns({ buildings: { [id]: blue } }, { [id]: D({ facade: 'brick' }) }).buildings[id]).not.toHaveProperty('exterior')
+    // Unknown names, values and markup are never drawn: the building stays as it was.
+    const odd = (d: object) => d as PropertyDesign
+    for (const color of ['teal', '#ff0000', 'url(#surface-brick)', '<g/>', 'Navy']) expect(withPropertyDesigns(loaded.state, { [id]: odd({ ...D({}), color }) }), color).toBe(loaded.state)
+    expect(exteriorPalette('brick', 'natural')).toBeNull()
+    expect(exteriorPalette('aurora', 'navy')).toBeNull()
+  })
+
+  it('a Tier 0 foundation shows its color at once; far away only the color is drawn, its surface up close', () => {
+    const { loaded, ids } = city()
+    expect(tierFor(totalBuilt(loaded.state.buildings[ids[0]]))).toBe(0)
+    const t0 = draw(loaded, ids[0], D({ facade: 'limestone', color: 'rose' }))
+    expect(t0).toContain(exteriorPalette('limestone', 'rose')!.left)
+    expect(t0).toContain('url(#surface-limestone)')
+    for (const id of ids) {
+      const far = draw(loaded, id, D({ facade: 'brick', color: 'navy' }), 'far')
+      expect(far).toContain(exteriorPalette('brick', 'navy')!.left)
+      expect(far).not.toContain('url(#surface-')
+      expect(draw(loaded, id, D({ facade: 'brick', color: 'navy' }), 'mid')).toContain('url(#surface-brick)')
+    }
+  })
+
+  it('each material surface is a static pattern in the city\'s own defs, neutral light and shade only: nothing animated, no color of its own', () => {
+    const { loaded } = city()
+    const defs = renderToStaticMarkup(createElement(CitySceneContext.Provider, { value: loaded.scene }, createElement('svg', null, createElement(CityDefs))))
+    expect(SURFACE_MATERIALS).toEqual(['slate', 'limestone', 'brick', 'copper', 'jade'])
+    for (const m of SURFACE_MATERIALS) {
+      const pattern = new RegExp(`<pattern id="surface-${m}"[^>]*>(.*?)</pattern>`).exec(defs)
+      expect(pattern, m).not.toBeNull()
+      expect(pattern![1]).not.toMatch(/class=|animate|<image|href/)
+      for (const fill of pattern![1].matchAll(/fill="([^"]+)"/g)) expect(['#fff', '#000']).toContain(fill[1])
+    }
+  })
+
+  it('a design is said with its color beside its material; a natural one exactly as before; a v3 revision says it chose no color', () => {
+    const plain = D({ facade: 'brick', roof: 'dome' })
+    expect(designName(plain)).toBe('Brick · Dome · Standard grid · Standard lighting · Standard entry · Standard grounds')
+    expect(designName({ ...plain, color: 'ocean-blue' })).toBe('Brick in Ocean blue · Dome · Standard grid · Standard lighting · Standard entry · Standard grounds')
+    expect(designName({ ...plain, facade: 'slate', color: 'lavender' })).toMatch(/^Slate in Lavender · /)
+    expect(catalogNote('architect-design-v3')).toBe('chosen before exterior colors could be chosen: its facade material’s own color')
+    expect(catalogNote('architect-design-v4')).toBeNull()
+    expect(revisionName({ catalog: 'architect-design-v3', ...V3C({ ...plain }) })).toBe(`${designName(plain)} (chosen before exterior colors could be chosen: its facade material’s own color)`)
+    expect(revisionName({ catalog: 'architect-design-v4', ...plain, color: 'sage' })).toBe(designName({ ...plain, color: 'sage' }))
+  })
+})
+
 /** A browser storage: what a reload of the page reads again. */
 function storage(seed: Record<string, string> = {}) {
   const items = new Map(Object.entries(seed))
@@ -400,6 +543,7 @@ const newId = () => `0190bbbb-0000-4000-8000-${String(++ids).padStart(12, '0')}`
 const ADA = { worldId: 'w-design-ada', discordUserId: '111111111111111111' }
 const P1 = '0190bbbb-0000-8000-8000-000000000001'
 const P2 = '0190bbbb-0000-8000-8000-000000000002'
+const P3 = '0190bbbb-0000-8000-8000-000000000003'
 const refused = (code: string | null) => ({ ok: false as const, problem: { code } })
 
 describe('an Architect design save, kept until its answer is known', () => {
@@ -505,30 +649,34 @@ describe('an Architect design save, kept until its answer is known', () => {
 
 describe('the Architect design wire contract', () => {
   const catalog = {
-    key: 'architect-design-v3',
-    facades: [...ARCHITECT_DESIGN_V3.facades],
-    roofs: [...ARCHITECT_DESIGN_V3.roofs],
-    windows: [...ARCHITECT_DESIGN_V3.windows],
-    lighting: [...ARCHITECT_DESIGN_V3.lighting],
-    entrances: [...ARCHITECT_DESIGN_V3.entrances],
-    landscaping: [...ARCHITECT_DESIGN_V3.landscaping],
-    default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' },
+    key: 'architect-design-v4',
+    facades: [...ARCHITECT_DESIGN_V4.facades],
+    roofs: [...ARCHITECT_DESIGN_V4.roofs],
+    windows: [...ARCHITECT_DESIGN_V4.windows],
+    lighting: [...ARCHITECT_DESIGN_V4.lighting],
+    entrances: [...ARCHITECT_DESIGN_V4.entrances],
+    landscaping: [...ARCHITECT_DESIGN_V4.landscaping],
+    colors: [...ARCHITECT_DESIGN_V4.colors],
+    default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' },
   }
   const id = '0190cccc-0000-4000-8000-000000000001'
   const v1 = { catalog: 'architect-design-v1', ...V1C('copper', 'dome') }
   const v2 = { catalog: 'architect-design-v2', ...V2C('brick', 'spire', 'ribbon', 'cool') }
-  const v3 = { catalog: 'architect-design-v3', facade: 'jade', roof: 'terrace', windows: 'arched', lighting: 'warm', entrance: 'portico', landscaping: 'garden' }
+  const v3 = { catalog: 'architect-design-v3', facade: 'jade', roof: 'terrace', windows: 'arched', lighting: 'warm', entrance: 'portico', landscaping: 'garden', color: null }
+  const v4 = { ...v3, catalog: 'architect-design-v4', color: 'ocean-blue' }
   const design = { propertyId: id, buildingId: `b-${id}`, revision: 1, ...v1 }
   const at = '2026-10-24T00:00:00.000Z'
   const view = { rehearsal: REHEARSAL_MARK, catalog, property: { propertyId: id, buildingId: `b-${id}` }, saved: { revision: 1, ...v1, atCitySequence: 4, at }, control: 'viewer', open: true, history: [{ revision: 1, ...v1, by: 'viewer', at }], historyCount: 1 }
 
-  it('reads only catalogs this build has, exactly, and only their choices: a v1 design names no treatment, a v2 design its four, a v3 design all six', () => {
+  it('reads only catalogs this build has, exactly, and only their choices: a v1 design names no treatment, a v2 design its four, a v3 design six, a v4 design all seven', () => {
     expect(parseRehearsalAppearanceResponse({ rehearsal: REHEARSAL_MARK, catalog, designs: [design] })).toEqual({ rehearsal: REHEARSAL_MARK, catalog, designs: [design] })
     const second = { ...design, propertyId: P1, buildingId: `b-${P1}`, revision: 3, ...v2 }
     const third = { ...design, propertyId: P2, buildingId: `b-${P2}`, revision: 4, ...v3 }
-    expect(parseRehearsalAppearanceResponse({ rehearsal: REHEARSAL_MARK, catalog, designs: [design, second, third] })).toMatchObject({ designs: [design, second, third] })
+    const fourth = { ...design, propertyId: P3, buildingId: `b-${P3}`, revision: 5, ...v4 }
+    expect(parseRehearsalAppearanceResponse({ rehearsal: REHEARSAL_MARK, catalog, designs: [design, second, third, fourth] })).toMatchObject({ designs: [design, second, third, fourth] })
     for (const bad of [
-      { catalog: { ...catalog, key: 'architect-design-v4' } },
+      { catalog: { ...catalog, key: 'architect-design-v5' } },
+      { catalog: { ...catalog, key: 'architect-design-v3' } },
       { catalog: { ...catalog, key: 'architect-design-v2' } },
       { catalog: { ...catalog, key: 'architect-design-v1' } },
       { catalog: { ...catalog, entrances: [...catalog.entrances, 'glass'] } },
@@ -540,7 +688,17 @@ describe('the Architect design wire contract', () => {
       { designs: [{ ...design, ...v3, entrance: null }] },
       { designs: [{ ...design, ...v3, landscaping: 'pond' }] },
       { designs: [{ ...design, ...v3, entrance: 'grand-portico' }] },
-      { designs: [{ propertyId: id, buildingId: `b-${id}`, revision: 1, catalog: 'architect-design-v2', facade: 'brick', roof: 'spire', windows: 'ribbon', lighting: 'cool' }] },
+      // An exterior color: only a v4 design names one, only one of v4's names, and a v4 design always does.
+      { catalog: { ...catalog, colors: [...catalog.colors, 'teal'] } },
+      { catalog: { ...catalog, colors: catalog.colors.slice(1) } },
+      { catalog: { ...catalog, default: { ...catalog.default, color: 'navy' } } },
+      { catalog: { ...catalog, default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' } } },
+      { designs: [{ ...design, ...v3, color: 'navy' }] },
+      { designs: [{ ...design, ...v4, color: null }] },
+      { designs: [{ ...design, ...v4, color: '#1c466c' }] },
+      { designs: [{ ...design, ...v4, color: 'Ocean-Blue' }] },
+      { designs: [{ propertyId: id, buildingId: `b-${id}`, revision: 1, ...v3, color: undefined }] },
+      { designs: [{ propertyId: id, buildingId: `b-${id}`, revision: 1, catalog: 'architect-design-v2', facade: 'brick', roof: 'spire', windows: 'ribbon', lighting: 'cool', entrance: null, landscaping: null }] },
       { catalog: { ...catalog, facades: [...catalog.facades, 'aurora'] } },
       { catalog: { ...catalog, roofs: catalog.roofs.slice(1) } },
       { catalog: { ...catalog, windows: [...catalog.windows, 'panoramic'] } },
@@ -576,6 +734,10 @@ describe('the Architect design wire contract', () => {
     expect(parseRehearsalDesignView(all)).toEqual(all)
     expect(parseRehearsalDesignView({ ...all, history: [{ ...all.history[0], entrance: null }, ...both.history] })).toBeNull()
     expect(parseRehearsalDesignView({ ...all, saved: { ...all.saved, landscaping: '<svg>' } })).toBeNull()
+    const colored = { ...view, saved: { revision: 4, ...v4, atCitySequence: 7, at }, history: [{ revision: 4, ...v4, by: 'viewer', at }, ...all.history], historyCount: 4 }
+    expect(parseRehearsalDesignView(colored)).toEqual(colored)
+    expect(parseRehearsalDesignView({ ...colored, saved: { ...colored.saved, color: 'url(x)' } })).toBeNull()
+    expect(parseRehearsalDesignView({ ...colored, history: [{ ...colored.history[0], color: null }, ...all.history] })).toBeNull()
     expect(parseRehearsalDesignView({ ...both, history: [{ ...both.history[0], lighting: '#fff' }, view.history[0]] })).toBeNull()
     expect(parseRehearsalDesignView({ ...view, control: 'owner' })).toBeNull()
     expect(parseRehearsalDesignView({ ...view, saved: null, history: [], historyCount: 0 })).toMatchObject({ saved: null })
@@ -588,6 +750,11 @@ describe('the Architect design wire contract', () => {
     expect(parseRehearsalDesignResponse({ ...answer, design: { ...answer.design, ...v3 } })).toMatchObject({ design: v3 })
     expect(parseRehearsalDesignResponse({ ...answer, design: { ...answer.design, ...v3, landscaping: 'standard', entrance: 'canopy' } })).toMatchObject({ design: { entrance: 'canopy' } })
     expect(parseRehearsalDesignResponse({ ...answer, design: { ...answer.design, ...v3, entrance: 'awning' } })).toBeNull()
+    expect(parseRehearsalDesignResponse({ ...answer, design: { ...answer.design, ...v4 } })).toMatchObject({ design: { catalog: 'architect-design-v4', color: 'ocean-blue' } })
+    expect(parseRehearsalDesignResponse({ ...answer, design: { ...answer.design, ...v4, color: '#ff0000' } })).toBeNull()
+    const uncolored: Record<string, unknown> = { ...answer.design, ...v4 }
+    delete uncolored.color
+    expect(parseRehearsalDesignResponse({ ...answer, design: uncolored })).toBeNull()
     const short: Record<string, unknown> = { ...answer.design }
     delete short.windows
     delete short.lighting
@@ -625,5 +792,36 @@ describe('Architect design refusals are said as what happened to the design (aud
     for (const code of ['sequence_conflict', 'action_conflict']) expect(DESIGN_REFUSALS[code], code).not.toMatch(/nothing (was|is) saved|no design revision was recorded|was saved|succeeded/i)
     expect(DESIGN_REFUSALS.sequence_conflict).toMatch(/Check this save again, with the same request/)
     expect(DESIGN_REFUSALS.action_conflict).toMatch(/How that other save went is not known here/)
+  })
+})
+
+describe('an exterior color save, kept until its answer is known (P1-E6)', () => {
+  it('a save the E4C page kept (catalog v3, no color) is sent again exactly as kept: never a v4 save; a v4 save keeps its color', () => {
+    const ADA8 = { ...ADA, worldId: 'w-design-8' }
+    // Exactly what the E4C page kept in this browser before a lost answer.
+    const kept3 = { actionId: newId(), worldId: ADA8.worldId, discordUserId: ADA8.discordUserId, propertyId: P2, baseRevision: 3, catalog: 'architect-design-v3', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'warm', entrance: 'portico', landscaping: 'garden' }
+    const kept = storage({ 'rare-city-design-saves': JSON.stringify([kept3]) })
+    const book = designBook(ADA8, kept, newId)
+    const request = { propertyId: P2, baseRevision: 3, catalog: 'architect-design-v4', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'warm', entrance: 'portico', landscaping: 'garden', color: 'navy' }
+    const sent = book.next(request)
+    expect(JSON.stringify(sent)).toBe(JSON.stringify(kept3))
+    expect(Object.keys(sent)).not.toContain('color')
+    book.settle(sent)
+    const next = designBook(ADA8, kept, newId).next(request)
+    expect(next).toMatchObject({ catalog: 'architect-design-v4', color: 'navy' })
+    expect(next.actionId).not.toBe(kept3.actionId)
+    expect(Object.keys(next).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'color', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'windows', 'worldId'])
+    // A reload reads the colored save back exactly, color and all.
+    expect(designBook(ADA8, kept, newId).unresolved()).toEqual(next)
+    // Anything else in storage is not a save: a color beside no entrance and landscaping, or a color that is no identifier.
+    const ADA9 = { ...ADA, worldId: 'w-design-9' }
+    const base = { actionId: newId(), worldId: ADA9.worldId, discordUserId: ADA9.discordUserId, propertyId: P1, baseRevision: 0, catalog: 'architect-design-v4', facade: 'slate', roof: 'flat' }
+    for (const odd of [
+      { ...base, color: 'navy' },
+      { ...base, windows: 'grid', lighting: 'standard', color: 'navy' },
+      { ...base, windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: '#ff0000' },
+      { ...base, windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 7 },
+    ])
+      expect(designBook(ADA9, storage({ 'rare-city-design-saves': JSON.stringify([odd]) }), newId).unresolved(), JSON.stringify(odd)).toBeNull()
   })
 })

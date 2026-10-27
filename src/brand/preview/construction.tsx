@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
 import { ProgressBar } from '../../ui/common'
 import type { ConstructionRole, RehearsalConstruction, RehearsalConstructionView } from '../../protocol/playRehearsal'
 import type { ArchitectLoad } from './architect'
 import type { ClaimProblem } from './claim'
-import { settlementOf, type ConstructionPress, type PressBook } from './constructionPress'
+import type { PressBook } from './constructionPress'
+import { constructionActionOf, UNCONFIRMED, UNCONFIRMED_ELSEWHERE, type ConstructionState } from './constructionState'
 import { ConstructionNote } from './home'
 import type { LegacyLoad } from './legacy'
 
@@ -42,64 +42,14 @@ export interface ConstructionAccess {
 
 const ROLE: Record<ConstructionRole, string> = { owner: 'Owner', patron: 'Patron' }
 
-/** An answer that does not say whether the press built: never "nothing was built". */
-const UNCONFIRMED = 'We could not confirm this build. It may already have been built and paid for. Check it with the same press: one press is never built or paid twice.'
-const UNCONFIRMED_ELSEWHERE =
-  'We could not confirm your last build, on another of this city’s properties. It may already have been built and paid for. Check it before building anything else: one press is never built or paid twice.'
-const CONFLICT: ClaimProblem = { message: 'This press’s id is already recorded for a construction that does not match this request, so nothing more was built or spent for it. That construction may be this build, recorded earlier: check this property’s history before you press again.', kind: 'retry', code: 'action_conflict' }
-
-/** `tier`: the tier the page draws, for a city where construction is not open (the standing note says so, as before). */
-export function ConstructionCard({ propertyId, tier, access, color, onArchitect }: { propertyId: string; tier: number; access: ConstructionAccess; color: string; onArchitect?: () => void }) {
-  const [view, setView] = useState<RehearsalConstructionView | null>(null)
-  const [problem, setProblem] = useState<ClaimProblem | null>(null)
-  const [busy, setBusy] = useState(false)
-  /** `elsewhere`: the answer was for an earlier press on another property, asked about from this card. */
-  const [done, setDone] = useState<{ construction: RehearsalConstruction; fresh: boolean; elsewhere: boolean } | null>(null)
-  /** The player's press whose answer is not known (this page's, or one kept from before a reload): asked about before any new press. */
-  const [unresolved, setUnresolved] = useState<ConstructionPress | null>(() => access.presses().unresolved())
-  /** A press is out: a second click before its answer sends nothing. */
-  const sending = useRef(false)
-
-  useEffect(() => {
-    let live = true
-    void access.load(propertyId).then((r) => {
-      if (!live) return
-      if (r.ok) setView(r.view)
-      else setProblem(r.problem)
-    })
-    return () => {
-      live = false
-    }
-  }, [access, propertyId])
-
-  async function build(role: ConstructionRole) {
-    if (sending.current) return
-    sending.current = true
-    const book = access.presses()
-    // An unresolved press is sent again exactly as it was first sent (its property, role and id), whatever was pressed.
-    const sent = book.next(propertyId, role, view ? { recipe: view.recipe.key, tier: view.property.tier } : null)
-    const elsewhere = sent.propertyId !== propertyId
-    setBusy(true)
-    setProblem(null)
-    setDone(null)
-    const r = await access.build(sent.propertyId, sent.role, sent.actionId)
-    const settled = settlementOf(r)
-    if (settled !== 'unknown') book.settle(sent)
-    setUnresolved(book.unresolved())
-    if (r.ok) setDone({ construction: r.construction, fresh: r.fresh, elsewhere })
-    else if (settled === 'conflict') setProblem(CONFLICT)
-    else if (settled === 'settled') setProblem(elsewhere ? { ...r.problem, message: `Your earlier build, on another property, was not made: ${r.problem.message}` } : r.problem)
-    else setProblem({ ...r.problem, message: elsewhere ? UNCONFIRMED_ELSEWHERE : UNCONFIRMED, kind: 'retry' })
-    // This property as stored now: from the answer when it carries this property's view, else read again.
-    if (r.ok && r.view && !elsewhere) setView(r.view)
-    else {
-      const again = await access.load(propertyId)
-      if (again.ok) setView(again.view)
-    }
-    setBusy(false)
-    sending.current = false
-  }
-
+/**
+ * The property's construction: its tier, progress and next goal, the cost of one step, the viewer's test credits, and the
+ * one action (C of the property panel, P1-E6). Who invested, the viewer's own progress and the history are the
+ * construction records (`ConstructionRecords`), further down the panel. `tier`: the tier the page draws, for a city where
+ * construction is not open (the standing note says so, as before).
+ */
+export function ConstructionCard({ construction, tier, color }: { construction: ConstructionState; tier: number; color: string }) {
+  const { propertyId, view, problem, busy, done, unresolved, build } = construction
   const pendingHere = unresolved !== null && unresolved.propertyId === propertyId
   /** While a press is unresolved, the one action is asking about it again: available whatever the property's standing. */
   const check = unresolved && (
@@ -138,15 +88,14 @@ export function ConstructionCard({ propertyId, tier, access, color, onArchitect 
       </div>
     )
 
-  const { property: p, standing, credits, investment, control, contributors } = view
+  const { property: p, standing, credits, control } = view
   const top = p.nextTierAt === null
   const floor = p.tier === 0 ? 0 : view.recipe.tierThresholds[p.tier - 1]
   const progress = top ? 1 : (p.built - floor) / (p.nextTierAt! - floor)
   const step = standing.kind === 'complete' ? null : standing
   /** Steps of the recipe's size left to the next tier (the last one may be smaller). */
   const stepsLeft = top ? 0 : Math.ceil((p.nextTierAt! - p.built) / view.recipe.unitsPerAction)
-  // Read only for anyone this local file gives no test credits to: no control that cannot do anything.
-  const canAct = step !== null && (credits.available > 0 || credits.recorded > 0 || view.viewer.ownerUnits + view.viewer.patronUnits > 0)
+  const action = constructionActionOf(construction)
   return (
     <div
       className="fund-box construction-card"
@@ -171,13 +120,6 @@ export function ConstructionCard({ propertyId, tier, access, color, onArchitect 
           ? `Complete: Tier ${p.tier} is the last tier of the local test recipe (${view.recipe.tierThresholds.join(' · ')} units). Nothing more can be built here in this rehearsal.`
           : `Next goal: Tier ${p.tier + 1} at ${p.nextTierAt} lifetime units, ${stepsLeft} more ${stepsLeft === 1 ? 'step' : 'steps'} by anyone. Provisional LOCAL TEST goal, not a final tier rule.`}
       </p>
-      <p className="muted small" data-testid="construction-control" data-control={control}>
-        {control === 'viewer'
-          ? 'This local server’s test file names you as this NFT’s current controller, so you build here as its owner. Test data, not verified ownership.'
-          : control === 'other'
-            ? `This local server’s test file names another player as this NFT’s current controller.${step ? ' You can contribute as a patron.' : ''}`
-            : `No current controller is named for this NFT on this local server, so nobody can build as its owner.${step ? ' You can contribute as a patron.' : ''}`}
-      </p>
       <dl className="stat-grid construction-stats">
         <div>
           <dt>Your test credits</dt>
@@ -192,31 +134,18 @@ export function ConstructionCard({ propertyId, tier, access, color, onArchitect 
           </dd>
         </div>
       </dl>
-      <p className="muted small" id="construction-cost-note" data-testid="construction-cost-note">
-        LOCAL TEST credits only: valueless, granted by this local server’s test file, never RF or Proofy Points. One step builds {view.recipe.unitsPerAction} test units and costs the
-        same; that number is provisional local tuning, not a price.
-        {credits.pending > 0 && ` ${credits.pending} of your credits are granted by the file and recorded when you first build.`}
-      </p>
       {check}
-      {!unresolved && step && canAct && (
-        <button
-          type="button"
-          className="btn primary"
-          disabled={busy || standing.kind !== 'ready'}
-          onClick={() => void build(step.role)}
-          data-testid="construction-action"
-          data-role={step.role}
-          aria-describedby="construction-cost-note"
-        >
-          {busy ? 'Building…' : step.role === 'owner' ? `Test construction · ${step.units} TEST credits` : `Test patron contribution · ${step.units} TEST credits`}
+      {!unresolved && action && (
+        <button type="button" className="btn primary" disabled={action.disabled} onClick={() => void build(action.role)} data-testid="construction-action" data-role={action.role} aria-describedby="construction-cost-note">
+          {action.label}
         </button>
       )}
-      {!unresolved && step && canAct && standing.kind === 'insufficient' && (
+      {!unresolved && action && standing.kind === 'insufficient' && (
         <p className="small" data-testid="construction-insufficient">
-          You have {credits.available} test credits here; one step costs {step.units}.
+          You have {credits.available} test credits here; one step costs {step!.units}.
         </p>
       )}
-      {!unresolved && step && !canAct && (
+      {!unresolved && step && !action && (
         <p className="muted small" data-testid="construction-read-only">
           This local server’s test file grants you no test credits here, so you can look but not build.
         </p>
@@ -224,6 +153,36 @@ export function ConstructionCard({ propertyId, tier, access, color, onArchitect 
       <p className="small construction-feedback" role="status" aria-live="polite" data-testid="construction-status" data-outcome={outcome}>
         {said}
       </p>
+      <p className="muted small" data-testid="construction-control" data-control={control}>
+        {control === 'viewer'
+          ? 'This local server’s test file names you as this NFT’s current controller, so you build here as its owner. Test data, not verified ownership.'
+          : control === 'other'
+            ? `This local server’s test file names another player as this NFT’s current controller.${step ? ' You can contribute as a patron.' : ''}`
+            : `No current controller is named for this NFT on this local server, so nobody can build as its owner.${step ? ' You can contribute as a patron.' : ''}`}
+      </p>
+      <p className="muted small" id="construction-cost-note" data-testid="construction-cost-note">
+        LOCAL TEST credits only: valueless, granted by this local server’s test file, never RF or Proofy Points. One step builds {view.recipe.unitsPerAction} test units and costs the
+        same; that number is provisional local tuning, not a price.
+        {credits.pending > 0 && ` ${credits.pending} of your credits are granted by the file and recorded when you first build.`}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * The property's construction records (E of the property panel, P1-E6): who invested over its lifetime, the viewer's own
+ * part (with the way to their Architect activity), and the history. Nothing here acts. Absent until the construction is read.
+ */
+export function ConstructionRecords({ construction, onArchitect }: { construction: ConstructionState; onArchitect?: () => void }) {
+  const { view } = construction
+  if (!view) return null
+  const { investment, contributors } = view
+  return (
+    <div className="fund-box construction-records" data-testid="construction-records">
+      <div className="row-between">
+        <h3>Construction records</h3>
+        <span className="sim-tag">LOCAL TEST</span>
+      </div>
       <dl className="stat-grid construction-investment" data-testid="construction-investment">
         <div>
           <dt>Current owner</dt>

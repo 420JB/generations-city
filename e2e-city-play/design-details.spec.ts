@@ -136,9 +136,9 @@ test('3-5, 9-12, 24-26. windows and lighting preview on the city, cancel, and sa
   await expect(panel.getByTestId('design-feedback')).toHaveText(`Saved: Brick · Dome · Industrial lattice · Warm floodlights${STREET}, revision 1. The city shows it now, for everyone.`)
   await expect(panel.getByTestId('design-changes')).toHaveText('Preview matches the saved design.')
   expect(sent).toHaveLength(1)
-  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
-  expect(sent[0]).toMatchObject({ catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm', entrance: 'standard', landscaping: 'standard', baseRevision: 0 })
-  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm' }])
+  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'color', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
+  expect(sent[0]).toMatchObject({ catalog: 'architect-design-v4', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm', entrance: 'standard', landscaping: 'standard', baseRevision: 0 })
+  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v4', facade: 'brick', roof: 'dome', windows: 'lattice', lighting: 'warm' }])
   // 24-26. Free, and no city change: credits, constructions and the city's sequence as they were.
   expect(await records(db).constructionsOf(placed.propertyId)).toHaveLength(built)
   expect(await sequenceOf(worldId)).toBe(before)
@@ -293,7 +293,7 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   await ada.page.keyboard.press('Enter')
   await expect(panel.getByRole('status').filter({ hasText: 'Saved:' })).toHaveText(`Saved: Brick · Dome · Classic arched · Cool floodlights${STREET}, revision 2. The city shows it now, for everyone.`)
   await expect(panel.getByTestId('design-history-entry')).toHaveCount(2)
-  await expect(panel.getByTestId('design-history-entry').nth(0)).toHaveAttribute('data-catalog', 'architect-design-v3')
+  await expect(panel.getByTestId('design-history-entry').nth(0)).toHaveAttribute('data-catalog', 'architect-design-v4')
   await expect(panel.getByTestId('design-history-entry').nth(1)).toHaveAttribute('data-catalog', 'architect-design-v1')
   await expect(panel.getByTestId('design-history-entry').nth(1)).toContainText('chosen before windows and lighting could be chosen')
   const overflow = await ada.page.evaluate(() => ({ page: document.documentElement.scrollWidth - window.innerWidth, drawer: (document.querySelector('[data-testid="drawer"]') as HTMLElement).getBoundingClientRect().right - window.innerWidth }))
@@ -303,7 +303,7 @@ test('21-22, 27. a save an E4A page kept is checked exactly as kept: its receipt
   await ada.page.screenshot({ path: `${SHOTS}/details-4-mobile-options.png` })
   expect(await revisionsOf(placed.propertyId)).toEqual([
     { revision: 1, catalog: 'architect-design-v1', facade: 'brick', roof: 'dome', windows: null, lighting: null },
-    { revision: 2, catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'arched', lighting: 'cool' },
+    { revision: 2, catalog: 'architect-design-v4', facade: 'brick', roof: 'dome', windows: 'arched', lighting: 'cool' },
   ])
   // A relaunch reads it all back.
   await arrive(ada.page, launchHref(await launch(guild, 'rare-city', 'Ada', REHEARSAL_ADA)))

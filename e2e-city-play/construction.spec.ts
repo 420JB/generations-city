@@ -155,7 +155,7 @@ test('the NFT\'s current controller builds it from Tier 0 to Tier 1 on its panel
   await expect(card.getByTestId('construction-credits')).toHaveText(String(CONSTRUCTION_CREDITS.ada))
   await expect(card.getByTestId('construction-cost-note')).toContainText('LOCAL TEST credits only: valueless')
   await expect(card.getByTestId('construction-cost-note')).toContainText('provisional local tuning, not a price')
-  await expect(card.getByTestId('construction-history-none')).toBeVisible()
+  await expect(card.page().getByTestId('construction-records').getByTestId('construction-history-none')).toBeVisible()
   await expect(panel.getByTestId('property-founder')).toHaveText('You')
   await expect(panel.getByTestId('property-holder')).toHaveText('Not verified')
   await expect(sprite(ada.page)).toHaveAttribute('data-tier', '0')
@@ -195,9 +195,9 @@ test('the NFT\'s current controller builds it from Tier 0 to Tier 1 on its panel
   await expect(sprite(ada.page)).toHaveAccessibleName(/Tier 1/)
   await expect(ada.city).toHaveAttribute('data-developed', '1')
   await expect(ada.page.getByTestId('play-world-note')).toContainText('1 property, 1 with local test construction.')
-  await expect(card.getByTestId('construction-history-entry')).toHaveCount(2)
-  await expect(card.getByTestId('investment-current-owner')).toHaveText('100')
-  await expect(card.getByTestId('construction-viewer-progress')).toHaveAttribute('data-owner-units', '100')
+  await expect(card.page().getByTestId('construction-records').getByTestId('construction-history-entry')).toHaveCount(2)
+  await expect(card.page().getByTestId('construction-records').getByTestId('investment-current-owner')).toHaveText('100')
+  await expect(card.page().getByTestId('construction-records').getByTestId('construction-viewer-progress')).toHaveAttribute('data-owner-units', '100')
   await ada.page.screenshot({ path: `${SHOTS}/construction-2-tier1.png` })
   expect(await ledger(placed.propertyId)).toEqual([
     { account: REHEARSAL_ADA, kind: 'fixture-grant', delta: CONSTRUCTION_CREDITS.ada, balance_after: CONSTRUCTION_CREDITS.ada },
@@ -214,7 +214,7 @@ test('the NFT\'s current controller builds it from Tier 0 to Tier 1 on its panel
   await expect(sprite(ada.page)).toHaveAttribute('data-tier', '1')
   const again = await openProperty(ada.page, placed.plotId, placed.buildingId)
   await expect(again).toHaveAttribute('data-tier', '1')
-  await expect(again.getByTestId('construction-history-entry')).toHaveCount(2)
+  await expect(again.page().getByTestId('construction-records').getByTestId('construction-history-entry')).toHaveCount(2)
   await expect(again.getByTestId('construction-credits')).toHaveText(String(CONSTRUCTION_CREDITS.ada - 100))
 
   // Another player of the city sees the same Tier 1 building; the file names someone else as its controller.
@@ -225,8 +225,8 @@ test('the NFT\'s current controller builds it from Tier 0 to Tier 1 on its panel
   // Bea may contribute toward Tier 2, as a patron only.
   await expect(beaCard.getByTestId('construction-action')).toHaveAttribute('data-role', 'patron')
   await expect(beaCard.getByTestId('construction-action')).toBeEnabled()
-  await expect(beaCard.getByTestId('investment-current-owner')).toHaveText('100')
-  await expect(beaCard.getByTestId('construction-history-entry').first()).toHaveAttribute('data-by', 'other')
+  await expect(beaCard.page().getByTestId('construction-records').getByTestId('investment-current-owner')).toHaveText('100')
+  await expect(beaCard.page().getByTestId('construction-records').getByTestId('construction-history-entry').first()).toHaveAttribute('data-by', 'other')
   // Nobody is told it is "their NFT", and Bea is never told who Ada is.
   for (const page of [ada.page, bea.page]) expect(await page.getByTestId('drawer').innerText()).not.toMatch(/your nft/i)
   expect(await bea.page.getByTestId('drawer').innerText()).not.toMatch(/Ada/)
@@ -250,11 +250,11 @@ test('a patron\'s contribution develops the property as community investment, ne
   await expect(action).toHaveText('Test patron contribution · 50 TEST credits')
   await action.click()
   await expect(card.getByTestId('construction-status')).toHaveText(/^Built 50 test units as a patron: Tier 1 reached\./)
-  await expect(card.getByTestId('investment-current-owner')).toHaveText('50')
-  await expect(card.getByTestId('investment-community')).toHaveText('50')
-  await expect(card.getByTestId('investment-total')).toHaveText('100')
-  await expect(card.getByTestId('construction-viewer-progress')).toHaveAttribute('data-owner-units', '0')
-  await expect(card.getByTestId('construction-viewer-progress')).toHaveAttribute('data-patron-units', '50')
+  await expect(card.page().getByTestId('construction-records').getByTestId('investment-current-owner')).toHaveText('50')
+  await expect(card.page().getByTestId('construction-records').getByTestId('investment-community')).toHaveText('50')
+  await expect(card.page().getByTestId('construction-records').getByTestId('investment-total')).toHaveText('100')
+  await expect(card.page().getByTestId('construction-records').getByTestId('construction-viewer-progress')).toHaveAttribute('data-owner-units', '0')
+  await expect(card.page().getByTestId('construction-records').getByTestId('construction-viewer-progress')).toHaveAttribute('data-patron-units', '50')
   await expect(card.getByTestId('construction-credits')).toHaveText('0')
   await expect(sprite(bea.page)).toHaveAttribute('data-tier', '1')
   await bea.page.screenshot({ path: `${SHOTS}/construction-3-patron.png` })
@@ -262,9 +262,9 @@ test('a patron\'s contribution develops the property as community investment, ne
   // Ada's own progression counts her own 50 units only.
   await ada.page.reload()
   const mine = await openProperty(ada.page, placed.plotId, placed.buildingId)
-  await expect(mine.getByTestId('construction-viewer-progress')).toHaveAttribute('data-owner-units', '50')
-  await expect(mine.getByTestId('construction-viewer-progress')).toHaveAttribute('data-patron-units', '0')
-  await expect(mine.getByTestId('investment-community')).toHaveText('50')
+  await expect(mine.page().getByTestId('construction-records').getByTestId('construction-viewer-progress')).toHaveAttribute('data-owner-units', '50')
+  await expect(mine.page().getByTestId('construction-records').getByTestId('construction-viewer-progress')).toHaveAttribute('data-patron-units', '0')
+  await expect(mine.page().getByTestId('construction-records').getByTestId('investment-community')).toHaveText('50')
   expect((await ledger(placed.propertyId)).filter((e) => e.kind === 'construction-debit').map((e) => [e.account, e.delta])).toEqual([
     [REHEARSAL_ADA, -50],
     [REHEARSAL_BEA, -50],
@@ -274,7 +274,7 @@ test('a patron\'s contribution develops the property as community investment, ne
   const visitor = await player(browser, guild, 'Visitor', snowflake())
   const read = await openProperty(visitor.page, placed.plotId, placed.buildingId)
   await expect(read.getByTestId('construction-action')).toHaveCount(0)
-  await expect(read.getByTestId('construction-history-entry')).toHaveCount(2)
+  await expect(read.page().getByTestId('construction-records').getByTestId('construction-history-entry')).toHaveCount(2)
   // Cy has credits, and the property's next goal is Tier 2 (C2-E3B): Cy may contribute toward it, as a patron.
   const cy = await player(browser, guild, 'Cy', REHEARSAL_CY)
   const cyCard = await openProperty(cy.page, placed.plotId, placed.buildingId)
@@ -404,8 +404,8 @@ test('M1: a build the server committed but answered 503 is never said to have pl
   await expect(panel.getByTestId('property-founder')).toHaveText('You')
   await expect(panel.getByTestId('property-holder')).toHaveText('Not verified')
   await expect(again).toHaveAttribute('data-control', 'viewer')
-  await expect(again.getByTestId('construction-history-entry')).toHaveCount(2)
-  for (const entry of await again.getByTestId('construction-history-entry').all()) await expect(entry).toContainText('Owner · You · +50 test units · control era 1')
+  await expect(again.page().getByTestId('construction-records').getByTestId('construction-history-entry')).toHaveCount(2)
+  for (const entry of await again.page().getByTestId('construction-records').getByTestId('construction-history-entry').all()) await expect(entry).toContainText('Owner · You · +50 test units · control era 1')
   await expect(sprite(ada.page)).toHaveAttribute('data-tier', '1')
   await ada.context.close()
 })

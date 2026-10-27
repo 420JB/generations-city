@@ -63,7 +63,7 @@ server/
     world/tickets.ts     LOCAL ONLY: district tickets, the citywide round-robin default assignment (migration 0010), and policies D1-D4 (0011; held by the database too, 0012)
     world/rotation.ts    the rotation, slots and tickets in SQL, shared by tickets, adoptions and activations
     world/construction.ts  LOCAL ONLY: test construction of a property (migrations 0013, 0014: Tier 2) and each player's Architect activity, paid in valueless test credits; only the local rehearsal uses it
-    world/designs.ts     LOCAL ONLY: Architect property design (migrations 0015 to 0017), a catalog facade, roof, windows, lighting, entrance and landscaping saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
+    world/designs.ts     LOCAL ONLY: Architect property design (migrations 0015 to 0018), a catalog facade, roof, windows, lighting, entrance, landscaping and exterior color saved by the NFT's current local test controller; free, no city sequence; only the local rehearsal uses it
     world/legacy.ts      READ ONLY: a property's legacy (P1-C2-E5A): founding, control eras, investment by the current controller, earlier controllers and patrons, the viewer's own part, design revisions by relation; no migration; only the local rehearsal reads it
     world/rehearsal.ts   LOCAL PROPERTY REHEARSAL: test NFTs, district rules, test controllers and credits from a file, APP_MODE=local only (see e2e-city-play/README.md)
     world/verify.ts    the world half of `city:verify`
@@ -1286,6 +1286,16 @@ configuration and is not affected by anything here.
   build cannot save on a 0017 database (its v2 rows are refused; nothing is written) but reads it; it
   refuses to draw a v3 row (the appearance read fails closed), so, as for 0016, roll the service back
   only together with its client.
+  And `0018` (Architect exterior color, P1-E6): one more nullable column on `world_property_designs`
+  (`color`, NULL for every 0015 to 0017 row, which keep their catalogs and meaning and are drawn in
+  their facade material's own color), a shape constraint (an identifier, and only beside the four
+  treatments), the catalog function `world_design_color_known` and a replaced guard: new designs are
+  `architect-design-v4` only (thirteen named colors, `natural` the default), v1 to v3 are read only.
+  A color is a NAME the catalog lists, never a value. Adding a nullable column rewrites no row (the
+  same tuples and storage). An E4C/E5A/R2 build cannot save on a 0018 database (its v3 rows are
+  refused; nothing is written) but reads it; it refuses to draw a v4 row (the appearance read fails
+  closed), so roll the service back only together with its client. NOT applied to any hosted
+  database by P1-E6.
 
 ## Tests
 

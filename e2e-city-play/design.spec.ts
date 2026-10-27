@@ -108,8 +108,8 @@ test('preview on the city does not save; Cancel restores the saved design; Save 
   await expect(panel.getByTestId('design-save')).toBeDisabled()
   await expect(onMap(ada.page)).toHaveAttribute('data-facade', 'copper')
   expect(sent).toHaveLength(1)
-  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
-  expect(sent[0]).toMatchObject({ propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v3', facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' })
+  expect(Object.keys(sent[0]).sort()).toEqual(['actionId', 'baseRevision', 'catalog', 'color', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId'])
+  expect(sent[0]).toMatchObject({ propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v4', facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' })
   expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, facade: 'copper', roof: 'dome', designer: REHEARSAL_ADA }])
   await expect(panel.getByTestId('design-history-entry')).toHaveCount(1)
   await ada.page.screenshot({ path: `${SHOTS}/design-2-saved-tier0.png` })
@@ -263,7 +263,7 @@ test('13-14. the founder who is not the controller, and a patron, cannot change 
       const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return [res.status, await res.json()]
     },
-    [DESIGNS, { ...actor, propertyId: placed.propertyId, actionId: crypto.randomUUID(), baseRevision: 0, catalog: 'architect-design-v3', facade: 'brick', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' }] as const,
+    [DESIGNS, { ...actor, propertyId: placed.propertyId, actionId: crypto.randomUUID(), baseRevision: 0, catalog: 'architect-design-v4', facade: 'brick', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' }] as const,
   )
   expect(asked).toEqual([403, { error: 'not_current_controller' }])
   // A patron contributes, and still has no design view.
@@ -325,7 +325,7 @@ test('18-19. a save whose answer was lost is checked as exactly the same save, e
   expect(await revisionsOf(placed.propertyId)).toHaveLength(1)
   const kept = JSON.parse((await ada.page.evaluate(() => localStorage.getItem('rare-city-design-saves')))!) as Record<string, unknown>[]
   expect(kept).toEqual([
-    { actionId: sent[0].actionId, worldId: sent[0].worldId, discordUserId: REHEARSAL_ADA, propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v3', facade: 'copper', roof: 'terrace', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' },
+    { actionId: sent[0].actionId, worldId: sent[0].worldId, discordUserId: REHEARSAL_ADA, propertyId: placed.propertyId, baseRevision: 0, catalog: 'architect-design-v4', facade: 'copper', roof: 'terrace', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' },
   ])
 
   // A reload, then another choice: the check still sends exactly the first request, and is answered with what it saved.

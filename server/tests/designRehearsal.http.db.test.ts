@@ -33,12 +33,13 @@ const keeper = (id: string | number) => `${KEEPERS}/${id}`
 const APPEARANCE = '/v1/play/rehearsal/appearance'
 const DESIGN = '/v1/play/rehearsal/design'
 const DESIGNS = '/v1/play/rehearsal/designs'
-const CATALOG = 'architect-design-v3'
+const CATALOG = 'architect-design-v4'
 const V1 = 'architect-design-v1'
 const V2 = 'architect-design-v2'
-type Choice = { facade: string; roof: string; windows?: string; lighting?: string; entrance?: string; landscaping?: string }
-/** A design without a treatment choice is sent with the catalog's standard ones. */
-const whole = (d: Choice) => ({ windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', ...d })
+const V3 = 'architect-design-v3'
+type Choice = { facade: string; roof: string; windows?: string; lighting?: string; entrance?: string; landscaping?: string; color?: string }
+/** A design without a treatment choice is sent with the catalog's standard ones (and its material's own color). */
+const whole = (d: Choice) => ({ windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural', ...d })
 const FILE_V4 = {
   kind: REHEARSAL_FILE_KIND_V4,
   players: { [ADA.discordUserId]: [keeper(1), keeper(2)], [BEA.discordUserId]: [keeper(3)] },
@@ -125,8 +126,11 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     /** Exactly the body an E4B page sent (and kept): catalog v2, a facade, roof, windows and lighting, nothing else. */
     const v2Save = (b: Browser, propertyId: string, design: { facade: string; roof: string; windows: string; lighting: string }, baseRevision: number, actionId: string = randomUUID()) =>
       post(DESIGNS, b, { ...b.actor, propertyId, actionId, baseRevision, catalog: V2, ...design })
+    /** Exactly the body an E4C page sent (and kept): catalog v3, the six treatments, no exterior color. */
+    const v3Save = (b: Browser, propertyId: string, design: { facade: string; roof: string; windows: string; lighting: string; entrance: string; landscaping: string }, baseRevision: number, actionId: string = randomUUID()) =>
+      post(DESIGNS, b, { ...b.actor, propertyId, actionId, baseRevision, catalog: V3, ...design })
     const designsOf = async (worldId: string) => (await t.db.query<{ revision: number; facade: string; roof: string; action_id: string }>('SELECT revision, facade, roof, action_id FROM world_property_designs WHERE world_id = $1 ORDER BY property_id, revision', [worldId])).rows
-    return { base, launchAs, post, city, place, view, appearance, save, legacySave, v2Save, designsOf }
+    return { base, launchAs, post, city, place, view, appearance, save, legacySave, v2Save, v3Save, designsOf }
   }
 
   it('the controller saves over the routes and every answer parses strictly; the city reads it back; the city itself does not move', async () => {
@@ -145,7 +149,8 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
         lighting: ['standard', 'warm', 'cool'],
         entrances: ['standard', 'canopy', 'arched', 'portico'],
         landscaping: ['standard', 'garden', 'courtyard'],
-        default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' },
+        colors: ['natural', 'ivory', 'sand', 'terracotta', 'rose', 'crimson', 'copper-orange', 'forest-green', 'sage', 'ocean-blue', 'navy', 'lavender', 'charcoal'],
+        default: { facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' },
       },
       designs: [],
     })
@@ -154,7 +159,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     const before = await city(ada)
 
     const action = randomUUID()
-    const whole6 = { facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm', entrance: 'portico', landscaping: 'garden' }
+    const whole6 = { facade: 'jade', roof: 'spire', windows: 'arched', lighting: 'warm', entrance: 'portico', landscaping: 'garden', color: 'lavender' }
     const res = await save(ada, p.id, whole6, 0, action)
     expect(res.status).toBe(200)
     const saved = parseRehearsalDesignResponse(await res.json())!
@@ -190,7 +195,9 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     // Not identifiers of the catalog, or not identifiers at all.
     expect(await refused(await save(ada, p.id, { facade: 'aurora', roof: 'dome' }, 0))).toEqual([422, { error: 'design_unsupported' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'halo' }, 0))).toEqual([422, { error: 'design_unsupported' }])
-    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, randomUUID(), { catalog: 'architect-design-v4' }))).toEqual([422, { error: 'design_unsupported' }])
+    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome' }, 0, randomUUID(), { catalog: 'architect-design-v5' }))).toEqual([422, { error: 'design_unsupported' }])
+    // An exterior color the catalog does not name (an identifier, but not one of its colors).
+    expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', color: 'teal' }, 0))).toEqual([422, { error: 'design_unsupported' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', windows: 'panoramic' }, 0))).toEqual([422, { error: 'design_unsupported' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', lighting: 'neon' }, 0))).toEqual([422, { error: 'design_unsupported' }])
     expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', entrance: 'awning' }, 0))).toEqual([422, { error: 'design_unsupported' }])
@@ -205,6 +212,11 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
       expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', lighting }, 0)), lighting).toEqual([400, { error: 'invalid_request' }])
     for (const landscaping of ['url(https://example.com/tree.png)', '<g/>', 'Garden', '', 'x'.repeat(65)])
       expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', landscaping }, 0)), landscaping).toEqual([400, { error: 'invalid_request' }])
+    // An exterior color is a name: never a hex string, a CSS function or markup, and never anything but a string.
+    for (const color of ['#ff0000', '#f00', 'rgb(255,0,0)', 'url(https://example.com/x.png)', 'red;background:url(x)', '<b>', 'Navy', '', 'x'.repeat(65)])
+      expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', color }, 0)), color).toEqual([400, { error: 'invalid_request' }])
+    for (const color of [null, 7, ['navy'], { name: 'navy' }])
+      expect(await refused(await post(DESIGNS, ada, { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: CATALOG, ...whole({ facade: 'copper', roof: 'dome' }), color })), JSON.stringify(color)).toEqual([400, { error: 'invalid_request' }])
     // Half a treatment, a treatment of the wrong type, or a street level without windows and lighting, is no body at all.
     const body = { ...ada.actor, propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: CATALOG, facade: 'copper', roof: 'dome' }
     expect(await refused(await post(DESIGNS, ada, { ...body, windows: 'grid' }))).toEqual([400, { error: 'invalid_request' }])
@@ -213,6 +225,9 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     expect(await refused(await post(DESIGNS, ada, { ...body, entrance: 'canopy', landscaping: 'garden' }))).toEqual([400, { error: 'invalid_request' }])
     expect(await refused(await post(DESIGNS, ada, { ...body, windows: 'grid', lighting: 'standard', entrance: null, landscaping: null }))).toEqual([400, { error: 'invalid_request' }])
     expect(await refused(await post(DESIGNS, ada, { ...body, windows: 'grid', lighting: 'standard', entrance: 'canopy', landscaping: ['tree', 'tree'] }))).toEqual([400, { error: 'invalid_request' }])
+    // A color only beside all four treatments: never on its own, or beside windows and lighting alone.
+    expect(await refused(await post(DESIGNS, ada, { ...body, color: 'navy' }))).toEqual([400, { error: 'invalid_request' }])
+    expect(await refused(await post(DESIGNS, ada, { ...body, windows: 'grid', lighting: 'standard', color: 'navy' }))).toEqual([400, { error: 'invalid_request' }])
     for (const extra of [{ pieces: [{ kind: 'tree', x: 9, y: 9 }] }, { plot: 'x-w0-p1' }, { lot: 3 }])
       expect(await refused(await save(ada, p.id, { facade: 'copper', roof: 'dome', landscaping: 'garden' }, 0, randomUUID(), extra)), JSON.stringify(extra)).toEqual([400, { error: 'invalid_request' }])
     for (const facade of ['<img src=x onerror=alert(1)>', '#ff0000', 'url(https://example.com/a.png)', 'Copper', '', 'a'.repeat(65)])
@@ -340,13 +355,13 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     }
     // Read as v1, exactly: no treatment named, for everyone.
     expect(parseRehearsalAppearanceResponse(await (await appearance(ada)).json())!.designs).toEqual([
-      { propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: V1, facade: 'brick', roof: 'dome', windows: null, lighting: null, entrance: null, landscaping: null },
+      { propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: V1, facade: 'brick', roof: 'dome', windows: null, lighting: null, entrance: null, landscaping: null, color: null },
     ])
-    expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ saved: { revision: 1, catalog: V1, windows: null, lighting: null, entrance: null, landscaping: null }, history: [{ catalog: V1, windows: null, entrance: null }] })
+    expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ saved: { revision: 1, catalog: V1, windows: null, lighting: null, entrance: null, landscaping: null, color: null }, history: [{ catalog: V1, windows: null, entrance: null, color: null }] })
     // The kept request, resent exactly: its original receipt, nothing written.
     const replay = await legacySave(ada, p.id, { facade: 'brick', roof: 'dome' }, 0, action)
     expect(replay.status).toBe(200)
-    expect(parseRehearsalDesignResponse(await replay.json())).toMatchObject({ fresh: false, design: { revision: 1, actionId: action, catalog: V1, facade: 'brick', roof: 'dome', windows: null, lighting: null, entrance: null, landscaping: null } })
+    expect(parseRehearsalDesignResponse(await replay.json())).toMatchObject({ fresh: false, design: { revision: 1, actionId: action, catalog: V1, facade: 'brick', roof: 'dome', windows: null, lighting: null, entrance: null, landscaping: null, color: null } })
     // Under that id, anything else is refused: another v1 choice, or the same one sent as the current catalog's.
     expect(await (await legacySave(ada, p.id, { facade: 'jade', roof: 'dome' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
     expect(await (await save(ada, p.id, { facade: 'brick', roof: 'dome' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
@@ -389,8 +404,8 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     }
     const kept = { facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'warm' }
     // Read as v2, exactly: no entrance or landscaping named, for everyone.
-    expect(parseRehearsalAppearanceResponse(await (await appearance(ada)).json())!.designs).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: V2, ...kept, entrance: null, landscaping: null }])
-    expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ saved: { revision: 1, catalog: V2, ...kept, entrance: null, landscaping: null }, history: [{ catalog: V2, entrance: null }] })
+    expect(parseRehearsalAppearanceResponse(await (await appearance(ada)).json())!.designs).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: V2, ...kept, entrance: null, landscaping: null, color: null }])
+    expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ saved: { revision: 1, catalog: V2, ...kept, entrance: null, landscaping: null, color: null }, history: [{ catalog: V2, entrance: null, color: null }] })
     // The kept 11-key request, resent exactly: its original receipt, nothing written.
     const replay = await v2Save(ada, p.id, kept, 0, action)
     expect(replay.status).toBe(200)
@@ -411,6 +426,55 @@ describe.skipIf(NO_TEST_DATABASE)('Architect design routes against a disposable 
     ])
     // The v2 receipt is still answered after it, unchanged.
     expect(parseRehearsalDesignResponse(await (await v2Save(ada, p.id, kept, 0, action)).json())).toMatchObject({ fresh: false, design: { revision: 1, catalog: V2, entrance: null } })
+    expect((await verifyCity(t.db)).violations).toEqual([])
+  })
+  it('a save the E4C page made (catalog v3) and kept is answered with its original receipt, exactly; one never recorded is retired, never applied as a v4 design (P1-E6)', async () => {
+    const { launchAs, place, view, appearance, save, v3Save, designsOf } = await boot()
+    const ada = await launchAs(INSTALLATION_A, ADA)
+    const p = await place(ada, keeper(1))
+    // A row exactly as the E4C build wrote it before 0018 (catalog v3, no exterior color). 0018's guard takes no new v3 row,
+    // so it is written past the guard here; the populated 0017 upgrade itself is in propertyDesignColor.db.test.ts.
+    const action = randomUUID()
+    const session = (await t.db.query<{ id: string }>('SELECT id FROM play_sessions WHERE world_id = $1 AND discord_user_id = $2 ORDER BY created_at DESC LIMIT 1', [ada.actor.worldId, ADA.discordUserId])).rows[0].id
+    const c = await t.db.connect()
+    try {
+      await c.query('BEGIN')
+      await c.query(`SET LOCAL session_replication_role = 'replica'`)
+      await c.query(
+        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+         SELECT w.id, w.city_id, w.city_instance_id, $2, 1, $3, $4, 'brick', 'dome', 'arched', 'cool', 'portico', 'garden', $5, $6, $7, 'local-fixture-controller', c.sequence FROM worlds w JOIN city c ON c.id = w.city_id WHERE w.id = $1`,
+        [ada.actor.worldId, p.id, action, V3, ADA.coreUserId, ADA.discordUserId, session],
+      )
+      await c.query('COMMIT')
+    } finally {
+      c.release()
+    }
+    const kept = { facade: 'brick', roof: 'dome', windows: 'arched', lighting: 'cool', entrance: 'portico', landscaping: 'garden' }
+    // Read as v3, exactly: no exterior color named, for everyone.
+    expect(parseRehearsalAppearanceResponse(await (await appearance(ada)).json())!.designs).toEqual([{ propertyId: p.id, buildingId: p.buildingId, revision: 1, catalog: V3, ...kept, color: null }])
+    expect(parseRehearsalDesignView(await (await view(ada, p.id)).json())).toMatchObject({ saved: { revision: 1, catalog: V3, ...kept, color: null }, history: [{ catalog: V3, color: null }] })
+    // The kept 13-key request, resent exactly: its original receipt, nothing written.
+    const replay = await v3Save(ada, p.id, kept, 0, action)
+    expect(replay.status).toBe(200)
+    expect(parseRehearsalDesignResponse(await replay.json())).toMatchObject({ fresh: false, design: { revision: 1, actionId: action, catalog: V3, ...kept, color: null } })
+    // Under that id, anything else is refused: another v3 choice, or the same one sent as v4 (even in its natural color).
+    expect(await (await v3Save(ada, p.id, { ...kept, landscaping: 'courtyard' }, 0, action)).json()).toEqual({ error: 'action_conflict' })
+    expect(await (await save(ada, p.id, kept, 0, action)).json()).toEqual({ error: 'action_conflict' })
+    // A kept v3 save that never reached the server: refused, settling; nothing is written (it would drop a color unseen).
+    const retired = await v3Save(ada, p.id, { ...kept, roof: 'spire' }, 1)
+    expect([retired.status, await retired.json()]).toEqual([409, { error: 'design_retired' }])
+    expect(await designsOf(ada.actor.worldId)).toEqual([{ revision: 1, facade: 'brick', roof: 'dome', action_id: action }])
+    // The v3 design drawn as it was (its material's own color) is already this property's design in v4 terms; a v4 save
+    // with a color builds on it as revision 2, keeping every other choice.
+    expect(await (await save(ada, p.id, kept, 1)).json()).toEqual({ error: 'design_unchanged' })
+    const next = parseRehearsalDesignResponse(await (await save(ada, p.id, { ...kept, color: 'navy' }, 1)).json())!
+    expect(next.design).toMatchObject({ revision: 2, catalog: CATALOG, ...kept, color: 'navy' })
+    expect(next.view!.history.map((h) => [h.revision, h.catalog, h.entrance, h.color])).toEqual([
+      [2, CATALOG, 'portico', 'navy'],
+      [1, V3, 'portico', null],
+    ])
+    // The v3 receipt is still answered after it, unchanged.
+    expect(parseRehearsalDesignResponse(await (await v3Save(ada, p.id, kept, 0, action)).json())).toMatchObject({ fresh: false, design: { revision: 1, catalog: V3, color: null } })
     expect((await verifyCity(t.db)).violations).toEqual([])
   })
 })

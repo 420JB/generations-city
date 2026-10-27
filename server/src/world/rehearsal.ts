@@ -79,8 +79,8 @@ import { DistrictTicketRefusal, type DistrictTicket, type DistrictTicketRefusalC
  *     a grant is recorded once, inside the first construction of that player that needs it. A city whose
  *     Discord server the file names in neither list has no construction at all, read or write.
  *
- *   - ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C): the NFT's current controller, as the same `controllers` name
- *     them, saves a facade, roof, window, lighting, entrance and landscaping treatment from the engine's design catalog for the property (`designs.ts`). Free, identifiers
+ *   - ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, P1-E6): the NFT's current controller, as the same `controllers` name
+ *     them, saves a facade, roof, window, lighting, entrance and landscaping treatment and an exterior color from the engine's design catalog for the property (`designs.ts`). Free, identifiers
  *     only. Founding, patronage and earlier control authorize nothing; a design stays with the property when
  *     the file names another controller. Every city's saved designs are read (`appearance`) wherever they
  *     exist; only a city whose Discord server the file names saves one.
@@ -121,12 +121,14 @@ const ASSIGNMENT_KEYS = ['asset', 'discordUserId', 'sessionRef', 'ticketId', 'wo
 const RELEASE_KEYS = ['discordUserId', 'sessionRef', 'ticketId', 'worldId']
 const CONSTRUCTION_KEYS = ['actionId', 'discordUserId', 'propertyId', 'role', 'sessionRef', 'worldId']
 /**
- * A design save names a facade and a roof; (catalog v2, P1-C2-E4B) a window and a lighting treatment; and (catalog v3,
- * P1-C2-E4C) an entrance and a landscaping treatment. Exactly one of these shapes; the store judges which its catalog has.
+ * A design save names a facade and a roof; (catalog v2, P1-C2-E4B) a window and a lighting treatment; (catalog v3,
+ * P1-C2-E4C) an entrance and a landscaping treatment; and (catalog v4, P1-E6) an exterior color, by name. Exactly one of
+ * these shapes; the store judges which its catalog has.
  */
 const DESIGN_KEYS = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'propertyId', 'roof', 'sessionRef', 'worldId']
 const DESIGN_DETAIL_KEYS = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'facade', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId']
 const DESIGN_STREET_KEYS = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId']
+const DESIGN_COLOR_KEYS = ['actionId', 'baseRevision', 'catalog', 'color', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId']
 /** A catalog or choice identifier a design request may name (the store judges it against the catalog). */
 const CHOICE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 
@@ -656,7 +658,7 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
       return {
         rehearsal: REHEARSAL_MARK,
         catalog: catalogAnswer(CURRENT_DESIGN_CATALOG),
-        designs: saved.map((d) => ({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog, facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting, entrance: d.entrance, landscaping: d.landscaping })),
+        designs: saved.map((d) => ({ propertyId: d.propertyId, buildingId: d.buildingId, revision: d.revision, catalog: d.catalog, facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting, entrance: d.entrance, landscaping: d.landscaping, color: d.color })),
       }
     },
 
@@ -667,18 +669,20 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
     },
 
     async saveDesign(presented, body) {
-      // Exactly one of the three shapes: an earlier page's save (without the slots its catalog did not have) is answered as exactly that save.
-      const street = Object.hasOwn(body, 'entrance') || Object.hasOwn(body, 'landscaping')
+      // Exactly one of the four shapes: an earlier page's save (without the slots its catalog did not have) is answered as exactly that save.
+      const colored = Object.hasOwn(body, 'color')
+      const street = colored || Object.hasOwn(body, 'entrance') || Object.hasOwn(body, 'landscaping')
       const detailed = street || Object.hasOwn(body, 'windows') || Object.hasOwn(body, 'lighting')
-      const expected = actorOf(body, street ? DESIGN_STREET_KEYS : detailed ? DESIGN_DETAIL_KEYS : DESIGN_KEYS)
-      const { propertyId, actionId, baseRevision, catalog, facade, roof, windows, lighting, entrance, landscaping } = body
-      // Which property, which press, which revision, and identifiers only: no color, markup or URL is ever read.
+      const expected = actorOf(body, colored ? DESIGN_COLOR_KEYS : street ? DESIGN_STREET_KEYS : detailed ? DESIGN_DETAIL_KEYS : DESIGN_KEYS)
+      const { propertyId, actionId, baseRevision, catalog, facade, roof, windows, lighting, entrance, landscaping, color } = body
+      // Which property, which press, which revision, and identifiers only: no color value, markup or URL is ever read (an
+      // exterior color is a name the catalog lists, never a hex string or CSS).
       if (typeof propertyId !== 'string' || !UUID.test(propertyId) || typeof actionId !== 'string' || !UUID.test(actionId) || !Number.isSafeInteger(baseRevision) || (baseRevision as number) < 0)
         throw new RehearsalRefusal(400, 'invalid_request')
-      if ([catalog, facade, roof, ...(detailed ? [windows, lighting] : []), ...(street ? [entrance, landscaping] : [])].some((v) => typeof v !== 'string' || v.length > 64 || !CHOICE.test(v)))
+      if ([catalog, facade, roof, ...(detailed ? [windows, lighting] : []), ...(street ? [entrance, landscaping] : []), ...(colored ? [color] : [])].some((v) => typeof v !== 'string' || v.length > 64 || !CHOICE.test(v)))
         throw new RehearsalRefusal(400, 'invalid_request')
       const done = await designCall(() =>
-        designer!.save(presented, expected, { propertyId, actionId, baseRevision, catalog, facade, roof, ...(detailed ? { windows, lighting } : {}), ...(street ? { entrance, landscaping } : {}) }),
+        designer!.save(presented, expected, { propertyId, actionId, baseRevision, catalog, facade, roof, ...(detailed ? { windows, lighting } : {}), ...(street ? { entrance, landscaping } : {}), ...(colored ? { color } : {}) }),
       )
       // Written and committed, for exactly this actor. The view only reads the property again for the page, so its
       // failure is never answered as if nothing was saved: the design is answered without a view.
@@ -705,6 +709,7 @@ export function createLocalPropertyRehearsal({ mode, fixture: given, sessions, s
           lighting: d.lighting,
           entrance: d.entrance,
           landscaping: d.landscaping,
+          color: d.color,
           atCitySequence: d.atCitySequence,
           designedAt: d.designedAt,
         },
@@ -722,6 +727,7 @@ const catalogAnswer = (c: DesignCatalog): RehearsalDesignCatalog => ({
   lighting: [...c.lighting],
   entrances: [...c.entrances],
   landscaping: [...c.landscaping],
+  colors: [...c.colors],
   default: { ...c.default },
 })
 

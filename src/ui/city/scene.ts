@@ -81,6 +81,11 @@ export interface SceneBuilding extends Omit<Building, 'districtId'> {
    * lot (`none` draws none). The legacy city never sets it, and draws exactly as before.
    */
   street?: Readonly<{ entrance: string; grounds: string }>
+  /**
+   * A brand city's Architect exterior color (P1-E6, an `EXTERIOR_COLORS` key), or none when absent: the facade material is
+   * drawn finished in it, its surface drawn over the color. The legacy city never sets it, and draws exactly as before.
+   */
+  exterior?: string
 }
 
 /** The parts of a city's state the renderer draws. A legacy `GameState` is one. */

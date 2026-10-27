@@ -51,9 +51,9 @@ export const CONSTRUCTION_GUILDS_FILE = resolve(import.meta.dirname, '../test-ar
 /**
  * How many construction servers a run has: each construction test (and each repetition of it) founds its own city. Slots
  * 10-14 are design.spec.ts's (P1-C2-E4A), 15-16 design-details.spec.ts's (P1-C2-E4B), 17-19 design-street.spec.ts's (P1-C2-E4C),
- * 20-21 portfolio-legacy.spec.ts's (P1-C2-E5A).
+ * 20-21 portfolio-legacy.spec.ts's (P1-C2-E5A), 22-23 property-ux-colors.spec.ts's (P1-E6).
  */
-export const CONSTRUCTION_GUILD_COUNT = 220
+export const CONSTRUCTION_GUILD_COUNT = 240
 /** This run's construction Discord servers, as `serve.ts` wrote them before any test ran. */
 export const constructionGuilds = (): string[] => (JSON.parse(readFileSync(CONSTRUCTION_GUILDS_FILE, 'utf8')) as { guilds: string[] }).guilds
 

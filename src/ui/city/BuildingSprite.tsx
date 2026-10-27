@@ -1,5 +1,5 @@
 import { memo, type KeyboardEvent, type MouseEvent } from 'react'
-import { FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
+import { exteriorPalette, FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
 import { MAX_VISIBLE_PATRONS } from '../../config/economy'
 import { patronLevelIndex, rankedPatrons, stageFor, tierFor } from '../../game/economy'
 import type { DemoUser, LandscapeKind } from '../../game/types'
@@ -294,7 +294,12 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
   const stage = stageFor(total)
   const H = buildingHeightPx(total)
   const a0 = footprintHalf(tier)
-  const pal = FACADE_PALETTES[b.architecture.facade] ?? FACADE_PALETTES.slate
+  // A brand city's Architect exterior color, where the scene sets it (P1-E6): the facade material finished in that color,
+  // its surface drawn over it. The legacy city never sets it, and a building without one draws its material's own palette.
+  const colored = b.exterior !== undefined ? exteriorPalette(b.architecture.facade, b.exterior) : null
+  const pal = colored ?? FACADE_PALETTES[b.architecture.facade] ?? FACADE_PALETTES.slate
+  // Too fine to see from far away: there the color alone is drawn.
+  const surface = colored && detail !== 'far' ? `url(#surface-${b.architecture.facade})` : null
   const light = LIGHTING_COLORS[b.architecture.lighting] ? b.architecture.lighting : 'warm'
   const accent = LIGHTING_COLORS[light].accent
   // Static exterior floodlights, where the scene sets them (a brand city's Architect lighting); the legacy city never does.
@@ -346,6 +351,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
       data-tier={tierFor(target)}
       data-total={target}
       data-facade={b.architecture.facade}
+      data-exterior={colored ? b.exterior : undefined}
       data-roof={b.architecture.roof}
       data-lighting={b.architecture.lighting}
       data-floodlights={flood && tier > 0 ? b.floodlights : undefined}
@@ -394,6 +400,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
             colors={{ left: pal.left, right: pal.right, top: pal.top, edge: stage >= 5 ? accent : pal.trim }}
             left={
               <>
+                {surface && <rect x={0} y={0} width={c.faceW} height={h} fill={surface} />}
                 {windowsOn && <FaceWindows w={c.faceW} h={h} style={b.architecture.windows} light={light} lobby={isPodium} accent={accent} />}
                 <rect x={0} y={0} width={c.faceW} height={h} fill="url(#face-shade)" />
                 {trims &&
@@ -408,6 +415,7 @@ export const BuildingSprite = memo(function BuildingSprite({ building: b, total:
             }
             right={
               <>
+                {surface && <rect x={0} y={0} width={c.faceW} height={h} fill={surface} />}
                 {windowsOn && <FaceWindows w={c.faceW} h={h} style={b.architecture.windows} light={light} lobby={isPodium} accent={accent} />}
                 <rect x={0} y={0} width={c.faceW} height={h} fill="url(#face-shade)" opacity={0.6} />
                 {trims &&

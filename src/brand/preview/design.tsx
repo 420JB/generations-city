@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
+import { exteriorPalette, FACADE_PALETTES, LIGHTING_COLORS } from '../../config/architecture'
 import { tierFor, totalBuilt } from '../../game/economy'
 import { BuildingSprite } from '../../ui/city/BuildingSprite'
 import { roofHeightPx } from '../../ui/city/buildingGeometry'
 import { buildingHeightPx } from '../../ui/city/geometry'
 import { CitySceneContext, sceneDistrict } from '../../ui/city/scene'
 import { PanelHeader } from '../../ui/common'
-import { appearanceOf, DESIGN_SLOTS, sameDesign, type DesignSlot, type PropertyDesign } from '../../world/design'
+import { appearanceOf, sameDesign, type DesignSlot, type PropertyDesign } from '../../world/design'
 import type { RehearsalDesign, RehearsalDesignCatalog, RehearsalDesignView } from '../../protocol/playRehearsal'
 import { withPropertyDesigns } from '../core/persisted'
 import type { LoadedBrandCity } from '../load'
 import type { ClaimProblem } from './claim'
 import { catalogNote, designName, LABELS, nameOf, revisionName } from './designNames'
+import { designEditable } from './designAnswer'
 import { DESIGN_REFUSALS, designSettlementOf, type DesignSave, type DesignSaveBook } from './designPress'
 
 /**
- * ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C): a property's facade finish, roof silhouette, window treatment,
- * exterior lighting, entrance and landscaping, chosen by the NFT's CURRENT controller as this local server's TEST file
+ * ARCHITECT DESIGN (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, P1-E6): a property's facade finish, exterior color, roof
+ * silhouette, window treatment, exterior lighting, entrance and landscaping, chosen by the NFT's CURRENT controller as this local server's TEST file
  * names them, from the server's design catalog. Only the Proofy Play page passes access to
  * it, and only when its server runs the local rehearsal.
  *
@@ -27,9 +28,11 @@ import { DESIGN_REFUSALS, designSettlementOf, type DesignSave, type DesignSaveBo
  *     beside the saved version, both drawn by the city's own building art at the building's real tier. A preview is the
  *     page's alone: nothing is sent until Save, and leaving the view (Cancel, Back, another building) drops it, so the
  *     city shows the saved design again.
- *   - The six categories are grouped in three tabs (the building, its windows and lighting, its street level), so the
- *     view stays short; each tab says how many of its categories the preview changes.
- *   - Save sends the property, the catalog, its six identifiers (one coherent revision), the revision the choice was
+ *   - The seven categories are grouped in three tabs (the building: facade material, exterior color and roof; its
+ *     windows and lighting; its street level), so the view stays short; each tab says how many of its categories the
+ *     preview changes. An exterior color is chosen apart from the facade material: every color keeps the chosen
+ *     material's surface, and each swatch shows the chosen material in that color (each material swatch, the chosen color).
+ *   - Save sends the property, the catalog, its seven identifiers (one coherent revision), the revision the choice was
  *     made on and a fresh id (`designPress.ts`): a save whose answer is not known is checked again with the same id, exactly as first sent,
  *     before anything else is saved, and the page never says it was saved until the server says so.
  *
@@ -49,19 +52,27 @@ export interface DesignAccess {
   saves(): DesignSaveBook
 }
 
-const SLOT_NAMES: Readonly<Record<DesignSlot, string>> = { facade: 'Facade', roof: 'Roof', windows: 'Windows', lighting: 'Lighting', entrance: 'Entrance', landscaping: 'Landscaping' }
+const SLOT_NAMES: Readonly<Record<DesignSlot, string>> = { facade: 'Facade', roof: 'Roof', windows: 'Windows', lighting: 'Lighting', entrance: 'Entrance', landscaping: 'Landscaping', color: 'Color' }
 
-/** The view's three tabs, in order: each groups two categories. */
+/** The view's three tabs, in order: the building's material, color and roof; its details; its street level. */
 const GROUPS: readonly { key: string; name: string; slots: readonly DesignSlot[] }[] = [
-  { key: 'building', name: 'Building', slots: ['facade', 'roof'] },
+  { key: 'building', name: 'Building', slots: ['facade', 'color', 'roof'] },
   { key: 'details', name: 'Details', slots: ['windows', 'lighting'] },
   { key: 'street', name: 'Street level', slots: ['entrance', 'landscaping'] },
 ]
 /** Each category's fieldset test id (unchanged since the category was added). */
-const FIELDSET_IDS: Readonly<Record<DesignSlot, string>> = { facade: 'design-facades', roof: 'design-roofs', windows: 'design-windows', lighting: 'design-lighting', entrance: 'design-entrances', landscaping: 'design-landscaping' }
-const LEGENDS: Readonly<Record<DesignSlot, string>> = { facade: 'Facade', roof: 'Roof', windows: 'Windows', lighting: 'Exterior lighting', entrance: 'Entrance', landscaping: 'Landscaping' }
+const FIELDSET_IDS: Readonly<Record<DesignSlot, string>> = {
+  facade: 'design-facades',
+  roof: 'design-roofs',
+  windows: 'design-windows',
+  lighting: 'design-lighting',
+  entrance: 'design-entrances',
+  landscaping: 'design-landscaping',
+  color: 'design-colors',
+}
+const LEGENDS: Readonly<Record<DesignSlot, string>> = { facade: 'Facade material', roof: 'Roof', windows: 'Windows', lighting: 'Exterior lighting', entrance: 'Entrance', landscaping: 'Landscaping', color: 'Exterior color' }
 /** Where the server's catalog lists each category's choices. */
-const CATALOG_LISTS = { facade: 'facades', roof: 'roofs', windows: 'windows', lighting: 'lighting', entrance: 'entrances', landscaping: 'landscaping' } as const satisfies Record<DesignSlot, keyof RehearsalDesignCatalog>
+const CATALOG_LISTS = { facade: 'facades', roof: 'roofs', windows: 'windows', lighting: 'lighting', entrance: 'entrances', landscaping: 'landscaping', color: 'colors' } as const satisfies Record<DesignSlot, keyof RehearsalDesignCatalog>
 
 const UNCONFIRMED = 'We could not confirm this save. It may already have been saved. Check it with the same save: one save is never applied twice, and never as a different design.'
 const UNCONFIRMED_ELSEWHERE = 'We could not confirm your last design save, on another of this city’s properties. Check it before saving anything else: one save is never applied twice.'
@@ -85,6 +96,7 @@ export function DesignThumb({ city, buildingId, design, caption, testId }: { cit
       data-lighting={design.lighting}
       data-entrance={design.entrance}
       data-landscaping={design.landscaping}
+      data-color={design.color}
     >
       {/* Paint ids resolve against the map's own <defs>. Inert, and drawn without its label (detail "mid", unselected), so
           nothing in it can be focused, clicked or referenced in place of the city's own building. */}
@@ -103,22 +115,17 @@ export function DesignThumb({ city, buildingId, design, caption, testId }: { cit
 }
 const noop = () => {}
 
-/** A view's saved design (or the catalog's default), as it is drawn: its six identifiers and nothing else (an earlier catalog's design with the standard treatments it was saved with). */
+/** A view's saved design (or the catalog's default), as it is drawn: its seven identifiers and nothing else (an earlier catalog's design with the standard treatments it was saved with). */
 const savedOf = (view: RehearsalDesignView): PropertyDesign => appearanceOf(view.saved ?? view.catalog.default)
 
-/** The saved design of a property, as every viewer may see it, and the one way in to change it (its named controller only). */
-export function DesignCard({ propertyId, tier, founder, access, onDesign }: { propertyId: string; tier: number; founder: boolean; access: DesignAccess; onDesign: () => void }) {
-  const [answer, setAnswer] = useState<DesignLoad | null>(null)
-  useEffect(() => {
-    let live = true
-    void access.load(propertyId).then((r) => live && setAnswer(r))
-    return () => {
-      live = false
-    }
-  }, [access, propertyId])
+/**
+ * The saved design of a property, as every viewer may see it, and the one way in to change it (its named controller only).
+ * `pending`: a save of the viewer's that the server has not answered yet (kept by the save book), said here before anything else is saved.
+ */
+export function DesignCard({ answer, tier, founder, pending, onDesign }: { answer: DesignLoad | null; tier: number; founder: boolean; pending: 'here' | 'elsewhere' | null; onDesign: () => void }) {
   const view = answer?.ok ? answer.view : null
   const design = view ? savedOf(view) : null
-  const editable = !!view && view.open && view.control === 'viewer'
+  const editable = designEditable(answer)
   return (
     <div
       className="fund-box design-card"
@@ -133,6 +140,8 @@ export function DesignCard({ propertyId, tier, founder, access, onDesign }: { pr
       data-lighting={design?.lighting ?? ''}
       data-entrance={design?.entrance ?? ''}
       data-landscaping={design?.landscaping ?? ''}
+      data-color={design?.color ?? ''}
+      data-pending={pending ?? ''}
     >
       <div className="row-between">
         <h3>Architect design</h3>
@@ -166,6 +175,11 @@ export function DesignCard({ propertyId, tier, founder, access, onDesign }: { pr
                   : 'No current controller is named for this NFT on this local server, so nobody can change its design.'}
             {founder && view.control !== 'viewer' && ' Founding this property does not let you change it.'}
           </p>
+          {editable && pending && (
+            <p className="small" data-testid="design-card-pending" data-pending={pending}>
+              {pending === 'here' ? 'Your last design save here is not confirmed yet: open the Architect design to check it.' : 'Your last design save, on another property, is not confirmed yet: check it before saving here.'}
+            </p>
+          )}
           {editable && (
             <button type="button" className="btn primary" onClick={onDesign} data-testid="design-open">
               Open Architect design
@@ -246,7 +260,7 @@ export function ArchitectDesignPanel({
   const saved = useMemo(() => (view ? savedOf(view) : null), [view])
   const changed = !!choice && !!saved && !sameDesign(choice, saved)
   /** The categories the preview changes, in the order the view lists them. */
-  const changes = choice && saved ? DESIGN_SLOTS.filter((slot) => choice[slot] !== saved[slot]) : []
+  const changes = choice && saved ? GROUPS.flatMap((g) => g.slots).filter((slot) => choice[slot] !== saved[slot]) : []
   // The city draws the choice while it differs from the saved design: never anything once this view is gone.
   useEffect(() => {
     onPreview(changed && choice ? choice : null)
@@ -271,6 +285,7 @@ export function ArchitectDesignPanel({
       lighting: choice.lighting,
       entrance: choice.entrance,
       landscaping: choice.landscaping,
+      color: choice.color,
     })
     const elsewhere = sent.propertyId !== propertyId
     setBusy(true)
@@ -332,6 +347,11 @@ export function ArchitectDesignPanel({
       ) : (
         <>
           <div className="design-compare" data-testid="design-compare" data-changed={String(changed)}>
+            {changed && (
+              <span className="sim-tag design-unsaved" data-testid="design-unsaved">
+                UNSAVED PREVIEW
+              </span>
+            )}
             <DesignThumb city={city} buildingId={buildingId} design={saved} caption={view.saved ? `Saved · revision ${view.saved.revision}` : 'Saved · default'} testId="design-thumb-saved" />
             <DesignThumb city={city} buildingId={buildingId} design={choice} caption={changed ? 'Preview' : 'Preview · same as saved'} testId="design-thumb-preview" />
           </div>
@@ -351,7 +371,7 @@ export function ArchitectDesignPanel({
             counts={Object.fromEntries(GROUPS.map((g) => [g.key, g.slots.filter((slot) => changes.includes(slot)).length]))}
             render={(g) =>
               g.slots.map((slot) => (
-                <OptionList key={slot} slot={slot} catalog={view.catalog} chosen={choice[slot]} disabled={!editable || busy} onChoose={(id) => setChoice({ ...choice, [slot]: id })} />
+                <OptionList key={slot} slot={slot} catalog={view.catalog} choice={choice} disabled={!editable || busy} onChoose={(id) => setChoice({ ...choice, [slot]: id })} />
               ))
             }
           />
@@ -401,6 +421,7 @@ export function ArchitectDesignPanel({
                     data-lighting={h.lighting ?? ''}
                     data-entrance={h.entrance ?? ''}
                     data-landscaping={h.landscaping ?? ''}
+                    data-color={h.color ?? ''}
                   >
                     <span className="grow">
                       {revisionName(h)}{' '}
@@ -470,18 +491,36 @@ function DesignTabs({ group, onGroup, counts, render }: { group: string; onGroup
   )
 }
 
-/** One category's choices, as radio options with a small glyph each. */
-function OptionList({ slot, catalog, chosen, disabled, onChoose }: { slot: DesignSlot; catalog: RehearsalDesignCatalog; chosen: string; disabled: boolean; onChoose: (id: string) => void }) {
+/**
+ * One category's choices, as radio options with a small glyph each (one radio group: arrow keys move between them, and
+ * each option is named by its visible name). Exterior colors are a compact swatch grid, each swatch the chosen material
+ * in that color; each material swatch is drawn in the chosen color.
+ */
+function OptionList({ slot, catalog, choice, disabled, onChoose }: { slot: DesignSlot; catalog: RehearsalDesignCatalog; choice: PropertyDesign; disabled: boolean; onChoose: (id: string) => void }) {
+  const chosen = choice[slot]
+  const colors = slot === 'color'
   return (
-    <fieldset className="design-options" disabled={disabled} data-testid={FIELDSET_IDS[slot]}>
-      <legend>{LEGENDS[slot]}</legend>
+    <fieldset className={`design-options${colors ? ' design-color-options' : ''}`} disabled={disabled} data-testid={FIELDSET_IDS[slot]} data-chosen={chosen}>
+      <legend>
+        {LEGENDS[slot]}
+        {colors && <span className="muted small"> · {nameOf('color', chosen)}, on {nameOf('facade', choice.facade).toLowerCase()}</span>}
+      </legend>
       {catalog[CATALOG_LISTS[slot]].map((id) => (
-        <label key={id} className={`design-option${chosen === id ? ' on' : ''}`} data-testid={`design-${slot}-${id}`}>
+        <label key={id} className={`design-option${colors ? ' design-color' : ''}${chosen === id ? ' on' : ''}`} data-testid={`design-${slot}-${id}`} title={colors ? LABELS.color[id]?.note : undefined}>
           <input type="radio" name={`design-${slot}`} value={id} checked={chosen === id} onChange={() => onChoose(id)} />
-          <OptionGlyph slot={slot} id={id} />
+          <OptionGlyph slot={slot} id={id} choice={choice} />
           <span className="design-option-text">
-            <b>{nameOf(slot, id)}</b>
-            <span className="muted small">{LABELS[slot][id]?.note}</span>
+            <b>
+              {nameOf(slot, id)}
+              {/* The active color is marked beyond its border; the mark is not part of its name (the radio says it is chosen). */}
+              {colors && chosen === id && (
+                <span className="design-check" aria-hidden="true">
+                  {' '}
+                  ✓
+                </span>
+              )}
+            </b>
+            {!colors && <span className="muted small">{LABELS[slot][id]?.note}</span>}
           </span>
         </label>
       ))}
@@ -489,20 +528,35 @@ function OptionList({ slot, catalog, chosen, disabled, onChoose }: { slot: Desig
   )
 }
 
-function OptionGlyph({ slot, id }: { slot: DesignSlot; id: string }) {
+/** A small iso block of `facade` finished in `color`, with the material's surface where it is colored: the material and color swatches. */
+function FinishGlyph({ facade, color }: { facade: string; color: string }) {
+  const colored = exteriorPalette(facade, color)
+  const pal = colored ?? FACADE_PALETTES[facade] ?? FACADE_PALETTES.slate
+  // Paint ids resolve against the map's own <defs> (`CityDefs`), as the previews' do.
+  const surface = colored ? `url(#surface-${facade})` : null
+  return (
+    <svg className="design-swatch" viewBox="-12 -14 24 24" width="28" height="28" aria-hidden="true" data-facade={facade} data-color={color}>
+      <polygon points="0,-12 10,-6 0,0 -10,-6" fill={pal.top} />
+      <polygon points="-10,-6 0,0 0,10 -10,4" fill={pal.left} />
+      <polygon points="0,0 10,-6 10,4 0,10" fill={pal.right} />
+      {surface && (
+        <>
+          <polygon points="-10,-6 0,0 0,10 -10,4" fill={surface} />
+          <polygon points="0,0 10,-6 10,4 0,10" fill={surface} />
+        </>
+      )}
+      <line x1={-10} y1={-1} x2={0} y2={5} stroke={pal.trim} strokeWidth={1} />
+      <line x1={0} y1={5} x2={10} y2={-1} stroke={pal.trim} strokeWidth={1} />
+    </svg>
+  )
+}
+
+function OptionGlyph({ slot, id, choice }: { slot: DesignSlot; id: string; choice: PropertyDesign }) {
   switch (slot) {
-    case 'facade': {
-      const pal = FACADE_PALETTES[id] ?? FACADE_PALETTES.slate
-      return (
-        <svg className="design-swatch" viewBox="-12 -14 24 24" width="28" height="28" aria-hidden="true">
-          <polygon points="0,-12 10,-6 0,0 -10,-6" fill={pal.top} />
-          <polygon points="-10,-6 0,0 0,10 -10,4" fill={pal.left} />
-          <polygon points="0,0 10,-6 10,4 0,10" fill={pal.right} />
-          <line x1={-10} y1={-1} x2={0} y2={5} stroke={pal.trim} strokeWidth={1} />
-          <line x1={0} y1={5} x2={10} y2={-1} stroke={pal.trim} strokeWidth={1} />
-        </svg>
-      )
-    }
+    case 'facade':
+      return <FinishGlyph facade={id} color={choice.color} />
+    case 'color':
+      return <FinishGlyph facade={choice.facade} color={id} />
     case 'roof':
       return <RoofGlyph kind={id} />
     case 'windows':

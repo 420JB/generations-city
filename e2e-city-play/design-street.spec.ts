@@ -11,7 +11,8 @@ import { CONSTRUCTION_CREDITS, CONSTRUCTION_KEEPER, REHEARSAL_ADA, REHEARSAL_BEA
  * ARCHITECT ENTRANCES AND LANDSCAPING (P1-C2-E4C), end to end against a REAL local Proofy Play, in the original city view:
  * an entrance and a landscaping treatment join the facade, roof, windows and lighting in the same Architect design view,
  * grouped in three tabs. Each choice is previewed on the map's own building and beside the saved one; Cancel leaves the
- * stored design as it was; Save writes all six as one revision of catalog architect-design-v3, drawn for everyone, after
+ * stored design as it was; Save writes all six as one revision of the current catalog (architect-design-v3 when E4C
+ * shipped; architect-design-v4, with the natural exterior color, since P1-E6), drawn for everyone, after
  * a reload, at every tier, turned and from afar, inside the property's own lot. A save an E4B page kept (catalog v2) is
  * checked exactly as it was kept. LOCAL TEST control only; free: no credit, construction, tier, sequence, Crown, Capital
  * or monument.
@@ -21,7 +22,8 @@ mkdirSync(SHOTS, { recursive: true })
 const KEEPER_ID = CONSTRUCTION_KEEPER.slice(CONSTRUCTION_KEEPER.lastIndexOf('/') + 1)
 const DESIGNS = '/v1/play/rehearsal/designs'
 const KEPT = 'rare-city-design-saves'
-const KEYS_V3 = ['actionId', 'baseRevision', 'catalog', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId']
+/** A save of the current catalog (architect-design-v4 since P1-E6): the six treatments and the exterior color. */
+const KEYS_NOW = ['actionId', 'baseRevision', 'catalog', 'color', 'discordUserId', 'entrance', 'facade', 'landscaping', 'lighting', 'propertyId', 'roof', 'sessionRef', 'windows', 'worldId']
 
 const databaseUrl = process.env.CITY_PLAY_DATABASE_URL ?? ''
 let db: pg.Pool
@@ -192,9 +194,9 @@ test('5-17, 29-34. entrances and landscaping preview on the city, cancel, and sa
   await expect(panel.getByTestId('design-feedback')).toHaveText('Saved: Jade · Dome · Ribbon glass · Warm floodlights · Grand portico · Garden grounds, revision 1. The city shows it now, for everyone.')
   await expect(panel.getByTestId('design-changes')).toHaveText('Preview matches the saved design.')
   expect(sent).toHaveLength(1)
-  expect(Object.keys(sent[0]).sort()).toEqual(KEYS_V3)
-  expect(sent[0]).toMatchObject({ catalog: 'architect-design-v3', facade: 'jade', roof: 'dome', windows: 'ribbon', lighting: 'warm', entrance: 'portico', landscaping: 'garden', baseRevision: 0 })
-  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v3', facade: 'jade', roof: 'dome', windows: 'ribbon', lighting: 'warm', entrance: 'portico', landscaping: 'garden', designer: REHEARSAL_ADA }])
+  expect(Object.keys(sent[0]).sort()).toEqual(KEYS_NOW)
+  expect(sent[0]).toMatchObject({ catalog: 'architect-design-v4', facade: 'jade', roof: 'dome', windows: 'ribbon', lighting: 'warm', entrance: 'portico', landscaping: 'garden', color: 'natural', baseRevision: 0 })
+  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v4', facade: 'jade', roof: 'dome', windows: 'ribbon', lighting: 'warm', entrance: 'portico', landscaping: 'garden', designer: REHEARSAL_ADA }])
   // 29-31. Free, and no city change: credits, constructions, the city's sequence and the plot as they were.
   expect(await records(db).constructionsOf(placed.propertyId)).toHaveLength(built)
   expect(await sequenceOf(worldId)).toBe(before)
@@ -275,7 +277,7 @@ test('18-22. the founder who is not the controller, and a patron, cannot change 
         const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
         return [res.status, await res.json()]
       },
-      [DESIGNS, { ...actor, propertyId: placed.propertyId, actionId: crypto.randomUUID(), baseRevision: 0, catalog: 'architect-design-v3', facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', ...design }] as const,
+      [DESIGNS, { ...actor, propertyId: placed.propertyId, actionId: crypto.randomUUID(), baseRevision: 0, catalog: 'architect-design-v4', facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', color: 'natural', ...design }] as const,
     )
   const beaActor = { sessionRef: await bea.city.getAttribute('data-session-ref'), worldId: await bea.city.getAttribute('data-world'), discordUserId: REHEARSAL_BEA }
   // 20. The founder alone, asked outright: refused, nothing written.
@@ -304,7 +306,7 @@ test('18-22. the founder who is not the controller, and a patron, cannot change 
   await (await designOption(panel, 'design-landscaping-courtyard')).click()
   await panel.getByTestId('design-save').click()
   await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'saved')
-  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v3', facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'canopy', landscaping: 'courtyard', designer: REHEARSAL_ADA }])
+  expect(await revisionsOf(placed.propertyId)).toEqual([{ revision: 1, catalog: 'architect-design-v4', facade: 'slate', roof: 'flat', windows: 'grid', lighting: 'standard', entrance: 'canopy', landscaping: 'courtyard', designer: REHEARSAL_ADA }])
   // The founder and the patron see it; the founding record is still Bea's.
   await bea.page.reload()
   await expect(onMap(bea.page)).toHaveAttribute('data-entrance', 'awning')
@@ -386,7 +388,7 @@ test('25-28. a save an E4B page kept is checked exactly as kept: its receipt if 
   await expect((await designOption(panel, 'design-windows-lattice')).getByRole('radio')).toBeChecked()
   await expect((await designOption(panel, 'design-entrance-standard')).getByRole('radio')).toBeChecked()
 
-  // 26. A v3 save whose answer is lost: kept as all thirteen keys, checked again exactly so after a reload and another choice.
+  // 26. A save of the current catalog (v4) whose answer is lost: kept as all fourteen keys, checked again exactly so after a reload and another choice.
   let lose = true
   await ada.page.route(`**${DESIGNS}`, async (route) => {
     if (!lose) return route.continue()
@@ -399,7 +401,7 @@ test('25-28. a save an E4B page kept is checked exactly as kept: its receipt if 
   await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'unconfirmed')
   expect(await revisionsOf(placed.propertyId)).toHaveLength(2)
   const keptV3 = JSON.parse((await ada.page.evaluate((key) => localStorage.getItem(key), KEPT))!) as Record<string, unknown>[]
-  expect(keptV3).toEqual([{ actionId: sent[2].actionId, worldId, discordUserId: REHEARSAL_ADA, propertyId: placed.propertyId, baseRevision: 1, catalog: 'architect-design-v3', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: 'standard', landscaping: 'garden' }])
+  expect(keptV3).toEqual([{ actionId: sent[2].actionId, worldId, discordUserId: REHEARSAL_ADA, propertyId: placed.propertyId, baseRevision: 1, catalog: 'architect-design-v4', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: 'standard', landscaping: 'garden', color: 'natural' }])
   await ada.page.reload()
   await openProperty(ada.page, placed.plotId, placed.buildingId)
   panel = await openDesign(ada.page)
@@ -445,8 +447,8 @@ test('25-28. a save an E4B page kept is checked exactly as kept: its receipt if 
   testInfo.annotations.push({ type: 'mobile design view height (px)', description: String(height) })
   expect(await revisionsOf(placed.propertyId)).toEqual([
     { revision: 1, catalog: 'architect-design-v2', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: null, landscaping: null, designer: REHEARSAL_ADA },
-    { revision: 2, catalog: 'architect-design-v3', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: 'standard', landscaping: 'garden', designer: REHEARSAL_ADA },
-    { revision: 3, catalog: 'architect-design-v3', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: 'canopy', landscaping: 'courtyard', designer: REHEARSAL_ADA },
+    { revision: 2, catalog: 'architect-design-v4', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: 'standard', landscaping: 'garden', designer: REHEARSAL_ADA },
+    { revision: 3, catalog: 'architect-design-v4', facade: 'copper', roof: 'spire', windows: 'lattice', lighting: 'cool', entrance: 'canopy', landscaping: 'courtyard', designer: REHEARSAL_ADA },
   ])
   // 17. A relaunch reads it all back.
   await arrive(ada.page, launchHref(await launch(guild, 'rare-city', 'Ada', REHEARSAL_ADA)))

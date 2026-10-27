@@ -136,8 +136,8 @@ export async function drawnHeight(page: Page, friendId: string) {
   return page.getByTestId(`building-${friendId}`).evaluate((g) => (g as SVGGraphicsElement).getBBox().height)
 }
 
-/** The Architect design view's tab for each category (P1-C2-E4C): a category's options are shown while its tab is chosen. */
-const DESIGN_GROUPS: Readonly<Record<string, string>> = { facade: 'building', roof: 'building', windows: 'details', lighting: 'details', entrance: 'street', landscaping: 'street' }
+/** The Architect design view's tab for each category (P1-C2-E4C; the exterior color, P1-E6, in the Building tab): a category's options are shown while its tab is chosen. */
+const DESIGN_GROUPS: Readonly<Record<string, string>> = { facade: 'building', color: 'building', roof: 'building', windows: 'details', lighting: 'details', entrance: 'street', landscaping: 'street' }
 
 /** One option of the design view (`design-<category>-<id>`), with its category's tab chosen first. */
 export async function designOption(panel: Locator, testId: string) {

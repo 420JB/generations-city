@@ -128,7 +128,7 @@ test('the portfolio groups the record by relationship and opens each property\'s
   await expect(eras).toContainText('100 test units by its controller · 50 test units by patrons · 3 steps')
   const revisions = legacy.getByTestId('legacy-design')
   await expect(revisions).toHaveCount(1)
-  await expect(revisions).toHaveAttribute('data-catalog', 'architect-design-v3')
+  await expect(revisions).toHaveAttribute('data-catalog', 'architect-design-v4')
   await expect(revisions.getByTestId('legacy-design-by')).toHaveText('Saved by you while test controller')
   await expect(legacy.getByTestId('legacy-thumb')).toHaveAttribute('data-facade', 'copper')
   // Read only: nothing in it builds, saves or spends.
@@ -171,7 +171,7 @@ test('the portfolio groups the record by relationship and opens each property\'s
   await hers.getByRole('button', { name: 'Back' }).click()
   await expect(bea.page.getByTestId('building-panel')).toHaveAttribute('data-building', keeper.buildingId)
   // Her portfolio: a patron of the keeper, never its controller or founder; patron units are not her own building.
-  await bea.page.getByTestId('construction-card').getByTestId('construction-architect').click()
+  await bea.page.getByTestId('construction-records').getByTestId('construction-architect').click()
   const beaPortfolio = bea.page.getByTestId('architect-activity')
   await expect(beaPortfolio.getByTestId('architect-totals')).toHaveAttribute('data-owner-units', '0')
   await expect(beaPortfolio.getByTestId('architect-totals')).toHaveAttribute('data-patron-units', '50')

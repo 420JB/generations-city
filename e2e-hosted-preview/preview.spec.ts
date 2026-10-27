@@ -9,11 +9,13 @@ import { ACCESS_PASSWORD, ACCESS_USER, KEEPER_101, ORIGIN, PREVIEW_ADA, PREVIEW_
  * THE HOSTED PREVIEW, end to end, as a tester meets it: the access gate first, then a Proofy Play launch into the real
  * Districts Play client SERVED BY THE DISTRICTS SERVER ITSELF (no Vite), under the strict CSP, over https with Secure
  * `__Host-` cookies. The committed synthetic world (hosted-preview/): a claim and exact plot, Tier 1 and Tier 2 with
- * owner and patron TEST credits, a six-category Architect design, a reload, the Architect Portfolio and Property Legacy.
+ * owner and patron TEST credits, an Architect design of every category with an exterior color (P1-E6), a reload, the
+ * Architect Portfolio and Property Legacy.
  *
  * PREVIEW_PHASE=founding (controller variant a) builds it; PREVIEW_PHASE=transfer (variant b: the same file but Bea named
- * keeper #101's controller), run after the server AND the database have restarted, checks it all survived and that the
- * previous controller's progress is kept. Synthetic NFTs, players and valueless TEST credits only. HEADLESS ONLY.
+ * keeper #101's controller), run after the server AND the database have restarted, checks it all survived, that the new
+ * controller inherits the design (its color too) and may change it, and that the previous controller keeps their
+ * progress, is told they controlled it earlier, and is offered no change to it. Synthetic NFTs, players and valueless TEST credits only. HEADLESS ONLY.
  */
 const phase = process.env.PREVIEW_PHASE ?? 'founding'
 const KEEPER_ID = KEEPER_101.slice(KEEPER_101.lastIndexOf('/') + 1)
@@ -69,7 +71,12 @@ async function build(page: Page, built: number) {
 }
 
 const designsOf = async (propertyId: string) =>
-  (await db.query<{ revision: number; facade: string; landscaping: string; designer: string }>('SELECT revision, facade, landscaping, designer_discord_user_id AS designer FROM world_property_designs WHERE property_id = $1 ORDER BY revision', [propertyId])).rows
+  (
+    await db.query<{ revision: number; facade: string; landscaping: string; color: string | null; designer: string }>(
+      'SELECT revision, facade, landscaping, color, designer_discord_user_id AS designer FROM world_property_designs WHERE property_id = $1 ORDER BY revision',
+      [propertyId],
+    )
+  ).rows
 
 test.describe('founding', () => {
   test.skip(phase !== 'founding', 'PREVIEW_PHASE=founding')
@@ -138,14 +145,18 @@ test.describe('founding', () => {
     await expect(card).toHaveAttribute('data-tier', '2')
     await expect(onMap(ada.page)).toHaveAttribute('data-tier', '2')
 
-    // A six-category Architect design.
+    // The panel leads with what Ada can do: she is its named controller.
+    await expect(ada.page.getByTestId('property-control')).toHaveAttribute('data-control', 'viewer')
+    await expect(ada.page.getByTestId('property-action-design')).toBeEnabled()
+    // An Architect design of every category, with an exterior color.
     await ada.page.getByTestId('design-card').getByTestId('design-open').click()
     const panel = ada.page.getByTestId('design-panel')
     await expect(panel).toHaveAttribute('data-state', 'ready')
-    for (const id of ['design-facade-copper', 'design-roof-dome', 'design-windows-ribbon', 'design-lighting-warm', 'design-entrance-portico', 'design-landscaping-garden']) await (await designOption(panel, id)).click()
+    for (const id of ['design-facade-copper', 'design-color-ocean-blue', 'design-roof-dome', 'design-windows-ribbon', 'design-lighting-warm', 'design-entrance-portico', 'design-landscaping-garden'])
+      await (await designOption(panel, id)).click()
     await panel.getByTestId('design-save').click()
     await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'saved')
-    expect(await designsOf(placed.propertyId)).toEqual([{ revision: 1, facade: 'copper', landscaping: 'garden', designer: PREVIEW_ADA }])
+    expect(await designsOf(placed.propertyId)).toEqual([{ revision: 1, facade: 'copper', landscaping: 'garden', color: 'ocean-blue', designer: PREVIEW_ADA }])
 
     // A reload keeps all of it.
     await ada.page.reload()
@@ -153,6 +164,7 @@ test.describe('founding', () => {
     await still(ada.page)
     await expect(onMap(ada.page)).toHaveAttribute('data-tier', '2')
     await expect(onMap(ada.page)).toHaveAttribute('data-facade', 'copper')
+    await expect(onMap(ada.page)).toHaveAttribute('data-exterior', 'ocean-blue')
     await expect(onMap(ada.page)).toHaveAttribute('data-grounds', 'garden')
 
     // The Architect Portfolio and the Property Legacy.
@@ -163,7 +175,7 @@ test.describe('founding', () => {
     await expect(portfolio.getByTestId('architect-totals')).toHaveAttribute('data-owner-units', '200')
     await expect(portfolio.getByTestId('portfolio-filter-controlled')).toHaveAttribute('data-count', '1')
     const item = portfolio.locator(`[data-testid="architect-property"][data-building="${placed.buildingId}"]`)
-    await expect(item.getByTestId('architect-property-design-summary')).toContainText('Copper · Dome · Ribbon glass · Warm floodlights · Grand portico · Garden grounds · revision 1')
+    await expect(item.getByTestId('architect-property-design-summary')).toContainText('Copper in Ocean blue · Dome · Ribbon glass · Warm floodlights · Grand portico · Garden grounds · revision 1')
     await item.getByTestId('architect-property-legacy').click()
     const legacy = ada.page.getByTestId('property-legacy')
     await expect(legacy).toHaveAttribute('data-state', 'ready')
@@ -205,18 +217,23 @@ test.describe('transfer', () => {
     await still(bea.page)
     await expect(onMap(bea.page)).toHaveAttribute('data-tier', '2')
     await expect(onMap(bea.page)).toHaveAttribute('data-facade', 'copper')
+    await expect(onMap(bea.page)).toHaveAttribute('data-exterior', 'ocean-blue')
     const card = await openProperty(bea.page, placed.plotId, placed.buildingId)
     await expect(card).toHaveAttribute('data-built', '250')
-    // Bea is the named controller now: she may save a design, as revision 2.
+    await expect(bea.page.getByTestId('property-control')).toHaveAttribute('data-control', 'viewer')
+    await expect(bea.page.getByTestId('property-control')).toHaveAttribute('data-earlier', 'false')
+    await expect(bea.page.getByTestId('design-card')).toHaveAttribute('data-color', 'ocean-blue')
+    // Bea is the named controller now: she may save a design, as revision 2; a new material keeps the inherited color.
     await bea.page.getByTestId('design-card').getByTestId('design-open').click()
     const panel = bea.page.getByTestId('design-panel')
     await expect(panel).toHaveAttribute('data-state', 'ready')
+    await expect(panel.getByTestId('design-colors')).toHaveAttribute('data-chosen', 'ocean-blue')
     await (await designOption(panel, 'design-facade-jade')).click()
     await panel.getByTestId('design-save').click()
     await expect(panel.getByTestId('design-feedback')).toHaveAttribute('data-outcome', 'saved')
     expect(await designsOf(placed.propertyId)).toEqual([
-      { revision: 1, facade: 'copper', landscaping: 'garden', designer: PREVIEW_ADA },
-      { revision: 2, facade: 'jade', landscaping: 'garden', designer: PREVIEW_BEA },
+      { revision: 1, facade: 'copper', landscaping: 'garden', color: 'ocean-blue', designer: PREVIEW_ADA },
+      { revision: 2, facade: 'jade', landscaping: 'garden', color: 'ocean-blue', designer: PREVIEW_BEA },
     ])
     // Bea's view of the legacy: Ada's 200 units are an earlier controller's, kept.
     await panel.getByRole('button', { name: 'Close panel' }).click()
@@ -241,6 +258,16 @@ test.describe('transfer', () => {
     await expect(portfolio.getByTestId('portfolio-filter-controlled')).toHaveAttribute('data-count', '0')
     await openProperty(ada.page, placed.plotId, placed.buildingId)
     await expect(ada.page.getByTestId('design-card').getByTestId('design-open')).toHaveCount(0)
+    // Her panel says she controlled it earlier, keeps her contributions in its records, and offers her no change to it.
+    const control = ada.page.getByTestId('property-control')
+    await expect(control).toHaveAttribute('data-control', 'other')
+    await expect(control).toHaveAttribute('data-earlier', 'true')
+    await expect(control.getByTestId('property-control-earlier')).toContainText('You controlled it earlier: your contributions stay in its records, and you can no longer change it.')
+    await expect(ada.page.getByTestId('property-action-design')).toBeDisabled()
+    await expect(ada.page.getByTestId('property-actions-note')).toContainText('You controlled it earlier; only its current test controller can customize its design. Founding it does not let you change it.')
+    await expect(ada.page.getByTestId('construction-records').locator('[data-testid="construction-history-entry"][data-by="viewer"][data-role="owner"]')).toHaveCount(4)
+    await expect(onMap(ada.page)).toHaveAttribute('data-exterior', 'ocean-blue')
+    await ada.page.screenshot({ path: 'test-artifacts/hosted-preview-historical-controller.png' })
     expect((await records(db).constructionsOf(placed.propertyId)).map((c) => [c.role, c.units, c.contributor_discord_user_id])).toEqual([
       ['owner', 50, PREVIEW_ADA],
       ['owner', 50, PREVIEW_ADA],

@@ -237,8 +237,8 @@ describe.skipIf(NO_TEST_DATABASE)('Architect portfolio and property legacy (read
     expect((await verifyCity(t.db)).violations).toEqual([])
   })
 
-  it('9-10. v1, v2 and v3 design history by relation; the new controller inherits the design, not the record; a design is never a unit, credit or progress', async () => {
-    // A database as E4A (0015: v1) and E4B (0016: v2) wrote it, then the current one.
+  it('9-10. v1, v2, v3 and v4 design history by relation; the new controller inherits the design, not the record; a design is never a unit, credit or progress', async () => {
+    // A database as E4A (0015: v1), E4B (0016: v2) and E4C (0017: v3) wrote it, then the current one.
     const through = async (last: number) => {
       const dir = await t.migrationsPlus([])
       const out = await mkdtemp(join(tmpdir(), `rc-legacy-${last}-`))
@@ -253,18 +253,35 @@ describe.skipIf(NO_TEST_DATABASE)('Architect portfolio and property legacy (read
     w.source.control(GUILD_A, keeper(1), ADA)
     w.source.grant(GUILD_A, ADA, [{ key: 'starter', units: 200 }])
     await w.build(ada, k1.id, 'owner')
-    /** A row exactly as the E4A (v1) or E4B (v2) store wrote it, through that build's guard. */
-    const written = async (o: OpenedPlaySession, revision: number, design: { facade: string; roof: string; windows?: string; lighting?: string }) => {
+    /** A row exactly as the E4A (v1), E4B (v2) or E4C (v3) store wrote it, through that build's guard. */
+    const written = async (o: OpenedPlaySession, revision: number, design: { facade: string; roof: string; windows?: string; lighting?: string; entrance?: string; landscaping?: string }) => {
       const session = await w.env.sessions.session(o.token)
       const c = await t.db.connect()
       try {
         await c.query('BEGIN')
         const r = (await c.query<{ city_id: string; city_instance_id: string; sequence: string }>('SELECT w.city_id, w.city_instance_id, c.sequence FROM worlds w JOIN city c ON c.id = w.city_id AND c.instance_id = w.city_instance_id WHERE w.id = $1 FOR UPDATE OF c', [session.scope.worldId])).rows[0]
         const v2 = design.windows !== undefined
+        const v3 = design.entrance !== undefined
         await c.query(
-          `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, ${v2 ? 'windows, lighting, ' : ''}designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ${v2 ? '$14, $15, ' : ''}$10, $11, $12, 'local-fixture-controller', $13)`,
-          [session.scope.worldId, r.city_id, r.city_instance_id, k1.id, revision, randomUUID(), v2 ? 'architect-design-v2' : 'architect-design-v1', design.facade, design.roof, session.player.coreUserId, session.player.discordUserId, session.id, r.sequence, ...(v2 ? [design.windows, design.lighting] : [])],
+          `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, ${v2 ? 'windows, lighting, ' : ''}${v3 ? 'entrance, landscaping, ' : ''}designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ${v2 ? '$14, $15, ' : ''}${v3 ? '$16, $17, ' : ''}$10, $11, $12, 'local-fixture-controller', $13)`,
+          [
+            session.scope.worldId,
+            r.city_id,
+            r.city_instance_id,
+            k1.id,
+            revision,
+            randomUUID(),
+            v3 ? 'architect-design-v3' : v2 ? 'architect-design-v2' : 'architect-design-v1',
+            design.facade,
+            design.roof,
+            session.player.coreUserId,
+            session.player.discordUserId,
+            session.id,
+            r.sequence,
+            ...(v2 ? [design.windows, design.lighting] : []),
+            ...(v3 ? [design.entrance, design.landscaping] : []),
+          ],
         )
         await c.query('COMMIT')
       } catch (err) {
@@ -277,6 +294,8 @@ describe.skipIf(NO_TEST_DATABASE)('Architect portfolio and property legacy (read
     await written(ada, 1, { facade: 'brick', roof: 'dome' })
     await migrate(t.db, { dir: await through(16), environment: 'local' })
     await written(ada, 2, { facade: 'copper', roof: 'spire', windows: 'arched', lighting: 'warm' })
+    await migrate(t.db, { dir: await through(17), environment: 'local' })
+    await written(ada, 3, { facade: 'limestone', roof: 'flat', windows: 'ribbon', lighting: 'cool', entrance: 'canopy', landscaping: 'garden' })
     await migrate(t.db, { dir: (await t.migrationsPlus([])), environment: 'local' })
 
     const credits = async () => (await t.db.query('SELECT to_jsonb(e) AS r FROM world_test_credit_entries e ORDER BY world_id, account_discord_user_id, entry_seq')).rows
@@ -291,17 +310,17 @@ describe.skipIf(NO_TEST_DATABASE)('Architect portfolio and property legacy (read
       return { totals: (await w.architect(o)).totals, investment: l.investment, yours: l.yours, property: l.property, eras: l.eras }
     }
 
-    // Ada saves a v3 revision: her record and the property's construction are as they were.
-    const save = (o: OpenedPlaySession, baseRevision: number, d: { facade: string; roof: string; entrance: string; landscaping: string }) =>
-      w.designer.save(o.token, w.env.actorOf(o), { propertyId: k1.id, actionId: randomUUID(), baseRevision, catalog: 'architect-design-v3', windows: 'grid', lighting: 'standard', ...d })
+    // Ada saves a v4 revision: her record and the property's construction are as they were.
+    const save = (o: OpenedPlaySession, baseRevision: number, d: { facade: string; roof: string; entrance: string; landscaping: string; color: string }) =>
+      w.designer.save(o.token, w.env.actorOf(o), { propertyId: k1.id, actionId: randomUUID(), baseRevision, catalog: 'architect-design-v4', windows: 'grid', lighting: 'standard', ...d })
     const adaBefore = await progress(ada)
-    await save(ada, 2, { facade: 'jade', roof: 'terrace', entrance: 'portico', landscaping: 'garden' })
+    await save(ada, 3, { facade: 'jade', roof: 'terrace', entrance: 'portico', landscaping: 'garden', color: 'natural' })
     expect(await progress(ada)).toEqual(adaBefore)
     // Then the file names Bea the controller (Ada's 50 owner units move to earlier control, as a transfer does), and Bea saves one.
     w.source.control(GUILD_A, keeper(1), BEA)
     const afterTransfer = { ada: await progress(ada), bea: await progress(bea) }
     expect(afterTransfer.ada.totals).toMatchObject({ ownerUnits: 50, currentEraOwnerUnits: 0, earlierEraOwnerUnits: 50 })
-    await save(bea, 3, { facade: 'jade', roof: 'terrace', entrance: 'portico', landscaping: 'courtyard' })
+    await save(bea, 4, { facade: 'jade', roof: 'terrace', entrance: 'portico', landscaping: 'courtyard', color: 'terracotta' })
     expect({ ada: await progress(ada), bea: await progress(bea) }).toEqual(afterTransfer)
 
     // 10. Not a unit, credit or sequence: everything construction-side is exactly as it was.
@@ -310,19 +329,22 @@ describe.skipIf(NO_TEST_DATABASE)('Architect portfolio and property legacy (read
     expect(await sequence()).toBe(sequenceBefore)
     const ad = told(await w.legacy(ada, k1.id))
 
-    // 9. Four revisions, newest first, each read by its catalog and told by relation only.
-    expect(ad.designCount).toBe(4)
-    expect(ad.designs.map((d) => [d.revision, d.catalog, d.facade, d.roof, d.windows, d.lighting, d.entrance, d.landscaping, d.by, d.savedBy])).toEqual([
-      [4, 'architect-design-v3', 'jade', 'terrace', 'grid', 'standard', 'portico', 'courtyard', 'other', 'current-controller'],
-      [3, 'architect-design-v3', 'jade', 'terrace', 'grid', 'standard', 'portico', 'garden', 'viewer', 'earlier-controller'],
-      [2, 'architect-design-v2', 'copper', 'spire', 'arched', 'warm', null, null, 'viewer', 'earlier-controller'],
-      [1, 'architect-design-v1', 'brick', 'dome', null, null, null, null, 'viewer', 'earlier-controller'],
+    // 9. Five revisions, newest first, each read by its catalog and told by relation only: the property keeps the color the
+    // new controller chose, and every earlier revision keeps exactly what it named (none of them a color).
+    expect(ad.designCount).toBe(5)
+    expect(ad.designs.map((d) => [d.revision, d.catalog, d.facade, d.roof, d.windows, d.lighting, d.entrance, d.landscaping, d.color, d.by, d.savedBy])).toEqual([
+      [5, 'architect-design-v4', 'jade', 'terrace', 'grid', 'standard', 'portico', 'courtyard', 'terracotta', 'other', 'current-controller'],
+      [4, 'architect-design-v4', 'jade', 'terrace', 'grid', 'standard', 'portico', 'garden', 'natural', 'viewer', 'earlier-controller'],
+      [3, 'architect-design-v3', 'limestone', 'flat', 'ribbon', 'cool', 'canopy', 'garden', null, 'viewer', 'earlier-controller'],
+      [2, 'architect-design-v2', 'copper', 'spire', 'arched', 'warm', null, null, null, 'viewer', 'earlier-controller'],
+      [1, 'architect-design-v1', 'brick', 'dome', null, null, null, null, null, 'viewer', 'earlier-controller'],
     ])
-    // Bea, the new controller: the property's design history, none of it hers but revision 4; Ada's founding is untouched.
+    // Bea, the new controller: the property's design history, none of it hers but revision 5; Ada's founding is untouched.
     const bd = told(await w.legacy(bea, k1.id))
     expect(bd).toMatchObject({ founding: 'other', control: 'viewer', yours: { actions: 0, ownerUnits: 0 } })
     expect(bd.designs.map((d) => [d.revision, d.by, d.savedBy])).toEqual([
-      [4, 'viewer', 'current-controller'],
+      [5, 'viewer', 'current-controller'],
+      [4, 'other', 'earlier-controller'],
       [3, 'other', 'earlier-controller'],
       [2, 'other', 'earlier-controller'],
       [1, 'other', 'earlier-controller'],
@@ -400,7 +422,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect portfolio and property legacy (read
 
     // C. Ada saves a design on K2 while she controls it; Bea controls it; Ada controls it again. Designs make no era.
     const save = (o: OpenedPlaySession, baseRevision: number, facade: string) =>
-      w.designer.save(o.token, w.env.actorOf(o), { propertyId: k2.id, actionId: randomUUID(), baseRevision, catalog: 'architect-design-v3', facade, roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' })
+      w.designer.save(o.token, w.env.actorOf(o), { propertyId: k2.id, actionId: randomUUID(), baseRevision, catalog: 'architect-design-v4', facade, roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' })
     w.source.control(GUILD_A, keeper(2), ADA)
     await save(ada, 0, 'copper')
     w.source.control(GUILD_A, keeper(2), BEA)

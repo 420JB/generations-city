@@ -616,10 +616,12 @@ export function PlayCityApp() {
    * with the city's saved designs as the server has them now.
    */
   async function saveDesign(drawn: PlayCityResponse, save: DesignSave): Promise<DesignOutcome> {
-    // Exactly the save as kept: one an earlier page kept (without windows and lighting, or without an entrance and landscaping) is sent without them.
+    // Exactly the save as kept: one an earlier page kept (without windows and lighting, without an entrance and landscaping,
+    // or without an exterior color) is sent without them.
     const details = save.windows !== undefined && save.lighting !== undefined ? { windows: save.windows, lighting: save.lighting } : {}
     const street = save.windows !== undefined && save.lighting !== undefined && save.entrance !== undefined && save.landscaping !== undefined ? { entrance: save.entrance, landscaping: save.landscaping } : {}
-    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof, ...details, ...street }
+    const colored = Object.keys(street).length > 0 && save.color !== undefined ? { color: save.color } : {}
+    const request: RehearsalDesignRequest = { ...actorOf(drawn), propertyId: save.propertyId, actionId: save.actionId, baseRevision: save.baseRevision, catalog: save.catalog, facade: save.facade, roof: save.roof, ...details, ...street, ...colored }
     const answer = await post(PLAY_REHEARSAL_DESIGNS_ENDPOINT, request)
     if (!answer) return { ok: false, problem: { message: REHEARSAL_REFUSALS.design_unconfirmed, kind: 'retry', code: null } }
     const refused = (answer.body as { error?: unknown } | null)?.error
@@ -644,7 +646,8 @@ export function PlayCityApp() {
       d!.windows !== (save.windows ?? null) ||
       d!.lighting !== (save.lighting ?? null) ||
       d!.entrance !== (save.entrance ?? null) ||
-      d!.landscaping !== (save.landscaping ?? null)
+      d!.landscaping !== (save.landscaping ?? null) ||
+      d!.color !== (save.color ?? null)
     )
       return { ok: false, problem: designProblemOf(answer.response.ok ? null : refused) }
     // Drawn at once, unless the page already has a later revision of it; then as the server has every design now.
@@ -659,6 +662,7 @@ export function PlayCityApp() {
       lighting: d!.lighting,
       entrance: d!.entrance,
       landscaping: d!.landscaping,
+      color: d!.color,
     }
     setPhase((p) => (p.kind === 'ready' && p.designs && (p.designs.byBuilding[mine.buildingId]?.revision ?? 0) < mine.revision ? { ...p, designs: { ...p.designs, byBuilding: { ...p.designs.byBuilding, [mine.buildingId]: mine } } } : p))
     const now = await readDesigns()

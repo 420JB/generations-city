@@ -519,10 +519,14 @@ other recipe, verified NFT control (Proofy Core), real transfers, patron rewards
 Architect ranks, levels or rewards, official civic awards for construction, and whether or how
 construction opens outside the local rehearsal.
 
-**Architect design (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, migrations 0015, 0016, 0017): LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.**
+**Architect design (P1-C2-E4A, P1-C2-E4B, P1-C2-E4C, P1-E6, migrations 0015 to 0018): LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.**
 
-- **What can be chosen.** From the current versioned catalog (`architect-design-v3`,
-  `src/world/design.ts`): a facade (slate, limestone, brick, copper, jade), a roof (flat, terrace,
+- **What can be chosen.** From the current versioned catalog (`architect-design-v4`,
+  `src/world/design.ts`): a facade material (slate, limestone, brick, copper, jade), an exterior color
+  chosen apart from it (natural, the material's own color, or ivory, sand, terracotta, rose, crimson,
+  copper orange, forest green, sage, ocean blue, navy, lavender, charcoal: `EXTERIOR_COLORS` in
+  `src/config/architecture.ts`; a colored facade keeps its material's static surface pattern, so blue
+  brick still reads as brick, and copper keeps its verdigris trim), a roof (flat, terrace,
   dome, spire), windows (grid, arched, ribbon, lattice: the renderer's own window patterns),
   exterior lighting (standard: the usual warm glow, no floodlights; warm and cool: static floodlights
   washing the facade above the podium and lighting the top cornice, with a matching window glow), an
@@ -530,8 +534,9 @@ construction opens outside the local rehearsal.
   columned portico, closed up to fit the podium face) and landscaping (standard: bare paving; garden,
   courtyard: fixed arrangements of the renderer's landscape pieces, `GROUNDS` in
   `src/ui/city/buildingGeometry.ts`). Each is an identifier the standard renderer already draws; no
-  color, markup, URL, position, upload or text is ever sent, stored or drawn as sent. A property never
-  designed is drawn with slate, flat, grid, standard, standard and standard, as every new building is.
+  color value, markup, URL, position, upload or text is ever sent, stored or drawn as sent. A property
+  never designed is drawn with slate, natural, flat, grid, standard, standard and standard, as every
+  new building is.
   A Tier 0 foundation draws its facade at once and its roof, windows, lighting, entrance and grounds
   from Tier 1; the design then grows with every tier. Far from the camera the floodlights keep only
   their lit cornice and the landscape pieces are not drawn. Tier, height, plot, district color and the
@@ -543,12 +548,13 @@ construction opens outside the local rehearsal.
   than spilling it (no lot of the sample cities' first five wards is that tight). `src/ui/city/grounds.test.ts` checks this for every
   plot of the sample cities' first five wards, at Tier 1 and 2 and all 24 rotations, against roads,
   neighbouring lots, district gates and the civic centre.
-- **Catalogs v1 and v2.** Designs saved before E4B (`architect-design-v1`: a facade and a roof) and
-  before E4C (`architect-design-v2`: and windows and lighting) keep that catalog and meaning; they name
-  no treatment their catalog did not have and are drawn with the standard ones, exactly as before.
-  Neither takes a new save (the database refuses one): a v1 or v2 save a page kept is checked exactly
-  as kept, answered with its receipt if it was recorded and refused (`design_retired`, nothing saved)
-  if not.
+- **Catalogs v1, v2 and v3.** Designs saved before E4B (`architect-design-v1`: a facade and a roof),
+  before E4C (`architect-design-v2`: and windows and lighting) and before E6 (`architect-design-v3`:
+  and an entrance and landscaping) keep that catalog and meaning; they name no treatment or color their
+  catalog did not have and are drawn with the standard ones (and their material's own color), exactly
+  as before. None takes a new save (the database refuses one): a v1, v2 or v3 save a page kept is
+  checked exactly as kept, answered with its receipt if it was recorded and refused (`design_retired`,
+  nothing saved) if not.
 - **Who may change it.** Only the player the local file's `controllers` name as the NFT's current
   controller in this city (TEST DATA, never verified ownership), asked again for every save under the
   city lock. Founding the property, building on it as a patron or having controlled it before allow
@@ -558,14 +564,17 @@ construction opens outside the local rehearsal.
   with the rehearsal data on load), `GET …/design?property=` (one property's design, its history with
   nobody named, and whom the file names its controller) and `POST …/designs` (`{ sessionRef, worldId,
   discordUserId, propertyId, actionId, baseRevision, catalog, facade, roof, windows, lighting,
-  entrance, landscaping }`, exactly these keys; without `entrance` and `landscaping` only as an
-  earlier page's v2 save, and without `windows` and `lighting` too only as a v1 save).
+  entrance, landscaping, color }`, exactly these keys; without `color` only as an earlier page's v3
+  save, without `entrance` and `landscaping` too only as a v2 save, and without `windows` and
+  `lighting` too only as a v1 save).
 - **The player's view.** The property panel's ARCHITECT DESIGN card; for the named controller, Open
   Architect design (also DESIGN in the Architect activity). Each choice is previewed on the city's own
   building at once and beside the saved version (both drawn by the city's building sprite), with a line
-  naming every category the preview changes. The six categories are grouped in three tabs (Building,
-  Details, Street level; ARIA tabs, arrow keys move between them), each saying how many of its
-  categories the preview changes; all six are saved together as one revision; nothing is
+  naming every category the preview changes. The seven categories are grouped in three tabs (Building:
+  facade material, exterior color and roof; Details; Street level; ARIA tabs, arrow keys move between
+  them), each saying how many of its categories the preview changes; colors are one radio group of
+  named swatches, each the chosen material in that color; an UNSAVED PREVIEW mark shows while the
+  preview differs; all seven are saved together as one revision; nothing is
   sent until Save, and Cancel, Back, Close or another building drop the preview. No polling: the
   page reads designs on load, after a placement and after a save.
 - **Persistence and safety.** Each save is the property's next revision (append-only; any earlier
@@ -611,6 +620,24 @@ counter: every number is the server's, read in one read-only snapshot.
   write nothing. `server/tests/propertyLegacy.db.test.ts` proves it against the real stores.
 - **Browser tests.** `portfolio-legacy.spec.ts` (slots 20-21): the portfolio and both legacies end to end; on a
   phone-sized screen and by keyboard.
+
+**Property panel and exterior color (P1-E6): LOCAL ONLY, LOCAL TEST CONTROL ONLY, FREE.**
+
+- **The panel leads with what a player can do.** A stored property's panel shows, in order: its
+  address, tier and who the local file names as its controller (you, another player, nobody; and "you
+  controlled it earlier" when the construction or design history shows the player's own owner builds
+  or saves while someone else, or nobody, is named now); then BUILD (or CONTRIBUTE, as a patron) and
+  CUSTOMIZE; its construction (progress, next tier, the cost of one step, the player's test credits,
+  the action); its Architect design; and only then its records (the city and district around it, its
+  founder, its identifiers and founding record, the construction records and history, and its
+  legacy). The bar's Build is the construction card's own action (one press book and guard); its
+  Customize opens the Architect design view only for the named controller. A disabled action says
+  why. No new route, request or permission (`src/brand/preview/panels.tsx`, `propertyStatus.ts`).
+- **Browser tests.** `property-ux-colors.spec.ts` (slots 22-23): the panel's order and first screen,
+  keyboard actions, every palette color previewed on the map, cancel, save (material and color
+  apart), reload, legacy, a phone-sized screen; the patron, a property nobody controls, a player with
+  no credits, and refused colors. The controller change (an earlier controller's view) is in
+  `e2e-hosted-preview/preview.spec.ts`'s transfer run.
 
 Not decided, on purpose (owner decisions, nothing implemented): Architect ranks, levels, XP, titles or badges;
 earned or unlockable designs; rewards of any kind for construction, patronage or founding.

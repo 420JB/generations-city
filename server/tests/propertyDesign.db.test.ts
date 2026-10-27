@@ -62,13 +62,13 @@ async function refusalOf(work: Promise<unknown>): Promise<string> {
   throw err ?? new Error('expected a refusal, got success')
 }
 
-const CATALOG = 'architect-design-v3'
-/** Whole designs of the current catalog: one with the standard treatments, one with chosen windows, lighting, entrance and landscaping. */
-const COPPER_DOME = { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' }
-const BRICK_SPIRE = { facade: 'brick', roof: 'spire', windows: 'ribbon', lighting: 'warm', entrance: 'canopy', landscaping: 'garden' }
-type Choice = { facade: string; roof: string; windows?: string; lighting?: string; entrance?: string; landscaping?: string }
-/** A design without a treatment choice is saved with the catalog's standard ones. */
-const whole = (d: Choice) => ({ windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', ...d })
+const CATALOG = 'architect-design-v4'
+/** Whole designs of the current catalog: one with the standard treatments and natural color, one with chosen windows, lighting, entrance, landscaping and color. */
+const COPPER_DOME = { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural' }
+const BRICK_SPIRE = { facade: 'brick', roof: 'spire', windows: 'ribbon', lighting: 'warm', entrance: 'canopy', landscaping: 'garden', color: 'ocean-blue' }
+type Choice = { facade: string; roof: string; windows?: string; lighting?: string; entrance?: string; landscaping?: string; color?: string }
+/** A design without a treatment choice is saved with the catalog's standard ones (and its material's own color). */
+const whole = (d: Choice) => ({ windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard', color: 'natural', ...d })
 /** The renderer's architecture for a design: its lighting drawn as the window glow it uses. */
 const drawnAs = (d: { facade: string; roof: string; windows: string; lighting: string }) => ({ facade: d.facade, roof: d.roof, windows: d.windows, lighting: d.lighting === 'cool' ? 'cool' : 'warm' })
 /** Every table a design must leave exactly as it was. */
@@ -370,8 +370,12 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       [{ ...COPPER_DOME, landscaping: 'none' }, CATALOG],
       [{ ...COPPER_DOME, landscaping: 'pond' }, CATALOG],
       [{ ...COPPER_DOME, landscaping: 'url(https://example.com/tree.png)' }, CATALOG],
-      [COPPER_DOME, 'architect-design-v4'],
-      // A v3 design named as v2 (v2 has no entrance or landscaping), or as v1 (no treatment at all).
+      [{ ...COPPER_DOME, color: 'aurora' }, CATALOG],
+      [{ ...COPPER_DOME, color: 'Ocean-Blue' }, CATALOG],
+      [{ ...COPPER_DOME, color: '#1c466c' }, CATALOG],
+      [COPPER_DOME, 'architect-design-v5'],
+      // A v4 design named as v3 (v3 has no color), v2 (no entrance, landscaping or color), or as v1 (no treatment at all).
+      [COPPER_DOME, 'architect-design-v3'],
       [COPPER_DOME, 'architect-design-v2'],
       [COPPER_DOME, 'architect-design-v1'],
     ] as const)
@@ -389,6 +393,14 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       { ...COPPER_DOME, entrance: null },
       { ...COPPER_DOME, landscaping: { pieces: [{ x: 0, y: 0 }] } },
       { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard' },
+      // An exterior color is a name the catalog lists: never a color value, CSS or markup, and never missing from a v4 design.
+      { ...COPPER_DOME, color: '#ff0000' },
+      { ...COPPER_DOME, color: 'rgb(255, 0, 0)' },
+      { ...COPPER_DOME, color: 'url(https://example.com/x.png)' },
+      { ...COPPER_DOME, color: 'teal' },
+      { ...COPPER_DOME, color: null },
+      { ...COPPER_DOME, color: { name: 'navy' } },
+      { facade: 'copper', roof: 'dome', windows: 'grid', lighting: 'standard', entrance: 'standard', landscaping: 'standard' },
     ])
       expect(await refusalOf(service.save(a.token, w.env.actorOf(a), { propertyId: p.id, actionId: randomUUID(), baseRevision: 0, catalog: CATALOG, ...bad }))).toBe('design_unsupported')
     expect(await refusalOf(w.save(a, p.id, COPPER_DOME, -1))).toBe('design_stale')
@@ -405,12 +417,12 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     const insert = (over: Record<string, unknown>) => {
       const r: Record<string, unknown> = { ...row, revision: 2, action_id: randomUUID(), ...over }
       return t.db.query(
-        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-        [r.world_id, r.city_id, r.city_instance_id, r.property_id, r.revision, r.action_id, r.catalog, r.facade, r.roof, r.windows, r.lighting, r.entrance, r.landscaping, r.designer_core_user_id, r.designer_discord_user_id, r.designed_in_play_session, r.authority, r.at_city_sequence],
+        `INSERT INTO world_property_designs (world_id, city_id, city_instance_id, property_id, revision, action_id, catalog, facade, roof, windows, lighting, entrance, landscaping, color, designer_core_user_id, designer_discord_user_id, designed_in_play_session, authority, at_city_sequence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+        [r.world_id, r.city_id, r.city_instance_id, r.property_id, r.revision, r.action_id, r.catalog, r.facade, r.roof, r.windows, r.lighting, r.entrance, r.landscaping, r.color, r.designer_core_user_id, r.designer_discord_user_id, r.designed_in_play_session, r.authority, r.at_city_sequence],
       )
     }
-    const KNOWN = /a facade, roof, windows, lighting, entrance and landscaping of a catalog this database knows/
+    const KNOWN = /a facade, roof, windows, lighting, entrance, landscaping and color of a catalog this database knows/
     await expect(insert({ facade: 'aurora' })).rejects.toThrow(KNOWN)
     await expect(insert({ roof: 'halo' })).rejects.toThrow(KNOWN)
     await expect(insert({ windows: 'panoramic' })).rejects.toThrow(KNOWN)
@@ -418,11 +430,18 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     await expect(insert({ windows: null, lighting: null })).rejects.toThrow(KNOWN)
     await expect(insert({ entrance: 'awning' })).rejects.toThrow(KNOWN)
     await expect(insert({ landscaping: 'pond' })).rejects.toThrow(KNOWN)
+    await expect(insert({ entrance: null, landscaping: null, color: null })).rejects.toThrow(KNOWN)
     await expect(insert({ entrance: null, landscaping: null })).rejects.toThrow(KNOWN)
-    await expect(insert({ catalog: 'architect-design-v9' })).rejects.toThrow(/chosen from the current catalog, architect-design-v3: architect-design-v9 is read only/)
-    // v1 and v2 are read only: not even a choice exactly as 0015 or 0016 recorded them.
-    await expect(insert({ catalog: 'architect-design-v1', windows: null, lighting: null, entrance: null, landscaping: null })).rejects.toThrow(/architect-design-v1 is read only/)
-    await expect(insert({ catalog: 'architect-design-v2', entrance: null, landscaping: null })).rejects.toThrow(/architect-design-v2 is read only/)
+    // An exterior color is one of the catalog's names: a color the catalog lacks, none at all, or a value that is no name.
+    await expect(insert({ color: 'teal' })).rejects.toThrow(KNOWN)
+    await expect(insert({ color: null })).rejects.toThrow(KNOWN)
+    await expect(insert({ color: '#ff0000' })).rejects.toThrow(KNOWN)
+    await expect(insert({ color: 'url(x)' })).rejects.toThrow(KNOWN)
+    await expect(insert({ catalog: 'architect-design-v9' })).rejects.toThrow(/chosen from the current catalog, architect-design-v4: architect-design-v9 is read only/)
+    // v1, v2 and v3 are read only: not even a choice exactly as 0015, 0016 or 0017 recorded them.
+    await expect(insert({ catalog: 'architect-design-v1', windows: null, lighting: null, entrance: null, landscaping: null, color: null })).rejects.toThrow(/architect-design-v1 is read only/)
+    await expect(insert({ catalog: 'architect-design-v2', entrance: null, landscaping: null, color: null })).rejects.toThrow(/architect-design-v2 is read only/)
+    await expect(insert({ catalog: 'architect-design-v3', color: null })).rejects.toThrow(/architect-design-v3 is read only/)
     await expect(insert({ facade: '<b>' })).rejects.toThrow(KNOWN)
     await expect(insert({ revision: 3 })).rejects.toThrow(/numbered consecutively/)
     await expect(insert({ revision: 1 })).rejects.toThrow(/numbered consecutively/)
@@ -436,11 +455,20 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     for (const [sql, shape] of [
       ["UPDATE world_property_designs SET facade = '<b>x</b>' WHERE property_id = $1", /wpd_choice_shape/],
       ["UPDATE world_property_designs SET windows = 'url(x)' WHERE property_id = $1", /wpd_detail_shape/],
-      ['UPDATE world_property_designs SET lighting = NULL WHERE property_id = $1', /wpd_detail_shape/],
+      // (Each with no color, so 0018's color shape, checked first by name, is not what refuses it.)
+      ['UPDATE world_property_designs SET lighting = NULL, color = NULL WHERE property_id = $1', /wpd_detail_shape/],
       ["UPDATE world_property_designs SET entrance = 'url(x)' WHERE property_id = $1", /wpd_street_shape/],
-      ['UPDATE world_property_designs SET landscaping = NULL WHERE property_id = $1', /wpd_street_shape/],
+      ['UPDATE world_property_designs SET landscaping = NULL, color = NULL WHERE property_id = $1', /wpd_street_shape/],
       // A v3 design is a whole one: an entrance and landscaping never stand without windows and lighting.
-      ['UPDATE world_property_designs SET windows = NULL, lighting = NULL WHERE property_id = $1', /wpd_street_shape/],
+      ['UPDATE world_property_designs SET windows = NULL, lighting = NULL, color = NULL WHERE property_id = $1', /wpd_street_shape/],
+      // An exterior color is an identifier, never a color value or CSS (0018), and a v4 design is a whole one: a color never
+      // stands without the four treatments.
+      ["UPDATE world_property_designs SET color = '#ff0000' WHERE property_id = $1", /wpd_color_shape/],
+      ["UPDATE world_property_designs SET color = 'url(x)' WHERE property_id = $1", /wpd_color_shape/],
+      ["UPDATE world_property_designs SET color = 'Navy' WHERE property_id = $1", /wpd_color_shape/],
+      ["UPDATE world_property_designs SET color = 'ocean-blue-ocean-blue-ocean-blue-x' WHERE property_id = $1", /wpd_color_shape/],
+      ['UPDATE world_property_designs SET entrance = NULL, landscaping = NULL WHERE property_id = $1', /wpd_color_shape/],
+      ['UPDATE world_property_designs SET windows = NULL, lighting = NULL, entrance = NULL, landscaping = NULL WHERE property_id = $1', /wpd_color_shape/],
     ] as const) {
       const replica = await t.db.connect()
       try {
@@ -453,7 +481,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       }
     }
     // A valid next revision, as the guard reads it, is accepted.
-    await insert({ facade: 'jade', roof: 'terrace', windows: 'arched', lighting: 'cool', entrance: 'arched', landscaping: 'garden' })
+    await insert({ facade: 'jade', roof: 'terrace', windows: 'arched', lighting: 'cool', entrance: 'arched', landscaping: 'garden', color: 'lavender' })
     expect((await w.revisions(p.id)).map((r) => r.facade)).toEqual(['copper', 'jade'])
     expect(session).toBeTruthy()
   })
@@ -593,30 +621,38 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
       }
     }
     const cases: { label: string; do: [string, unknown[]]; undo: [string, unknown[]]; expect: RegExp }[] = [
-      { label: 'a facade no catalog has', do: ["UPDATE world_property_designs SET facade = 'aurora' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET facade = 'brick' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is aurora \/ spire \/ ribbon \/ warm \/ canopy \/ garden, which catalog architect-design-v3 does not offer/ },
-      { label: 'an entrance no catalog has', do: ["UPDATE world_property_designs SET entrance = 'awning' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET entrance = 'canopy' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is brick \/ spire \/ ribbon \/ warm \/ awning \/ garden, which catalog architect-design-v3 does not offer/ },
-      { label: 'landscaping no catalog has', do: ["UPDATE world_property_designs SET landscaping = 'pond' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET landscaping = 'garden' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /\/ canopy \/ pond, which catalog architect-design-v3 does not offer/ },
+      { label: 'a facade no catalog has', do: ["UPDATE world_property_designs SET facade = 'aurora' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET facade = 'brick' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is aurora \/ spire \/ ribbon \/ warm \/ canopy \/ garden \/ ocean-blue, which catalog architect-design-v4 does not offer/ },
+      { label: 'an entrance no catalog has', do: ["UPDATE world_property_designs SET entrance = 'awning' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET entrance = 'canopy' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /is brick \/ spire \/ ribbon \/ warm \/ awning \/ garden \/ ocean-blue, which catalog architect-design-v4 does not offer/ },
+      { label: 'landscaping no catalog has', do: ["UPDATE world_property_designs SET landscaping = 'pond' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET landscaping = 'garden' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /\/ canopy \/ pond \/ ocean-blue, which catalog architect-design-v4 does not offer/ },
+      { label: 'a color no catalog has', do: ["UPDATE world_property_designs SET color = 'teal' WHERE property_id = $1 AND revision = 2", [p.id]], undo: ["UPDATE world_property_designs SET color = 'ocean-blue' WHERE property_id = $1 AND revision = 2", [p.id]], expect: /\/ garden \/ teal, which catalog architect-design-v4 does not offer/ },
       {
-        label: 'a v3 design naming no treatment',
-        do: ['UPDATE world_property_designs SET windows = NULL, lighting = NULL, entrance = NULL, landscaping = NULL WHERE property_id = $1 AND revision = 2', [p.id]],
-        undo: ["UPDATE world_property_designs SET windows = 'ribbon', lighting = 'warm', entrance = 'canopy', landscaping = 'garden' WHERE property_id = $1 AND revision = 2", [p.id]],
-        expect: /is brick \/ spire \/ null \/ null \/ null \/ null, which catalog architect-design-v3 does not offer/,
+        label: 'a v4 design naming no treatment',
+        do: ['UPDATE world_property_designs SET windows = NULL, lighting = NULL, entrance = NULL, landscaping = NULL, color = NULL WHERE property_id = $1 AND revision = 2', [p.id]],
+        undo: ["UPDATE world_property_designs SET windows = 'ribbon', lighting = 'warm', entrance = 'canopy', landscaping = 'garden', color = 'ocean-blue' WHERE property_id = $1 AND revision = 2", [p.id]],
+        expect: /is brick \/ spire \/ null \/ null \/ null \/ null \/ null, which catalog architect-design-v4 does not offer/,
       },
-      { label: 'a v1 design naming a treatment', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v1' WHERE property_id = $1 AND revision = 1", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v3' WHERE property_id = $1 AND revision = 1", [p.id]], expect: /is copper \/ dome \/ grid \/ standard \/ standard \/ standard, which catalog architect-design-v1 does not offer/ },
-      { label: 'a v2 design naming an entrance and landscaping', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v2' WHERE property_id = $1 AND revision = 1", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v3' WHERE property_id = $1 AND revision = 1", [p.id]], expect: /is copper \/ dome \/ grid \/ standard \/ standard \/ standard, which catalog architect-design-v2 does not offer/ },
+      { label: 'a v1 design naming a treatment', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v1' WHERE property_id = $1 AND revision = 1", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4' WHERE property_id = $1 AND revision = 1", [p.id]], expect: /is copper \/ dome \/ grid \/ standard \/ standard \/ standard \/ natural, which catalog architect-design-v1 does not offer/ },
+      { label: 'a v2 design naming an entrance and landscaping', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v2' WHERE property_id = $1 AND revision = 1", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4' WHERE property_id = $1 AND revision = 1", [p.id]], expect: /is copper \/ dome \/ grid \/ standard \/ standard \/ standard \/ natural, which catalog architect-design-v2 does not offer/ },
+      { label: 'a v3 design naming a color', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v3' WHERE property_id = $1 AND revision = 1", [p.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4' WHERE property_id = $1 AND revision = 1", [p.id]], expect: /is copper \/ dome \/ grid \/ standard \/ standard \/ standard \/ natural, which catalog architect-design-v3 does not offer/ },
       {
         label: 'a later revision of an older catalog (v1)',
-        do: ["UPDATE world_property_designs SET catalog = 'architect-design-v1', windows = NULL, lighting = NULL, entrance = NULL, landscaping = NULL WHERE property_id = $1 AND revision = 2", [p.id]],
-        undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v3', windows = 'ribbon', lighting = 'warm', entrance = 'canopy', landscaping = 'garden' WHERE property_id = $1 AND revision = 2", [p.id]],
+        do: ["UPDATE world_property_designs SET catalog = 'architect-design-v1', windows = NULL, lighting = NULL, entrance = NULL, landscaping = NULL, color = NULL WHERE property_id = $1 AND revision = 2", [p.id]],
+        undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4', windows = 'ribbon', lighting = 'warm', entrance = 'canopy', landscaping = 'garden', color = 'ocean-blue' WHERE property_id = $1 AND revision = 2", [p.id]],
         expect: /design 2 is of catalog architect-design-v1, older than the revision before it/,
       },
       {
         label: 'a later revision of an older catalog (v2)',
-        do: ["UPDATE world_property_designs SET catalog = 'architect-design-v2', entrance = NULL, landscaping = NULL WHERE property_id = $1 AND revision = 2", [p.id]],
-        undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v3', entrance = 'canopy', landscaping = 'garden' WHERE property_id = $1 AND revision = 2", [p.id]],
+        do: ["UPDATE world_property_designs SET catalog = 'architect-design-v2', entrance = NULL, landscaping = NULL, color = NULL WHERE property_id = $1 AND revision = 2", [p.id]],
+        undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4', entrance = 'canopy', landscaping = 'garden', color = 'ocean-blue' WHERE property_id = $1 AND revision = 2", [p.id]],
         expect: /design 2 is of catalog architect-design-v2, older than the revision before it/,
       },
-      { label: 'an unknown catalog', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v9' WHERE property_id = $1 AND revision = 1", [q.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v3' WHERE property_id = $1 AND revision = 1", [q.id]], expect: /names catalog architect-design-v9, which this build does not have/ },
+      {
+        label: 'a later revision of an older catalog (v3)',
+        do: ["UPDATE world_property_designs SET catalog = 'architect-design-v3', color = NULL WHERE property_id = $1 AND revision = 2", [p.id]],
+        undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4', color = 'ocean-blue' WHERE property_id = $1 AND revision = 2", [p.id]],
+        expect: /design 2 is of catalog architect-design-v3, older than the revision before it/,
+      },
+      { label: 'an unknown catalog', do: ["UPDATE world_property_designs SET catalog = 'architect-design-v9' WHERE property_id = $1 AND revision = 1", [q.id]], undo: ["UPDATE world_property_designs SET catalog = 'architect-design-v4' WHERE property_id = $1 AND revision = 1", [q.id]], expect: /names catalog architect-design-v9, which this build does not have/ },
       { label: 'a revision gap', do: ['UPDATE world_property_designs SET revision = 3 WHERE property_id = $1 AND revision = 2', [p.id]], undo: ['UPDATE world_property_designs SET revision = 2 WHERE property_id = $1 AND revision = 3', [p.id]], expect: /designs are not numbered 1, 2, 3/ },
       { label: 'saved before its property existed', do: ['UPDATE world_property_designs SET at_city_sequence = 2 WHERE property_id = $1', [q.id]], undo: ['UPDATE world_property_designs SET at_city_sequence = (SELECT c.sequence FROM city c JOIN worlds w ON w.city_id = c.id WHERE w.id = world_property_designs.world_id) WHERE property_id = $1', [q.id]], expect: /outside its property's life in the city/ },
       { label: 'saved after its city\'s sequence', do: ['UPDATE world_property_designs SET at_city_sequence = 999 WHERE property_id = $1 AND revision = 2', [p.id]], undo: ['UPDATE world_property_designs SET at_city_sequence = 3 WHERE property_id = $1 AND revision = 2', [p.id]], expect: /saved at city sequence 999, outside its property's life/ },
@@ -675,7 +711,7 @@ describe.skipIf(NO_TEST_DATABASE)('Architect property design (migration 0015) ag
     expect(await tables()).toEqual(names)
     expect((await one<{ n: number }>('SELECT max(version)::int AS n FROM schema_migrations')).n).toBe(14)
 
-    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([15, 16, 17])
+    expect((await migrate(t.db, { dir: MIGRATIONS_DIR, environment: 'local' })).applied).toEqual([15, 16, 17, 18])
     // Exactly one new table, and every row of every other table as it was.
     expect(await tables()).toEqual([...names, 'world_property_designs'].sort())
     expect(await dump(names)).toEqual(before)

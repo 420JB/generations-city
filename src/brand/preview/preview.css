@@ -296,6 +296,102 @@
     height: 120px;
   }
 }
+/* P1-E6: the exterior color, a compact swatch grid inside the Building tab (each swatch the chosen material in that color). */
+.design-color-options {
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+}
+.design-color-options legend .small {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+.design-option.design-color {
+  min-height: 40px;
+  padding: 4px 8px;
+  gap: 6px;
+}
+.design-option.design-color.on {
+  box-shadow: inset 0 0 0 1px var(--gold);
+}
+.design-check {
+  color: var(--gold);
+  font-weight: 800;
+}
+.design-compare {
+  position: relative;
+}
+.design-unsaved {
+  position: absolute;
+  top: -8px;
+  right: 6px;
+  z-index: 1;
+  border-color: rgba(255, 212, 90, 0.55);
+  color: var(--gold);
+}
+/* P1-E6: a stored property's panel leads with what the player can do (header, actions), its records after. */
+.property-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+.property-head .address {
+  margin: 0 0 4px;
+}
+.property-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.property-control-earlier {
+  flex-basis: 100%;
+}
+.control-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.control-dot.viewer {
+  background: var(--teal);
+}
+.control-dot.other {
+  background: var(--gold);
+}
+.property-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.property-actions .btn {
+  min-height: 44px;
+}
+.property-actions-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.property-records {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.property-records-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+@media (max-width: 480px) {
+  .property-actions {
+    grid-template-columns: 1fr;
+  }
+}
 /* P1-C2-E5A: the Architect portfolio's groups and relationship filter, and the property legacy. */
 .portfolio-group-title {
   margin: 12px 0 6px;

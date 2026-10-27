@@ -44,6 +44,55 @@ function DarkMask({ style }: { style: string }) {
   )
 }
 
+/**
+ * The surface of each Architect facade material (P1-E6), drawn over a brand building's exterior color so the material
+ * still reads in any color: brick courses, split slate cladding, limestone ashlar, copper standing seams and glazed jade
+ * tiles. Neutral light and shade only, never a color of its own; static, face-local (a face's own x and y). Only a
+ * building with an exterior color refers to them (the legacy city never does).
+ */
+function MaterialSurfaces() {
+  const light = (x: number, y: number, width: number, height: number, opacity: number) => <rect x={x} y={y} width={width} height={height} fill="#fff" fillOpacity={opacity} />
+  const shade = (x: number, y: number, width: number, height: number, opacity: number) => <rect x={x} y={y} width={width} height={height} fill="#000" fillOpacity={opacity} />
+  return (
+    <>
+      <pattern id="surface-brick" width={8} height={4} patternUnits="userSpaceOnUse">
+        {shade(4.5, 0.5, 3.5, 1.5, 0.09)}
+        {shade(0.5, 2.5, 3.5, 1.5, 0.05)}
+        {light(0, 0, 8, 0.5, 0.15)}
+        {light(0, 2, 8, 0.5, 0.15)}
+        {light(0, 0.5, 0.5, 1.5, 0.13)}
+        {light(4, 2.5, 0.5, 1.5, 0.13)}
+      </pattern>
+      <pattern id="surface-slate" width={12} height={6} patternUnits="userSpaceOnUse">
+        {shade(0, 0, 12, 0.6, 0.24)}
+        {light(0, 0.6, 12, 0.4, 0.07)}
+        {shade(0, 3, 12, 0.6, 0.24)}
+        {light(0, 3.6, 12, 0.4, 0.07)}
+        {shade(0, 0, 0.5, 3, 0.16)}
+        {shade(6, 3, 0.5, 3, 0.16)}
+      </pattern>
+      <pattern id="surface-limestone" width={16} height={12} patternUnits="userSpaceOnUse">
+        {light(0, 0.5, 16, 2.5, 0.05)}
+        {light(0, 6.5, 16, 2.5, 0.05)}
+        {shade(0, 0, 16, 0.5, 0.15)}
+        {shade(0, 6, 16, 0.5, 0.15)}
+        {shade(0, 0, 0.5, 6, 0.13)}
+        {shade(8, 6, 0.5, 6, 0.13)}
+      </pattern>
+      <pattern id="surface-copper" width={6} height={12} patternUnits="userSpaceOnUse">
+        {light(0, 0, 0.7, 12, 0.22)}
+        {shade(0.7, 0, 0.6, 12, 0.18)}
+        {light(3.2, 0, 0.4, 12, 0.06)}
+      </pattern>
+      <pattern id="surface-jade" width={4} height={4} patternUnits="userSpaceOnUse">
+        {shade(0, 0, 4, 0.4, 0.22)}
+        {shade(0, 0, 0.4, 4, 0.22)}
+        {light(0.9, 0.9, 1.2, 0.6, 0.2)}
+      </pattern>
+    </>
+  )
+}
+
 export const CityDefs = memo(function CityDefs() {
   const scene = useCityScene()
   return (
@@ -63,6 +112,7 @@ export const CityDefs = memo(function CityDefs() {
         <stop offset="0.6" stopColor="#000" stopOpacity="0" />
         <stop offset="1" stopColor="#000" stopOpacity="0.35" />
       </linearGradient>
+      <MaterialSurfaces />
       <radialGradient id="glow-warm">
         <stop offset="0" stopColor="#ffd98a" stopOpacity="0.9" />
         <stop offset="1" stopColor="#ffd98a" stopOpacity="0" />

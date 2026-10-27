@@ -25,7 +25,7 @@ import type { BrandCityConfig } from './config'
  * come from the standard competition rules.
  */
 /** `floodlights`, `street`: the building's Architect exterior lighting and street level, where a saved design has them (see `SceneBuilding`). */
-export type BrandBuilding = Omit<Building, 'districtId'> & { districtId: string; floodlights?: string; street?: Readonly<{ entrance: string; grounds: string }> }
+export type BrandBuilding = Omit<Building, 'districtId'> & { districtId: string; floodlights?: string; street?: Readonly<{ entrance: string; grounds: string }>; exterior?: string }
 
 export interface SampleDistrictSpec {
   /** Build progress of the district's first residents, in the order they joined. */
